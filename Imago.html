@@ -876,7 +876,7 @@ function activePhotos(){
       if(!(p.etiquette||"").toLowerCase().includes(kw)) return false;
     }
     return true;
-  }).sort((a,b)=> (b.dateAchat||"").localeCompare(a.dateAchat||""));
+  }).sort((a,b)=> (a.fileName||"").localeCompare(b.fileName||"", "fr", {numeric:true, sensitivity:"base"}));
 }
 
 function renderGrid(){
@@ -1647,6 +1647,15 @@ function renderInfoModal(p){
   const dims = (p.width && p.height) ? `${p.width} × ${p.height}` : "";
   const shared = (p.sharedWith && p.sharedWith.length) ? p.sharedWith.join(", ") : null;
 
+  // Localisation : priorité absolue aux coordonnées GPS du fichier (précises),
+  // le texte du champ Lieu ne sert de repli que si le fichier n'a pas de GPS.
+  const hasGps = (p.gpsLat!=null && p.gpsLon!=null);
+  const hasLocation = hasGps || !!p.lieu;
+  const mapEmbedSrc = hasGps
+    ? `https://www.google.com/maps?q=${p.gpsLat.toFixed(6)},${p.gpsLon.toFixed(6)}&z=15&output=embed`
+    : `https://www.google.com/maps?q=${encodeURIComponent(p.lieu)}&output=embed`;
+  const mapLinkHref = p.map || (hasGps ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : mapUrlFromLieu(p.lieu));
+
   rows.innerHTML = `
     <div class="info-row">
       <div class="info-ic">📅</div>
@@ -1695,8 +1704,9 @@ function renderInfoModal(p){
       <div class="info-ic">📍</div>
       <div class="info-content" style="flex:1;">
         <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
-        ${p.lieu ? `<iframe class="info-map" loading="lazy" src="https://www.google.com/maps?q=${encodeURIComponent(p.lieu)}&output=embed"></iframe>
-          <a href="${escapeHtml(p.map || mapUrlFromLieu(p.lieu))}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
+        ${hasGps ? `<div class="sub-line">${escapeHtml(decimalToDMS(p.gpsLat, p.gpsLon))} · ${p.gpsLat.toFixed(6)}, ${p.gpsLon.toFixed(6)}</div>` : ""}
+        ${hasLocation ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>
+          <a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
       </div>
       <button class="info-pencil" data-edit="lieu" title="Modifier le lieu">✎</button>
     </div>
