@@ -1,0 +1,2063 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Imago — Photothèque</title>
+<style>
+/* =========================================================
+   IMAGO — palette "chambre noire / planche-contact"
+   Fond profond vert-anthracite, tirages crème bordés,
+   accent cuivre-négatif. Police display sérif pour les
+   intitulés, sans-serif utilitaire pour les données.
+   ========================================================= */
+:root{
+  --bg-deep:      #101b16;
+  --bg-panel:     #17251e;
+  --bg-panel-2:   #1e2f26;
+  --line:         #2c4234;
+  --print-cream:  #f2ead9;
+  --print-cream-2:#e8dcc2;
+  --ink:          #ece7da;
+  --ink-dim:      #a9baa9;
+  --copper:       #c77d3b;
+  --copper-hi:    #e2985a;
+  --sage:         #7ea184;
+  --danger:       #b5563f;
+  --ok:           #3f8f5d;
+  --gray-btn:     #46564c;
+  --shadow:       0 6px 18px rgba(0,0,0,.45);
+  --radius:       3px;
+  --font-display: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+  --font-ui:      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:    'Courier New', Courier, monospace;
+  --topbar-h:     56px;
+}
+
+*{box-sizing:border-box;}
+html,body{
+  height:100%;
+  margin:0;
+  background:var(--bg-deep);
+  color:var(--ink);
+  font-family:var(--font-ui);
+}
+::selection{background:var(--copper); color:#101b16;}
+button{font-family:inherit;}
+:focus-visible{outline:2px solid var(--copper-hi); outline-offset:2px;}
+
+/* ---------- topbar ---------- */
+.topbar{
+  position:fixed; top:0; left:0; right:0; height:var(--topbar-h);
+  z-index:500;
+  display:flex; align-items:center; gap:10px;
+  padding:0 14px;
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(0,0,0,.35) 0 6px, transparent 6px 20px) top/100% 6px no-repeat,
+    linear-gradient(180deg,#182a20,#132019);
+  border-bottom:1px solid var(--line);
+  box-shadow:var(--shadow);
+}
+.brand{
+  font-family:var(--font-display);
+  font-size:22px; letter-spacing:.06em;
+  color:var(--print-cream);
+  margin-right:6px; user-select:none;
+}
+.brand em{color:var(--copper-hi); font-style:normal;}
+
+.burger-btn{
+  width:38px; height:38px; border-radius:var(--radius);
+  background:transparent; border:1px solid var(--line);
+  color:var(--ink); font-size:18px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+}
+.burger-btn:hover{background:var(--bg-panel-2);}
+
+.topbar-tools{display:flex; align-items:center; gap:6px; margin-left:8px; flex-wrap:wrap;}
+.tool-btn{
+  height:36px; padding:0 10px; border-radius:var(--radius);
+  background:var(--bg-panel-2); border:1px solid var(--line);
+  color:var(--ink); cursor:pointer; font-size:13px;
+  display:flex; align-items:center; gap:6px; white-space:nowrap;
+}
+.tool-btn:hover{background:#26392e; border-color:var(--copper);}
+.tool-btn .ic{font-size:15px;}
+.tool-btn.active{background:var(--copper); border-color:var(--copper); color:#171008;}
+.tool-btn[disabled]{opacity:.35; cursor:not-allowed;}
+.tool-btn[disabled]:hover{background:var(--bg-panel-2); border-color:var(--line);}
+
+.topbar-spacer{flex:1;}
+.selection-hint{font-size:12px; color:var(--ink-dim); margin-right:6px;}
+
+/* ---------- layout ---------- */
+.app-body{
+  position:absolute; top:var(--topbar-h); left:0; right:0; bottom:0;
+  display:flex;
+}
+.main{
+  width:90%;
+  height:100%;
+  overflow:auto;
+  position:relative;
+  background:
+    radial-gradient(ellipse at 20% -10%, #1a2c22 0%, transparent 60%),
+    var(--bg-deep);
+  padding:18px 22px 60px;
+}
+.sidebar{
+  width:10%;
+  min-width:220px;
+  height:100%;
+  overflow-y:auto;
+  background:var(--bg-panel);
+  border-left:1px solid var(--line);
+  padding:14px 12px 40px;
+}
+
+/* ---------- table / grid header (sticky) ---------- */
+#dataTable{width:100%; border-collapse:collapse;}
+#dataTable thead th{
+  position:sticky; top:0; z-index:20;
+  background:#152119;
+  color:var(--ink-dim);
+  font-weight:600; font-size:11px; letter-spacing:.05em; text-transform:uppercase;
+  text-align:left; padding:8px 10px;
+  border-bottom:1px solid var(--line);
+}
+.grid-toolbar{
+  position:sticky; top:0; z-index:21;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  background:#152119cc; backdrop-filter:blur(4px);
+  padding:10px 4px; margin-bottom:10px;
+  border-bottom:1px solid var(--line);
+}
+.grid-toolbar h2{
+  font-family:var(--font-display); font-weight:400; font-size:19px;
+  color:var(--print-cream); margin:0; margin-right:auto;
+}
+.zoom-controls{display:flex; align-items:center; gap:6px;}
+.zoom-controls button{
+  width:28px;height:28px;border-radius:var(--radius);
+  background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink); cursor:pointer;
+}
+.zoom-controls button:hover{border-color:var(--copper);}
+.zoom-range{width:110px;}
+
+/* ---------- visualiseur image par image ---------- */
+.viewer-wrap{
+  position:relative;
+  border:1px dashed var(--line);
+  border-radius:6px;
+  background:
+    linear-gradient(var(--line) 1px, transparent 1px) 0 0/28px 28px,
+    linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0/28px 28px,
+    #0d1712;
+  height:calc(100vh - var(--topbar-h) - 96px);
+  min-height:360px;
+  overflow:hidden;
+}
+.viewer-scroll{
+  position:absolute; inset:0; overflow:auto;
+}
+.viewer-stage{
+  min-height:100%; min-width:100%;
+  display:flex; align-items:center; justify-content:center;
+  position:relative;
+  cursor:grab;
+}
+.viewer-stage.dragging{cursor:grabbing;}
+.viewer-stage img{
+  display:block;
+  max-width:none;
+  box-shadow:0 12px 34px rgba(0,0,0,.5);
+  border-radius:2px;
+  user-select:none;
+  -webkit-user-drag:none;
+}
+.viewer-fav-mark{
+  position:absolute; top:10px; right:10px; z-index:3;
+  font-size:22px; color:var(--copper); text-shadow:0 2px 6px rgba(0,0,0,.6);
+  display:none;
+}
+.viewer-fav-mark.show{display:block;}
+.nav-btn{
+  position:absolute; top:50%; transform:translateY(-50%);
+  width:46px; height:46px; border-radius:50%;
+  background:rgba(16,27,22,.72); border:1px solid var(--line); color:var(--print-cream);
+  font-size:24px; line-height:1; cursor:pointer; z-index:4;
+  display:flex; align-items:center; justify-content:center;
+  backdrop-filter:blur(3px);
+}
+.nav-btn:hover{background:var(--copper); border-color:var(--copper); color:#1a1208;}
+.nav-btn[disabled]{opacity:.3; cursor:not-allowed;}
+.nav-btn[disabled]:hover{background:rgba(16,27,22,.72); color:var(--print-cream);}
+.nav-left{left:14px;}
+.nav-right{right:14px;}
+.empty-state{
+  position:absolute; inset:0; z-index:2;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:60px 20px; text-align:center; color:var(--ink-dim); font-family:var(--font-display); font-size:18px;
+}
+.empty-state .sub{font-family:var(--font-ui); font-size:13px; margin-top:8px; max-width:360px;}
+
+/* ---------- panneau latéral mobile (drawer) ---------- */
+.sidebar-toggle-btn{display:none;}
+.sidebar-overlay{
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:790;
+  opacity:0; pointer-events:none; transition:opacity .2s ease;
+}
+.sidebar-overlay.show{opacity:1; pointer-events:auto;}
+
+@media (max-width: 760px){
+  .app-body{flex-direction:column;}
+  .main{width:100%;}
+  .topbar-tools .tool-btn span:last-child{display:none;}
+  .topbar-tools .tool-btn{padding:0 9px;}
+  .selection-hint{display:none;}
+  .brand{font-size:18px;}
+  .sidebar-toggle-btn{display:flex;}
+  .sidebar-overlay{display:block;}
+  .sidebar{
+    position:fixed; top:0; bottom:0; right:-88%; width:88%; max-width:340px;
+    z-index:800; transition:right .22s ease; box-shadow:var(--shadow);
+    padding-top:calc(var(--topbar-h) + 14px);
+  }
+  .sidebar.open{right:0;}
+  .nav-btn{width:38px; height:38px; font-size:20px;}
+}
+
+
+/* ---------- sidebar (Recherches) ---------- */
+.sidebar h3{
+  font-family:var(--font-display); font-weight:400; font-size:16px;
+  color:var(--copper-hi); margin:6px 0 12px; letter-spacing:.03em;
+  border-bottom:1px solid var(--line); padding-bottom:8px;
+}
+.search-field{margin-bottom:14px;}
+.search-field label{display:block; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-dim); margin-bottom:5px;}
+.search-field select, .search-field input{
+  width:100%; padding:7px 8px; border-radius:var(--radius);
+  background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink); font-size:13px;
+}
+.sidebar-actions{display:flex; flex-direction:column; gap:8px; margin-top:18px;}
+.btn{
+  padding:9px 12px; border-radius:var(--radius); border:1px solid var(--line);
+  background:var(--gray-btn); color:#fff; cursor:pointer; font-size:13px; text-align:center;
+}
+.btn:hover{filter:brightness(1.12);}
+.btn.copper{background:var(--copper); border-color:var(--copper); color:#1a1208; font-weight:600;}
+.btn.copper:hover{background:var(--copper-hi);}
+.btn.reset{background:transparent; border:1px solid var(--line); color:var(--ink-dim);}
+.result-count{font-size:12px; color:var(--ink-dim); margin-top:10px;}
+
+/* ---------- burger side menu ---------- */
+.burger-panel{
+  position:fixed; top:0; left:-360px; bottom:0; width:340px; z-index:900;
+  background:var(--bg-panel); border-right:1px solid var(--line);
+  box-shadow:var(--shadow);
+  transition:left .22s ease;
+  overflow-y:auto; padding:18px;
+}
+.burger-panel.open{left:0;}
+.burger-overlay{
+  position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:850;
+  opacity:0; pointer-events:none; transition:opacity .2s ease;
+}
+.burger-overlay.show{opacity:1; pointer-events:auto;}
+.burger-panel h2{font-family:var(--font-display); font-weight:400; font-size:20px; color:var(--print-cream); margin:4px 0 18px;}
+.pave{
+  background:var(--bg-panel-2); border:1px solid var(--line); border-radius:6px;
+  padding:14px; margin-bottom:16px;
+}
+.pave h3{margin:0 0 12px; font-family:var(--font-display); font-weight:400; font-size:15px; color:var(--copper-hi);}
+.drive-btn{
+  width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:10px 12px; margin-bottom:8px; border-radius:var(--radius); border:1px solid var(--line);
+  background:var(--gray-btn); color:#fff; cursor:pointer; font-size:13px;
+}
+.drive-btn:last-child{margin-bottom:0;}
+.drive-btn:hover{filter:brightness(1.12);}
+.drive-btn.done{background:var(--ok); border-color:var(--ok);}
+.drive-btn .status{font-size:11px; opacity:.85;}
+.drive-note{font-size:11px; color:var(--ink-dim); margin-top:8px; line-height:1.5;}
+.drive-note a{color:var(--copper-hi);}
+.small-link{background:none; border:none; color:var(--copper-hi); text-decoration:underline; cursor:pointer; font-size:12px; padding:0;}
+
+/* ---------- modals ---------- */
+.modal-overlay{
+  position:fixed; inset:0; background:rgba(6,10,8,.72); z-index:1000;
+  display:none; align-items:center; justify-content:center; padding:20px;
+}
+.modal-overlay.show{display:flex;}
+.modal{
+  background:var(--bg-panel); border:1px solid var(--line); border-radius:8px;
+  width:100%; max-width:560px; max-height:86vh; overflow-y:auto;
+  box-shadow:0 20px 60px rgba(0,0,0,.6);
+}
+.modal.wide{max-width:760px;}
+.modal-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 20px; border-bottom:1px solid var(--line);
+}
+.modal-head h2{font-family:var(--font-display); font-weight:400; font-size:19px; color:var(--print-cream); margin:0;}
+.modal-close{background:none; border:none; color:var(--ink-dim); font-size:20px; cursor:pointer; line-height:1;}
+.modal-close:hover{color:var(--copper-hi);}
+.modal-body{padding:18px 20px;}
+.modal-foot{padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:10px;}
+
+.field-row{margin-bottom:14px;}
+.field-row label{display:block; font-size:12px; color:var(--ink-dim); margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;}
+.field-row input, .field-row select, .field-row textarea{
+  width:100%; padding:8px 10px; border-radius:var(--radius); background:var(--bg-panel-2);
+  border:1px solid var(--line); color:var(--ink); font-size:13.5px;
+}
+.field-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+
+.combo-input{width:100%; padding:10px 12px; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink); font-size:14px;}
+.info-grid{display:grid; grid-template-columns:130px 1fr; row-gap:9px; column-gap:12px; font-size:13.5px;}
+.info-grid dt{color:var(--ink-dim);}
+.info-grid dd{margin:0; color:var(--ink);}
+
+.plusinfo-actions{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+.plusinfo-actions .btn{padding:14px 10px;}
+
+/* ---------- Modifier : aperçu, onglets, suggestions, réglages ---------- */
+.edit-preview-wrap{
+  background:#0d1712; border-bottom:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; padding:14px;
+}
+.edit-preview-wrap img{max-width:100%; border-radius:2px; transition:filter .15s ease, transform .15s ease;}
+.edit-tabs{
+  display:flex; border-bottom:1px solid var(--line); background:var(--bg-panel-2);
+}
+.edit-tab{
+  flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:10px 6px; background:none; border:none; border-bottom:2px solid transparent;
+  color:var(--ink-dim); cursor:pointer; font-size:18px;
+}
+.edit-tab span{font-size:10.5px; letter-spacing:.02em;}
+.edit-tab:hover{color:var(--ink);}
+.edit-tab.active{color:var(--copper-hi); border-bottom-color:var(--copper);}
+.edit-panel{padding:2px;}
+.suggestion-list{display:flex; flex-direction:column; gap:8px;}
+.suggestion-item{
+  display:flex; align-items:center; gap:12px; padding:11px 14px; border-radius:22px;
+  background:var(--bg-panel-2); border:1px solid var(--line); cursor:pointer; color:var(--ink); font-size:13.5px;
+}
+.suggestion-item:hover{border-color:var(--copper);}
+.suggestion-item.active{border-color:var(--copper); background:#2a3d2f; color:var(--copper-hi);}
+.suggestion-item .s-ic{font-size:16px; width:20px; text-align:center;}
+.slider-row{margin-bottom:16px;}
+.slider-row label{display:flex; justify-content:space-between; font-size:12px; color:var(--ink-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:.04em;}
+.slider-row input[type=range]{width:100%;}
+
+/* ---------- Information (façon "Infos" Google Photos) ---------- */
+.info-title-input{
+  width:100%; border:none; border-bottom:1px solid var(--line); background:none;
+  color:var(--print-cream); font-family:var(--font-display); font-size:19px; padding:4px 2px 8px;
+  margin-bottom:14px;
+}
+.info-title-input:focus{border-bottom-color:var(--copper);}
+.info-contact{display:flex; align-items:center; gap:10px; margin-bottom:12px;}
+.info-avatar{
+  width:34px; height:34px; border-radius:50%; background:var(--copper);
+  color:#1a1208; display:flex; align-items:center; justify-content:center;
+  font-family:var(--font-display); font-size:15px; flex-shrink:0;
+}
+.info-divider{border-top:1px solid var(--line); margin:6px 0 14px;}
+.info-row{display:flex; gap:14px; padding:9px 0; align-items:flex-start;}
+.info-ic{width:20px; text-align:center; font-size:15px; color:var(--ink-dim); flex-shrink:0; margin-top:2px;}
+.info-content{flex:1; font-size:13.5px; line-height:1.5;}
+.info-content .main-line{color:var(--ink);}
+.info-content .sub-line{color:var(--ink-dim); font-size:12px;}
+.info-content a{color:var(--copper-hi);}
+.info-pencil{background:none; border:none; color:var(--ink-dim); cursor:pointer; font-size:14px; padding:2px 4px;}
+.info-pencil:hover{color:var(--copper-hi);}
+.info-inline-edit{display:flex; gap:6px; margin-top:4px;}
+.info-inline-edit input{flex:1; padding:5px 8px; font-size:12.5px; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink);}
+.info-map{width:100%; height:150px; border:0; border-radius:6px; margin-top:8px; filter:grayscale(.15) invert(.92) hue-rotate(180deg);}
+
+.album-list{display:flex; flex-direction:column; gap:8px; max-height:260px; overflow-y:auto; margin-bottom:12px;}
+.album-item{display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2); cursor:pointer;}
+.album-item:hover{border-color:var(--copper);}
+.album-item.selected{border-color:var(--copper); background:#2a3d2f;}
+
+/* ---------- diaporama (fullscreen) ---------- */
+.slideshow{
+  position:fixed; inset:0; background:#000; z-index:2000;
+  display:none; align-items:center; justify-content:center;
+}
+.slideshow.show{display:flex;}
+.slideshow img{max-width:92vw; max-height:92vh; object-fit:contain; transition:opacity .35s ease;}
+.slideshow-hint{position:absolute; bottom:18px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em;}
+
+/* toast */
+.toast{
+  position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
+  background:var(--bg-panel-2); border:1px solid var(--copper); color:var(--ink);
+  padding:10px 18px; border-radius:6px; font-size:13px; z-index:3000;
+  opacity:0; pointer-events:none; transition:opacity .25s ease;
+}
+.toast.show{opacity:1;}
+
+.hidden{display:none !important;}
+</style>
+</head>
+<body>
+
+<!-- ============== TOPBAR ============== -->
+<header class="topbar">
+  <button class="burger-btn" id="burgerToggle" title="Menu" aria-label="Menu">☰</button>
+  <div class="brand">📚 Copyract</div>
+
+  <div class="topbar-tools">
+    <button class="tool-btn" id="btnShare" title="Partager"><span class="ic">⇪</span><span>Partager</span></button>
+    <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
+    <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
+    <button class="tool-btn" id="btnInfo" title="Information"><span class="ic">ⓘ</span><span>Information</span></button>
+    <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
+    <button class="tool-btn" id="btnTrash" title="Corbeille"><span class="ic">🗑</span><span>Corbeille</span></button>
+    <button class="tool-btn" id="btnMore" title="Plus d'info"><span class="ic">⋯</span><span>Plus d'info</span></button>
+  </div>
+
+  <div class="topbar-spacer"></div>
+  <span class="selection-hint" id="selHint">Aucune image sélectionnée</span>
+  <button class="burger-btn sidebar-toggle-btn" id="sidebarToggle" title="Recherches" aria-label="Recherches">🔎</button>
+</header>
+
+<!-- ============== BURGER PANEL ============== -->
+<div class="burger-overlay" id="burgerOverlay"></div>
+<nav class="burger-panel" id="burgerPanel">
+  <h2>Menu</h2>
+
+  <div class="pave">
+    <h3>Connexion</h3>
+    <button class="drive-btn" id="btnDriveConnect">
+      <span id="lblDriveConnect">Connecter à Drive</span><span class="status">●</span>
+    </button>
+    <button class="drive-btn" id="btnDriveLoad">
+      <span id="lblDriveLoad">Charger depuis Drive</span><span class="status">●</span>
+    </button>
+    <button class="drive-btn" id="btnDriveSave">
+      <span id="lblDriveSave">Sauver sur Drive</span><span class="status">●</span>
+    </button>
+    <p class="drive-note">
+      La connexion Google Drive nécessite un identifiant client OAuth (Google Cloud Console, API Drive activée).
+      <button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
+    </p>
+  </div>
+
+  <div class="pave">
+    <h3>Photothèque locale</h3>
+    <button class="btn copper" id="btnPickFolder" style="width:100%; margin-bottom:8px;">📁 Choisir un dossier d'images…</button>
+    <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
+  </div>
+
+  <div class="pave">
+    <h3>Sauvegarde CSV</h3>
+    <button class="btn" id="btnExportCsv" style="width:100%; margin-bottom:8px;">Exporter le catalogue (.csv)</button>
+    <button class="btn" id="btnImportCsv" style="width:100%;">Importer un catalogue (.csv)</button>
+    <input type="file" id="csvFileInput" accept=".csv" class="hidden">
+    <p class="drive-note">Le CSV se régénère automatiquement à chaque image consultée ou modifiée.</p>
+  </div>
+</nav>
+
+<!-- ============== APP BODY ============== -->
+<div class="app-body">
+
+  <!-- ---------- MAIN (90%) : visualiseur image par image ---------- -->
+  <main class="main">
+    <table id="dataTable" class="hidden"><thead><tr><th>réservé structure sémantique</th></tr></thead></table>
+
+    <div class="grid-toolbar">
+      <h2 id="gridTitle">Images</h2>
+      <span class="result-count" id="resultCount"></span>
+      <div class="zoom-controls">
+        <button id="zoomOut" title="Diminuer">–</button>
+        <input type="range" id="zoomRange" class="zoom-range" min="30" max="300" value="100">
+        <button id="zoomIn" title="Agrandir">+</button>
+        <button id="zoomReset" title="Réinitialiser la vue">⟲</button>
+      </div>
+    </div>
+
+    <div class="viewer-wrap" id="viewerWrap">
+      <div class="empty-state" id="viewerEmpty">
+        Aucune image à afficher
+        <div class="sub">Ouvrez le menu ☰ puis « Choisir un dossier d'images… » pour commencer, ou modifiez les filtres de recherche.</div>
+      </div>
+      <button class="nav-btn nav-left" id="navPrev" title="Image précédente" aria-label="Image précédente">‹</button>
+      <div class="viewer-scroll" id="viewerScroll">
+        <div class="viewer-stage" id="viewerStage">
+          <div class="viewer-fav-mark" id="viewerFavMark">★</div>
+          <img id="viewerImg" src="" alt="">
+        </div>
+      </div>
+      <button class="nav-btn nav-right" id="navNext" title="Image suivante" aria-label="Image suivante">›</button>
+    </div>
+  </main>
+
+  <!-- ---------- SIDEBAR (Recherches) ---------- -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+  <aside class="sidebar" id="sidebar">
+    <h3>Recherches</h3>
+
+    <div class="search-field">
+      <label for="fPersonnage">Liste par Personnage</label>
+      <select id="fPersonnage"><option value="">— Tous —</option></select>
+    </div>
+    <div class="search-field">
+      <label for="fLieu">Liste par Lieu</label>
+      <select id="fLieu"><option value="">— Tous —</option></select>
+    </div>
+    <div class="search-field">
+      <label for="fSupport">Liste par Support</label>
+      <select id="fSupport"><option value="">— Tous —</option></select>
+    </div>
+    <div class="search-field">
+      <label for="fEtiquette">Mot clé de l'étiquette</label>
+      <input type="text" id="fEtiquette" placeholder="rechercher…">
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn reset" id="btnResetFilters">Réinitialiser les filtres</button>
+      <button class="btn copper" id="btnNewEntry">Nouvelle Entrée</button>
+      <button class="btn" id="btnNewAuteur">Nouvel Auteur</button>
+    </div>
+  </aside>
+</div>
+
+<!-- ============== MODAL: PARTAGER ============== -->
+<div class="modal-overlay" id="modalShare">
+  <div class="modal">
+    <div class="modal-head"><h2>Envoyer dans Google Drive</h2><button class="modal-close" data-close="modalShare">×</button></div>
+    <div class="modal-body">
+      <input class="combo-input" type="text" size="46" role="combobox"
+             aria-owns=":1" aria-controls=":1" aria-description="Aucun destinataire sélectionné" autofocus
+             placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo">
+      <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalShare">Annuler</button>
+      <button class="btn copper" id="btnConfirmShare">Envoyer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: MODIFIER ============== -->
+<div class="modal-overlay" id="modalEdit">
+  <div class="modal wide">
+    <div class="modal-head"><h2>Modifier</h2><button class="modal-close" data-close="modalEdit">×</button></div>
+
+    <div class="edit-preview-wrap">
+      <img id="edPreviewImg" src="" alt="" style="max-height:220px;">
+    </div>
+
+    <div class="edit-tabs" role="tablist">
+      <button class="edit-tab active" data-tab="suggestions" title="Suggestions">✨<span>Suggestions</span></button>
+      <button class="edit-tab" data-tab="recadrer" title="Recadrer / pivoter">⤾<span>Recadrer</span></button>
+      <button class="edit-tab" data-tab="reglages" title="Réglages">🎚<span>Réglages</span></button>
+      <button class="edit-tab" data-tab="details" title="Détails">🛠<span>Détails</span></button>
+    </div>
+
+    <div class="modal-body">
+
+      <!-- Panneau Suggestions -->
+      <div class="edit-panel" data-panel="suggestions">
+        <div class="suggestion-list" id="suggestionList"></div>
+      </div>
+
+      <!-- Panneau Recadrer / pivoter -->
+      <div class="edit-panel hidden" data-panel="recadrer">
+        <div class="sidebar-actions">
+          <button class="btn" id="edRotateLeftBtn">↺ Pivoter à gauche (−45°)</button>
+          <button class="btn" id="edRotateRightBtn">↻ Pivoter à droite (+45°)</button>
+          <button class="btn reset" id="edRotateResetBtn">Réinitialiser la rotation</button>
+        </div>
+      </div>
+
+      <!-- Panneau Réglages -->
+      <div class="edit-panel hidden" data-panel="reglages">
+        <div class="slider-row">
+          <label>Luminosité <span id="valLum">100%</span></label>
+          <input type="range" id="rgLum" min="50" max="150" value="100">
+        </div>
+        <div class="slider-row">
+          <label>Contraste <span id="valCon">100%</span></label>
+          <input type="range" id="rgCon" min="50" max="150" value="100">
+        </div>
+        <div class="slider-row">
+          <label>Saturation <span id="valSat">100%</span></label>
+          <input type="range" id="rgSat" min="0" max="200" value="100">
+        </div>
+        <button class="btn reset" id="edResetFilter" style="margin-top:6px;">Réinitialiser les réglages</button>
+      </div>
+
+      <!-- Panneau Détails -->
+      <div class="edit-panel hidden" data-panel="details">
+        <div class="field-row">
+          <label>Nom du fichier</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="edFileName" disabled style="flex:1;">
+            <button class="btn" id="edRecalcBtn" type="button" title="Relire la date/le lieu/le personnage depuis le nom du fichier">↻ Recalculer</button>
+          </div>
+        </div>
+        <div class="field-grid">
+          <div class="field-row"><label for="edDate">Date cliché</label><input type="date" id="edDate"></div>
+          <div class="field-row"><label for="edSupport">Support</label><input type="text" id="edSupport" placeholder="tirage, négatif, numérique…"></div>
+          <div class="field-row"><label for="edPersonnage">Personnage</label><input type="text" id="edPersonnage"></div>
+          <div class="field-row"><label for="edLieu">Lieu</label><input type="text" id="edLieu"></div>
+          <div class="field-row" style="grid-column:1/-1;"><label for="edEtiquette">Étiquette (mots-clés séparés par une virgule)</label><input type="text" id="edEtiquette"></div>
+          <div class="field-row" style="grid-column:1/-1;"><label for="edAuteur">Auteur</label><input type="text" id="edAuteur" list="auteurList"></div>
+          <div class="field-row"><label for="edOptique">Caméra</label><input type="text" id="edOptique" placeholder="ex. Apple iPhone 14 Pro"></div>
+          <div class="field-row">
+            <label for="edPoids">Taille</label>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <input type="number" id="edPoids" min="0" step="1" style="flex:1;"><span class="sub-line">Ko</span>
+            </div>
+          </div>
+          <div class="field-row" style="grid-column:1/-1;">
+            <label for="edMap">Map</label>
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="edMap" placeholder="https://www.google.com/maps/search/?api=1&query=…" style="flex:1;">
+              <button class="btn" id="edMapOpen" type="button" title="Ouvrir dans Google Maps">🗺 Ouvrir</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <label for="edFavori">Favori</label>
+            <select id="edFavori"><option value="false">Non</option><option value="true">Oui</option></select>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalEdit">Annuler</button>
+      <button class="btn copper" id="btnSaveEdit">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: INFORMATION ============== -->
+<div class="modal-overlay" id="modalInfo">
+  <div class="modal">
+    <div class="modal-head"><h2>ⓘ Infos</h2><button class="modal-close" data-close="modalInfo">×</button></div>
+    <div class="modal-body">
+      <input type="text" class="info-title-input" id="infoTitle" placeholder="Ajouter un titre">
+      <div id="infoContacts"></div>
+      <div class="info-divider"></div>
+      <div class="info-rows" id="infoRows"></div>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close="modalInfo">Fermer</button></div>
+  </div>
+</div>
+
+<!-- ============== MODAL: PLUS D'INFO ============== -->
+<div class="modal-overlay" id="modalMore">
+  <div class="modal">
+    <div class="modal-head"><h2>Plus d'info</h2><button class="modal-close" data-close="modalMore">×</button></div>
+    <div class="modal-body">
+      <div class="plusinfo-actions">
+        <button class="btn" id="actDownload">⬇ Télécharger</button>
+        <button class="btn" id="actSlideshow">▶ Diaporama</button>
+        <button class="btn" id="actRotateLeft">↺ Pivoter à gauche</button>
+        <button class="btn" id="actAddAlbum">＋ Ajouter à un Album</button>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close="modalMore">Fermer</button></div>
+  </div>
+</div>
+
+<!-- ============== MODAL: ALBUM ============== -->
+<div class="modal-overlay" id="modalAlbum">
+  <div class="modal">
+    <div class="modal-head"><h2>Ajouter à un Album</h2><button class="modal-close" data-close="modalAlbum">×</button></div>
+    <div class="modal-body">
+      <div class="album-list" id="albumList"></div>
+      <div class="field-row">
+        <label for="newAlbumName">Créer un nouvel album</label>
+        <input type="text" id="newAlbumName" placeholder="Nom de l'album">
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalAlbum">Annuler</button>
+      <button class="btn copper" id="btnCreateAlbum">Créer et ajouter</button>
+      <button class="btn copper" id="btnConfirmAlbum">Ajouter</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: NOUVELLE ENTREE ============== -->
+<div class="modal-overlay" id="modalNewEntry">
+  <div class="modal wide">
+    <div class="modal-head"><h2>Nouvelle Entrée</h2><button class="modal-close" data-close="modalNewEntry">×</button></div>
+    <div class="modal-body">
+      <div class="field-row">
+        <label for="neFile">Image</label>
+        <input type="file" id="neFile" accept="image/*">
+      </div>
+      <div class="field-grid">
+        <div class="field-row"><label for="neDate">Date cliché</label><input type="date" id="neDate"></div>
+        <div class="field-row"><label for="neSupport">Support</label><input type="text" id="neSupport" placeholder="tirage, négatif, numérique…"></div>
+        <div class="field-row"><label for="nePersonnage">Personnage</label><input type="text" id="nePersonnage"></div>
+        <div class="field-row"><label for="neLieu">Lieu</label><input type="text" id="neLieu"></div>
+        <div class="field-row" style="grid-column:1/-1;"><label for="neEtiquette">Étiquette (mots-clés séparés par une virgule)</label><input type="text" id="neEtiquette"></div>
+        <div class="field-row" style="grid-column:1/-1;"><label for="neAuteur">Auteur</label><input type="text" id="neAuteur" list="auteurList"><datalist id="auteurList"></datalist></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalNewEntry">Annuler</button>
+      <button class="btn copper" id="btnSaveNewEntry">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: NOUVEL AUTEUR ============== -->
+<div class="modal-overlay" id="modalNewAuteur">
+  <div class="modal">
+    <div class="modal-head"><h2>Nouvel Auteur</h2><button class="modal-close" data-close="modalNewAuteur">×</button></div>
+    <div class="modal-body">
+      <div class="field-row"><label for="naName">Nom de l'auteur</label><input type="text" id="naName" placeholder="Nom / pseudonyme"></div>
+      <div class="field-row"><label for="naNote">Note (facultatif)</label><textarea id="naNote" rows="3"></textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalNewAuteur">Annuler</button>
+      <button class="btn copper" id="btnSaveAuteur">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== DIAPORAMA ============== -->
+<div class="slideshow" id="slideshow">
+  <img id="slideshowImg" src="" alt="">
+  <div class="slideshow-hint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ==================================================================
+   IMAGO — cœur applicatif (100% client, aucune dépendance serveur)
+   ================================================================== */
+
+/* ---------------------------------------------------------------
+   0. Mini-wrapper IndexedDB (promesses) — pas de bibliothèque externe
+   --------------------------------------------------------------- */
+const DB_NAME = "ImagoDB";
+const DB_VERSION = 1;
+let dbPromise = null;
+
+function openDB(){
+  if(dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject)=>{
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e)=>{
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains("photos")){
+        const s = db.createObjectStore("photos", {keyPath:"id"});
+        s.createIndex("dateAchat", "dateAchat", {unique:false});
+      }
+      if(!db.objectStoreNames.contains("albums")) db.createObjectStore("albums", {keyPath:"id"});
+      if(!db.objectStoreNames.contains("auteurs")) db.createObjectStore("auteurs", {keyPath:"id"});
+      if(!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", {keyPath:"key"});
+    };
+    req.onsuccess = (e)=> resolve(e.target.result);
+    req.onerror = (e)=> reject(e.target.error);
+  });
+  return dbPromise;
+}
+async function idbAll(store){
+  const db = await openDB();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = ()=> res(req.result || []);
+    req.onerror = ()=> rej(req.error);
+  });
+}
+async function idbPut(store, value){
+  const db = await openDB();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).put(value);
+    tx.oncomplete = ()=> res(value);
+    tx.onerror = ()=> rej(tx.error);
+  });
+}
+async function idbDelete(store, key){
+  const db = await openDB();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).delete(key);
+    tx.oncomplete = ()=> res(true);
+    tx.onerror = ()=> rej(tx.error);
+  });
+}
+async function idbGetMeta(key, def){
+  const rows = await idbAll("meta");
+  const row = rows.find(r=>r.key===key);
+  return row ? row.value : def;
+}
+async function idbSetMeta(key, value){ return idbPut("meta", {key, value}); }
+
+/* ---------------------------------------------------------------
+   1. État applicatif
+   --------------------------------------------------------------- */
+const State = {
+  photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, corbeille, rotation, albums:[]}
+  albums: [],         // {id, name}
+  auteurs: [],         // {id, name, note}
+  filters: {personnage:"", lieu:"", support:"", etiquette:""},
+  selectedId: null,
+  viewIndex: 0,
+  view: {scale:1},
+  drive: {clientId: localStorage.getItem("imago_drive_client_id")||"", token:null, tokenClient:null, fileId: localStorage.getItem("imago_drive_file_id")||""},
+  slideshowMode: "loupe", // "loupe" | "diaporama"
+  slideshowList: [],
+  slideshowIndex: 0,
+  slideshowTimer: null
+};
+
+function uid(prefix="id"){ return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+
+/* ---------------------------------------------------------------
+   2. Toast
+   --------------------------------------------------------------- */
+let toastTimer=null;
+function toast(msg){
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=> el.classList.remove("show"), 2600);
+}
+
+/* ---------------------------------------------------------------
+   3. Chargement initial
+   --------------------------------------------------------------- */
+async function loadAll(){
+  State.photos = await idbAll("photos");
+  State.albums = await idbAll("albums");
+  State.auteurs = await idbAll("auteurs");
+  populateFilterOptions();
+  populateAuteurDatalist();
+  renderGrid();
+  const folderName = await idbGetMeta("folderName", "");
+  if(folderName){
+    document.getElementById("folderStatus").textContent =
+      `Dernier dossier : "${folderName}" — ${State.photos.length} image(s) en catalogue.`;
+  }
+  if(State.drive.clientId){
+    document.getElementById("folderStatus").textContent += "";
+  }
+}
+
+/* ---------------------------------------------------------------
+   4. Grille photo : rendu, tri, filtres
+   --------------------------------------------------------------- */
+function activePhotos(){
+  return State.photos.filter(p=>{
+    if(p.corbeille) return false;
+    const f = State.filters;
+    if(f.personnage && p.personnage !== f.personnage) return false;
+    if(f.lieu && p.lieu !== f.lieu) return false;
+    if(f.support && p.support !== f.support) return false;
+    if(f.etiquette){
+      const kw = f.etiquette.toLowerCase();
+      if(!(p.etiquette||"").toLowerCase().includes(kw)) return false;
+    }
+    return true;
+  }).sort((a,b)=> (b.dateAchat||"").localeCompare(a.dateAchat||""));
+}
+
+function renderGrid(){
+  const list = activePhotos();
+  document.getElementById("resultCount").textContent = list.length
+    ? `Image ${State.viewIndex+1} sur ${list.length}`
+    : "0 image";
+  const empty = document.getElementById("viewerEmpty");
+  const scroll = document.getElementById("viewerScroll");
+  const navPrev = document.getElementById("navPrev");
+  const navNext = document.getElementById("navNext");
+
+  if(list.length===0){
+    empty.style.display = "flex";
+    scroll.style.visibility = "hidden";
+    navPrev.style.visibility = "hidden";
+    navNext.style.visibility = "hidden";
+    State.selectedId = null;
+    updateToolbarState();
+    return;
+  }
+  empty.style.display = "none";
+  scroll.style.visibility = "visible";
+  const multi = list.length > 1;
+  navPrev.style.visibility = multi ? "visible" : "hidden";
+  navNext.style.visibility = multi ? "visible" : "hidden";
+
+  // conserver la même image si elle est toujours dans la liste filtrée,
+  // sinon rester sur le même index (borné), sinon revenir à la première.
+  let idx = list.findIndex(p=>p.id===State.selectedId);
+  if(idx === -1) idx = Math.min(State.viewIndex||0, list.length-1);
+  State.viewIndex = idx;
+  const p = list[idx];
+  State.selectedId = p.id;
+  document.getElementById("resultCount").textContent = `Image ${idx+1} sur ${list.length}`;
+
+  const img = document.getElementById("viewerImg");
+  img.src = p.dataUrl;
+  img.alt = p.fileName || "";
+  img.dataset.rotation = p.rotation || 0;
+  img.style.filter = p.filterCss || "none";
+  document.getElementById("viewerFavMark").classList.toggle("show", !!p.favori);
+  document.getElementById("gridTitle").textContent = p.fileName || "Image";
+
+  applyViewerZoom();
+  updateToolbarState();
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function getSelected(){ return State.photos.find(p=>p.id===State.selectedId) || null; }
+
+function updateToolbarState(){
+  const has = !!getSelected();
+  ["btnShare","btnEdit","btnZoomToggle","btnInfo","btnFav","btnTrash","btnMore"].forEach(id=>{
+    document.getElementById(id).disabled = !has;
+  });
+  document.getElementById("selHint").textContent = has ? `Sélection : ${getSelected().fileName}` : "Aucune image sélectionnée";
+  const favBtn = document.getElementById("btnFav");
+  if(has) favBtn.classList.toggle("active", !!getSelected().favori);
+  else favBtn.classList.remove("active");
+}
+
+/* ---------------------------------------------------------------
+   5. Filtres (Recherches)
+   --------------------------------------------------------------- */
+function uniqueValues(field){
+  return [...new Set(State.photos.filter(p=>!p.corbeille).map(p=>p[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+}
+function populateFilterOptions(){
+  fillSelect("fPersonnage", uniqueValues("personnage"), State.filters.personnage);
+  fillSelect("fLieu", uniqueValues("lieu"), State.filters.lieu);
+  fillSelect("fSupport", uniqueValues("support"), State.filters.support);
+}
+function fillSelect(id, values, current){
+  const sel = document.getElementById(id);
+  sel.innerHTML = `<option value="">— Tous —</option>` + values.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+  sel.value = current || "";
+}
+function populateAuteurDatalist(){
+  const dl = document.getElementById("auteurList");
+  dl.innerHTML = State.auteurs.map(a=>`<option value="${escapeHtml(a.name)}">`).join("");
+}
+
+document.getElementById("fPersonnage").addEventListener("change", e=>{State.filters.personnage=e.target.value; renderGrid();});
+document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; renderGrid();});
+document.getElementById("fSupport").addEventListener("change", e=>{State.filters.support=e.target.value; renderGrid();});
+document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.etiquette=e.target.value; renderGrid();});
+document.getElementById("btnResetFilters").addEventListener("click", ()=>{
+  State.filters = {personnage:"", lieu:"", support:"", etiquette:""};
+  document.getElementById("fPersonnage").value="";
+  document.getElementById("fLieu").value="";
+  document.getElementById("fSupport").value="";
+  document.getElementById("fEtiquette").value="";
+  renderGrid();
+});
+
+/* ---------------------------------------------------------------
+   6. Burger menu
+   --------------------------------------------------------------- */
+const burgerPanel = document.getElementById("burgerPanel");
+const burgerOverlay = document.getElementById("burgerOverlay");
+function toggleBurger(open){
+  const willOpen = (open !== undefined) ? open : !burgerPanel.classList.contains("open");
+  burgerPanel.classList.toggle("open", willOpen);
+  burgerOverlay.classList.toggle("show", willOpen);
+}
+document.getElementById("burgerToggle").addEventListener("click", ()=> toggleBurger());
+burgerOverlay.addEventListener("click", ()=> toggleBurger(false));
+
+/* ---------------------------------------------------------------
+   7. Chargement d'un dossier local d'images (input webkitdirectory)
+   --------------------------------------------------------------- */
+const folderInput = document.createElement("input");
+folderInput.type = "file";
+folderInput.webkitdirectory = true;
+folderInput.multiple = true;
+folderInput.className = "hidden";
+document.body.appendChild(folderInput);
+
+document.getElementById("btnPickFolder").addEventListener("click", ()=> folderInput.click());
+
+folderInput.addEventListener("change", async ()=>{
+  const files = [...folderInput.files].filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
+  if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
+  const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier";
+  document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
+  let added = 0, skipped = 0;
+  for(const file of files){
+    const already = State.photos.find(p=>p.fileName===file.name);
+    if(already){ skipped++; continue; }
+    const dataUrl = await readFileAsDataURL(file);
+    const dims = await getImageDimensions(dataUrl);
+    const exif = await readBasicExif(file);
+    const meta = parseFileNameMeta(file.name);
+    const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
+    const rec = {
+      id: uid("ph"),
+      fileName: file.name,
+      titre: "",
+      dataUrl,
+      dateAchat,
+      personnage: meta.personnage, lieu: meta.lieu, support:"numérique", etiquette:"", auteur:"Philippe",
+      favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
+      sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+      optique: exifCameraName(exif), poids: Math.round(file.size/1024), map: mapUrlFromLieu(meta.lieu)
+    };
+    await idbPut("photos", rec);
+    State.photos.push(rec);
+    added++;
+  }
+  await idbSetMeta("folderName", folderName);
+  document.getElementById("folderStatus").textContent = `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue.`;
+  populateFilterOptions();
+  renderGrid();
+  toast(`${added} image(s) importée(s) — date/lieu/personnage proposés depuis le nom de fichier, à vérifier.`);
+  autoBuildCsv();
+});
+
+function exifCameraName(exif){
+  if(!exif) return "";
+  return [exif.make, exif.model].filter(Boolean).join(" ").trim();
+}
+function mapUrlFromLieu(lieu){
+  if(!lieu) return "";
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(lieu);
+}
+
+function readFileAsDataURL(file){
+  return new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+function getImageDimensions(dataUrl){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload = ()=> resolve({width:img.naturalWidth, height:img.naturalHeight});
+    img.onerror = ()=> resolve({width:0, height:0});
+    img.src = dataUrl;
+  });
+}
+
+/* -----------------------------------------------------------------
+   Analyse heuristique du nom de fichier : DATE_LIEU_PERSONNAGE(S).ext
+   - Date : préfixe en tête, dans l'un des deux formats usuels :
+       • JJ-MM-AAAA  (jour-mois-année,  ex. 26-07-2026)
+       • AAAA-MM-JJ  (année-mois-jour,  ex. 2026-07-26)
+     Séparateurs -, _ ou . acceptés. Le format est détecté
+     automatiquement selon que le 1er groupe fait 2 ou 4 chiffres.
+   - Lieu : le ou les premiers mots restants (un article français en
+     tête — La/Le/Les/Saint/Sainte/St/Mont/Val… — rattache le mot
+     suivant, pour couvrir des lieux composés comme "La Frasse").
+   - Personnage(s) : tout ce qui suit, recopié tel quel.
+   Ceci est une règle déterministe (pas un appel à une IA en ligne) :
+   elle donne une PROPOSITION, toujours modifiable à la main. Pour une
+   vraie reconnaissance sémantique, voir « Analyser via l'IA » dans le
+   menu ☰ (nécessite une clé API Claude et une connexion internet).
+   ----------------------------------------------------------------- */
+const LIEU_ARTICLES = ["la","le","les","l","saint","sainte","st","ste","mont","val","les-","d","du","de"];
+function parseFileNameMeta(fileName){
+  const noExt = (fileName||"").replace(/\.[a-zA-Z0-9]{2,5}$/, "");
+  let rest = noExt;
+  let dateAchat = null;
+
+  // Format AAAA-MM-JJ (année en tête) — priorité car sans ambiguïté (4 chiffres = année)
+  let dateMatch = rest.match(/^(\d{4})[-_.](\d{2})[-_.](\d{2})(?=[-_. ]|$)/);
+  if(dateMatch){
+    const [full, yyyy, mm, dd] = dateMatch;
+    if(Number(mm)>=1 && Number(mm)<=12 && Number(dd)>=1 && Number(dd)<=31){
+      dateAchat = `${yyyy}-${mm}-${dd}`;
+      rest = rest.slice(full.length);
+    } else dateMatch = null;
+  }
+  // Sinon, format JJ-MM-AAAA (jour en tête)
+  if(!dateAchat){
+    dateMatch = rest.match(/^(\d{2})[-_.](\d{2})[-_.](\d{4})(?=[-_. ]|$)/);
+    if(dateMatch){
+      const [full, dd, mm, yyyy] = dateMatch;
+      if(Number(mm)>=1 && Number(mm)<=12 && Number(dd)>=1 && Number(dd)<=31){
+        dateAchat = `${yyyy}-${mm}-${dd}`;
+        rest = rest.slice(full.length);
+      }
+    }
+  }
+
+  rest = rest.replace(/^[-_ .]+/, "");
+  let tokens = rest.split(/[-_ .]+/).filter(t=> t && t!=="&");
+  // ignore un éventuel compteur numérique isolé en tête (ex: "_1_") qui n'est ni un lieu ni un personnage
+  if(tokens.length > 1 && /^\d+$/.test(tokens[0])) tokens = tokens.slice(1);
+  let lieu = "", personnage = "";
+  if(tokens.length >= 1){
+    let lieuTokenCount = 1;
+    if(tokens.length > 1 && LIEU_ARTICLES.includes(tokens[0].toLowerCase())) lieuTokenCount = 2;
+    lieu = tokens.slice(0, lieuTokenCount).join(" ");
+    personnage = tokens.slice(lieuTokenCount).join(", ");
+  }
+  return {dateAchat, lieu, personnage};
+}
+/* Lecteur EXIF minimal (JPEG uniquement) — Make, Model, FNumber,
+   ExposureTime, FocalLength, ISO. Renvoie null si absent/illisible. */
+async function readBasicExif(file){
+  try{
+    if(!/\.jpe?g$/i.test(file.name)) return null;
+    const buf = await file.slice(0, 131072).arrayBuffer();
+    const view = new DataView(buf);
+    if(view.getUint16(0) !== 0xFFD8) return null;
+    let offset = 2;
+    while(offset < view.byteLength){
+      const marker = view.getUint16(offset); offset += 2;
+      if(marker === 0xFFE1){
+        const size = view.getUint16(offset); const segStart = offset+2;
+        if(view.getUint32(segStart) === 0x45786966){ // "Exif"
+          const tiffStart = segStart + 6;
+          const little = view.getUint16(tiffStart) === 0x4949;
+          const get16 = (o)=> view.getUint16(o, little);
+          const get32 = (o)=> view.getUint32(o, little);
+          const firstIFD = tiffStart + get32(tiffStart+4);
+          const exif = {};
+          function readIFD(ifdOffset, wantExifPointer){
+            const n = get16(ifdOffset);
+            let exifPointer = null;
+            for(let i=0;i<n;i++){
+              const entry = ifdOffset + 2 + i*12;
+              const tag = get16(entry);
+              const type = get16(entry+2);
+              const count = get32(entry+4);
+              const valOffset = entry+8;
+              const readRational = ()=>{
+                const ptr = tiffStart + get32(valOffset);
+                return get32(ptr) / (get32(ptr+4)||1);
+              };
+              if(tag===0x010F && type===2) exif.make = readAscii(view, tiffStart+get32(valOffset), count);
+              if(tag===0x0110 && type===2) exif.model = readAscii(view, tiffStart+get32(valOffset), count);
+              if(tag===0x8769) exifPointer = tiffStart + get32(valOffset);
+              if(tag===0x829D) exif.fNumber = readRational();
+              if(tag===0x829A) exif.exposureTime = readRational();
+              if(tag===0x920A) exif.focalLength = readRational();
+              if(tag===0x8827) exif.iso = type===3 ? get16(valOffset) : get32(valOffset);
+            }
+            if(wantExifPointer && exifPointer) readIFD(exifPointer, false);
+          }
+          readIFD(firstIFD, true);
+          return Object.keys(exif).length ? exif : null;
+        }
+      }
+      if((marker & 0xFF00) !== 0xFF00) break;
+      if(marker===0xFFD8 || marker===0xFFD9) continue;
+      offset += view.getUint16(offset);
+    }
+  }catch(e){ /* fichier non-EXIF ou tronqué : on ignore silencieusement */ }
+  return null;
+}
+function readAscii(view, offset, count){
+  let s=""; for(let i=0;i<count-1;i++) s+= String.fromCharCode(view.getUint8(offset+i));
+  return s.trim();
+}
+
+/* ---------------------------------------------------------------
+   8. Visualiseur : zoom / déplacement (ascenseur) / navigation < >
+   --------------------------------------------------------------- */
+const viewerScroll = document.getElementById("viewerScroll");
+const viewerStage = document.getElementById("viewerStage");
+const viewerImg = document.getElementById("viewerImg");
+
+function applyViewerZoom(){
+  const p = getSelected();
+  if(!p) return;
+  const cw = viewerScroll.clientWidth, ch = viewerScroll.clientHeight;
+  const iw = p.width || cw, ih = p.height || ch;
+  const baseFit = Math.min((cw*0.94)/iw, (ch*0.94)/ih) || 1;
+  const displayW = iw * baseFit * State.view.scale;
+  viewerImg.style.width = Math.round(displayW) + "px";
+  viewerImg.style.height = "auto";
+  viewerImg.style.transform = `rotate(${p.rotation||0}deg)`;
+  document.getElementById("zoomRange").value = Math.round(State.view.scale*100);
+}
+function setZoom(scale){
+  State.view.scale = Math.min(3, Math.max(0.3, scale));
+  applyViewerZoom();
+}
+document.getElementById("zoomIn").addEventListener("click", ()=> setZoom(State.view.scale + 0.15));
+document.getElementById("zoomOut").addEventListener("click", ()=> setZoom(State.view.scale - 0.15));
+document.getElementById("zoomReset").addEventListener("click", ()=>{ State.view.scale = 1; applyViewerZoom(); viewerScroll.scrollTo(0,0); });
+document.getElementById("zoomRange").addEventListener("input", e=> setZoom(e.target.value/100));
+
+viewerScroll.addEventListener("wheel", (e)=>{
+  if(!e.ctrlKey && !e.metaKey) return; // ctrl+molette = zoom, molette seule = défilement natif (ascenseur)
+  e.preventDefault();
+  setZoom(State.view.scale + (e.deltaY<0 ? 0.1 : -0.1));
+}, {passive:false});
+
+// Glisser pour déplacer l'image agrandie (utilise l'ascenseur natif du conteneur)
+let dragging=false, dragStart={x:0,y:0}, scrollStart={x:0,y:0};
+viewerStage.addEventListener("mousedown", (e)=>{
+  dragging = true;
+  viewerStage.classList.add("dragging");
+  dragStart = {x:e.clientX, y:e.clientY};
+  scrollStart = {x:viewerScroll.scrollLeft, y:viewerScroll.scrollTop};
+});
+window.addEventListener("mousemove", (e)=>{
+  if(!dragging) return;
+  viewerScroll.scrollLeft = scrollStart.x - (e.clientX - dragStart.x);
+  viewerScroll.scrollTop = scrollStart.y - (e.clientY - dragStart.y);
+});
+window.addEventListener("mouseup", ()=>{ dragging=false; viewerStage.classList.remove("dragging"); });
+
+viewerImg.addEventListener("dblclick", ()=>{ if(getSelected()) openLoupe(State.selectedId); });
+
+function goToImage(step){
+  const list = activePhotos();
+  if(list.length===0) return;
+  State.viewIndex = ((State.viewIndex||0) + step + list.length) % list.length;
+  State.selectedId = list[State.viewIndex].id;
+  State.view.scale = 1;
+  renderGrid();
+  viewerScroll.scrollTo(0,0);
+}
+document.getElementById("navPrev").addEventListener("click", ()=> goToImage(-1));
+document.getElementById("navNext").addEventListener("click", ()=> goToImage(1));
+
+// Balayage tactile (swipe) pour naviguer entre les images — mode Android/mobile.
+// Désactivé quand l'image est zoomée : on laisse alors l'ascenseur tactile natif
+// déplacer la vue à l'intérieur de l'image plutôt que de changer de photo.
+let touchStartX=0, touchStartY=0, touchStartTime=0, touchTracking=false;
+viewerScroll.addEventListener("touchstart", (e)=>{
+  if(e.touches.length!==1) return;
+  touchTracking = State.view.scale <= 1.05;
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+  touchStartTime = Date.now();
+}, {passive:true});
+viewerScroll.addEventListener("touchend", (e)=>{
+  if(!touchTracking) return;
+  touchTracking = false;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStartX;
+  const dy = t.clientY - touchStartY;
+  const dt = Date.now() - touchStartTime;
+  const HORIZ_THRESHOLD = 55;
+  if(dt < 700 && Math.abs(dx) > HORIZ_THRESHOLD && Math.abs(dx) > Math.abs(dy)*1.4){
+    goToImage(dx < 0 ? 1 : -1);
+  }
+}, {passive:true});
+
+window.addEventListener("resize", ()=> applyViewerZoom());
+
+/* ---------------------------------------------------------------
+   8bis. Recherches — panneau mobile (drawer)
+   --------------------------------------------------------------- */
+const sidebarEl = document.getElementById("sidebar");
+const sidebarOverlay = document.getElementById("sidebarOverlay");
+function toggleSidebarDrawer(open){
+  const willOpen = (open !== undefined) ? open : !sidebarEl.classList.contains("open");
+  sidebarEl.classList.toggle("open", willOpen);
+  sidebarOverlay.classList.toggle("show", willOpen);
+}
+document.getElementById("sidebarToggle").addEventListener("click", ()=> toggleSidebarDrawer());
+sidebarOverlay.addEventListener("click", ()=> toggleSidebarDrawer(false));
+
+/* ---------------------------------------------------------------
+   9. Modales : ouverture / fermeture génériques
+   --------------------------------------------------------------- */
+function openModal(id){ document.getElementById(id).classList.add("show"); }
+function closeModal(id){ document.getElementById(id).classList.remove("show"); }
+document.querySelectorAll("[data-close]").forEach(btn=>{
+  btn.addEventListener("click", ()=> closeModal(btn.dataset.close));
+});
+document.querySelectorAll(".modal-overlay").forEach(ov=>{
+  ov.addEventListener("click", (e)=>{ if(e.target===ov) ov.classList.remove("show"); });
+});
+
+/* ---------------------------------------------------------------
+   10. Boutons de la barre supérieure
+   --------------------------------------------------------------- */
+document.getElementById("btnShare").addEventListener("click", ()=>{
+  if(!getSelected()) return;
+  document.getElementById("shareChips").innerHTML = "";
+  document.getElementById("shareCombo").value = "";
+  openModal("modalShare");
+});
+document.getElementById("shareCombo").addEventListener("keydown", (e)=>{
+  if(e.key==="Enter" && e.target.value.trim()){
+    const chips = document.getElementById("shareChips");
+    const chip = document.createElement("span");
+    chip.className = "btn"; chip.style.padding="4px 10px"; chip.style.fontSize="12px";
+    chip.textContent = e.target.value.trim();
+    chips.appendChild(chip);
+    e.target.value = "";
+  }
+});
+document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
+  const p = getSelected();
+  const names = [...document.getElementById("shareChips").children].map(c=>c.textContent);
+  if(p && names.length){
+    p.sharedWith = [...new Set([...(p.sharedWith||[]), ...names])];
+    await idbPut("photos", p);
+  }
+  closeModal("modalShare");
+  toast("Partage préparé (destinataires enregistrés localement — l'envoi réel nécessite la connexion Drive).");
+});
+
+/* -- Suggestions de retouche (préréglages CSS filter, façon Google Photos) -- */
+const FILTER_PRESETS = [
+  {key:"amelioration", icon:"✨", label:"Amélioration", css:"contrast(1.08) saturate(1.08) brightness(1.03)"},
+  {key:"dynamique",    icon:"⛰",  label:"Dynamique",    css:"contrast(1.25) saturate(1.15)"},
+  {key:"portrait",     icon:"◐",  label:"Portrait",     css:"contrast(1.05) saturate(0.95) brightness(1.02)"},
+  {key:"colorpop",     icon:"◐",  label:"Color pop",    css:"saturate(1.6) contrast(1.1)"},
+  {key:"vivid",        icon:"☀",  label:"Vivid",        css:"saturate(1.4) contrast(1.15) brightness(1.05)"},
+  {key:"luminous",     icon:"☀",  label:"Luminous",     css:"brightness(1.15) contrast(1.05)"},
+  {key:"radiant",      icon:"☀",  label:"Radiant",      css:"brightness(1.1) saturate(1.25) contrast(1.05)"},
+  {key:"ember",        icon:"☀",  label:"Ember",        css:"sepia(0.25) saturate(1.3) hue-rotate(-8deg) brightness(1.02)"},
+  {key:"airy",         icon:"☀",  label:"Airy",         css:"brightness(1.12) saturate(0.85) contrast(0.95)"}
+];
+let editDraft = null; // copie de travail de la photo en cours d'édition
+
+function editPreviewTransformCss(){
+  return `rotate(${editDraft.rotation||0}deg)`;
+}
+function refreshEditPreview(){
+  const img = document.getElementById("edPreviewImg");
+  img.style.filter = editDraft.filterCss || "none";
+  img.style.transform = editPreviewTransformCss();
+}
+function renderSuggestionList(){
+  const list = document.getElementById("suggestionList");
+  list.innerHTML = "";
+  FILTER_PRESETS.forEach(preset=>{
+    const item = document.createElement("div");
+    item.className = "suggestion-item" + (editDraft.filterKey===preset.key ? " active":"");
+    item.innerHTML = `<span class="s-ic">${preset.icon}</span><span>${preset.label}</span>`;
+    item.addEventListener("click", ()=>{
+      if(editDraft.filterKey===preset.key){
+        editDraft.filterKey = null; editDraft.filterCss = "";
+      }else{
+        editDraft.filterKey = preset.key; editDraft.filterCss = preset.css;
+      }
+      syncSlidersFromDraft();
+      refreshEditPreview();
+      renderSuggestionList();
+    });
+    list.appendChild(item);
+  });
+}
+function syncSlidersFromDraft(){
+  document.getElementById("rgLum").value = 100;
+  document.getElementById("rgCon").value = 100;
+  document.getElementById("rgSat").value = 100;
+  document.getElementById("valLum").textContent = "100%";
+  document.getElementById("valCon").textContent = "100%";
+  document.getElementById("valSat").textContent = "100%";
+}
+function applySlidersToDraft(){
+  const lum = document.getElementById("rgLum").value;
+  const con = document.getElementById("rgCon").value;
+  const sat = document.getElementById("rgSat").value;
+  document.getElementById("valLum").textContent = lum + "%";
+  document.getElementById("valCon").textContent = con + "%";
+  document.getElementById("valSat").textContent = sat + "%";
+  editDraft.filterKey = null; // réglage manuel = plus de préréglage actif
+  editDraft.filterCss = `brightness(${lum/100}) contrast(${con/100}) saturate(${sat/100})`;
+  refreshEditPreview();
+  renderSuggestionList();
+}
+["rgLum","rgCon","rgSat"].forEach(id=> document.getElementById(id).addEventListener("input", applySlidersToDraft));
+document.getElementById("edResetFilter").addEventListener("click", ()=>{
+  editDraft.filterKey = null; editDraft.filterCss = "";
+  syncSlidersFromDraft(); refreshEditPreview(); renderSuggestionList();
+});
+
+document.querySelectorAll(".edit-tab").forEach(tab=>{
+  tab.addEventListener("click", ()=>{
+    document.querySelectorAll(".edit-tab").forEach(t=>t.classList.remove("active"));
+    document.querySelectorAll(".edit-panel").forEach(p=>p.classList.add("hidden"));
+    tab.classList.add("active");
+    document.querySelector(`.edit-panel[data-panel="${tab.dataset.tab}"]`).classList.remove("hidden");
+  });
+});
+
+document.getElementById("edRotateLeftBtn").addEventListener("click", ()=>{
+  editDraft.rotation = ((editDraft.rotation||0) - 45) % 360; refreshEditPreview();
+});
+document.getElementById("edRotateRightBtn").addEventListener("click", ()=>{
+  editDraft.rotation = ((editDraft.rotation||0) + 45) % 360; refreshEditPreview();
+});
+document.getElementById("edRotateResetBtn").addEventListener("click", ()=>{
+  editDraft.rotation = 0; refreshEditPreview();
+});
+
+document.getElementById("btnEdit").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  editDraft = Object.assign({}, p); // copie de travail — rien n'est écrit tant que "Enregistrer" n'est pas cliqué
+  document.getElementById("edPreviewImg").src = p.dataUrl;
+  document.getElementById("edFileName").value = p.fileName || "";
+  document.getElementById("edDate").value = p.dateAchat || "";
+  document.getElementById("edSupport").value = p.support || "";
+  document.getElementById("edPersonnage").value = p.personnage || "";
+  document.getElementById("edLieu").value = p.lieu || "";
+  document.getElementById("edEtiquette").value = p.etiquette || "";
+  document.getElementById("edAuteur").value = p.auteur || "Philippe";
+  document.getElementById("edOptique").value = p.optique || "";
+  document.getElementById("edPoids").value = p.poids || (p.sizeBytes ? Math.round(p.sizeBytes/1024) : "");
+  document.getElementById("edMap").value = p.map || mapUrlFromLieu(p.lieu);
+  document.getElementById("edFavori").value = p.favori ? "true" : "false";
+  syncSlidersFromDraft();
+  refreshEditPreview();
+  renderSuggestionList();
+  populateAuteurDatalist();
+  // revenir à l'onglet Suggestions à chaque ouverture
+  document.querySelectorAll(".edit-tab").forEach(t=>t.classList.toggle("active", t.dataset.tab==="suggestions"));
+  document.querySelectorAll(".edit-panel").forEach(pnl=> pnl.classList.toggle("hidden", pnl.dataset.panel!=="suggestions"));
+  openModal("modalEdit");
+});
+document.getElementById("edRecalcBtn").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  const meta = parseFileNameMeta(p.fileName);
+  let changed = [];
+  if(meta.dateAchat){ document.getElementById("edDate").value = meta.dateAchat; changed.push("date"); }
+  if(meta.lieu){ document.getElementById("edLieu").value = meta.lieu; changed.push("lieu"); }
+  if(meta.personnage){ document.getElementById("edPersonnage").value = meta.personnage; changed.push("personnage"); }
+  const mapEl = document.getElementById("edMap");
+  if(meta.lieu && (!mapEl.value || mapEl.value === mapUrlFromLieu(p.lieu))) mapEl.value = mapUrlFromLieu(meta.lieu);
+  toast(changed.length ? `Relu depuis le nom du fichier : ${changed.join(", ")}. Vérifiez avant d'enregistrer.` : "Aucune information reconnaissable dans ce nom de fichier.");
+});
+document.getElementById("edMapOpen").addEventListener("click", ()=>{
+  const url = document.getElementById("edMap").value.trim();
+  if(url) window.open(url, "_blank", "noopener");
+  else toast("Aucune adresse Map renseignée pour cette image.");
+});
+// régénère automatiquement l'URL Map proposée quand le champ Lieu change (si l'utilisateur n'a pas déjà personnalisé le champ Map)
+document.getElementById("edLieu").addEventListener("input", (e)=>{
+  const mapEl = document.getElementById("edMap");
+  const p = getSelected();
+  const wasAuto = !mapEl.value || mapEl.value === mapUrlFromLieu(p ? p.lieu : "");
+  if(wasAuto) mapEl.value = mapUrlFromLieu(e.target.value.trim());
+});
+
+document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
+  const p = getSelected(); if(!p || !editDraft) return;
+  p.dateAchat = document.getElementById("edDate").value || p.dateAchat;
+  p.support = document.getElementById("edSupport").value.trim();
+  p.personnage = document.getElementById("edPersonnage").value.trim();
+  p.lieu = document.getElementById("edLieu").value.trim();
+  p.etiquette = document.getElementById("edEtiquette").value.trim();
+  p.auteur = document.getElementById("edAuteur").value.trim() || "Philippe";
+  p.optique = document.getElementById("edOptique").value.trim();
+  p.poids = Number(document.getElementById("edPoids").value) || p.poids || 0;
+  p.map = document.getElementById("edMap").value.trim();
+  p.favori = document.getElementById("edFavori").value === "true";
+  p.rotation = editDraft.rotation || 0;
+  p.filterCss = editDraft.filterCss || "";
+  p.filterKey = editDraft.filterKey || null;
+  await idbPut("photos", p);
+  populateFilterOptions();
+  renderGrid();
+  closeModal("modalEdit");
+  toast("Modifications enregistrées.");
+  autoBuildCsv();
+});
+
+document.getElementById("btnInfo").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  renderInfoModal(p);
+  openModal("modalInfo");
+});
+
+function fmtDateFr(iso){
+  if(!iso) return "Date inconnue";
+  const d = new Date(iso+"T00:00:00");
+  if(isNaN(d)) return iso;
+  return d.toLocaleDateString("fr-FR", {weekday:"short", day:"2-digit", month:"long", year:"numeric"});
+}
+function fmtSize(bytes){
+  if(!bytes) return "";
+  return bytes > 1024*1024 ? (bytes/1024/1024).toFixed(1)+" Mo" : Math.round(bytes/1024)+" Ko";
+}
+function fmtExif(exif){
+  if(!exif) return null;
+  const parts = [];
+  if(exif.make || exif.model) parts.push([exif.make, exif.model].filter(Boolean).join(" "));
+  const tech = [];
+  if(exif.fNumber) tech.push("f/" + exif.fNumber.toFixed(1));
+  if(exif.exposureTime) tech.push(exif.exposureTime < 1 ? "1/" + Math.round(1/exif.exposureTime) + " s" : exif.exposureTime + " s");
+  if(exif.focalLength) tech.push(Math.round(exif.focalLength) + " mm");
+  if(exif.iso) tech.push("ISO " + exif.iso);
+  if(tech.length) parts.push(tech.join(" · "));
+  return parts.length ? parts : null;
+}
+
+function renderInfoModal(p){
+  const titleInput = document.getElementById("infoTitle");
+  titleInput.value = p.titre || "";
+  titleInput.oninput = null;
+  titleInput.onchange = async ()=>{ p.titre = titleInput.value.trim(); await idbPut("photos", p); renderGrid(); autoBuildCsv(); };
+
+  const contacts = document.getElementById("infoContacts");
+  if(p.auteur){
+    contacts.innerHTML = `
+      <div class="info-contact">
+        <div class="info-avatar">${escapeHtml(p.auteur.trim().charAt(0).toUpperCase()||"?")}</div>
+        <div><div class="main-line">${escapeHtml(p.auteur)}</div><div class="sub-line">Auteur</div></div>
+      </div>`;
+  } else {
+    contacts.innerHTML = `<p class="drive-note">Aucun auteur renseigné (voir « Modifier » pour en ajouter un).</p>`;
+  }
+
+  const rows = document.getElementById("infoRows");
+  const exifLines = fmtExif(p.exif);
+  const dims = (p.width && p.height) ? `${p.width} × ${p.height}` : "";
+  const shared = (p.sharedWith && p.sharedWith.length) ? p.sharedWith.join(", ") : null;
+
+  rows.innerHTML = `
+    <div class="info-row">
+      <div class="info-ic">📅</div>
+      <div class="info-content" id="infoRowDate">
+        <div class="main-line">${fmtDateFr(p.dateAchat)}</div>
+        <div class="sub-line">Date cliché</div>
+      </div>
+      <button class="info-pencil" data-edit="date" title="Modifier la date">✎</button>
+    </div>
+
+    <div class="info-row">
+      <div class="info-ic">📷</div>
+      <div class="info-content">
+        ${p.optique ? `<div class="main-line">${escapeHtml(p.optique)}</div>` : ""}
+        ${exifLines
+          ? exifLines.filter((l,i)=> !(i===0 && p.optique)).map(l=>`<div class="${p.optique?'sub-line':'main-line'}">${escapeHtml(l)}</div>`).join("")
+          : (p.optique ? "" : `<div class="sub-line">Informations de l'appareil indisponibles pour ce fichier</div>`)}
+      </div>
+    </div>
+
+    <div class="info-row">
+      <div class="info-ic">🖼</div>
+      <div class="info-content">
+        <div class="main-line">${escapeHtml(p.fileName||'')}</div>
+        <div class="sub-line">${[dims, (p.poids?p.poids+' Ko':fmtSize(p.sizeBytes)), p.support].filter(Boolean).join(" · ")}</div>
+      </div>
+    </div>
+
+    <div class="info-row">
+      <div class="info-ic">⇪</div>
+      <div class="info-content">
+        <div class="main-line">${shared ? "Partagée avec " + escapeHtml(shared) : "Non partagée"}</div>
+        <div class="sub-line">Utilisez le bouton « Partager » de la barre du haut</div>
+      </div>
+    </div>
+
+    <div class="info-row">
+      <div class="info-ic">☁</div>
+      <div class="info-content">
+        <div class="main-line">${State.drive.fileId ? "Catalogue synchronisé avec Drive" : "Non synchronisée avec Drive"}</div>
+        <div class="sub-line">Seules les métadonnées (CSV) sont envoyées sur Drive, pas les fichiers image. <button class="small-link" id="infoLearnMore">En savoir plus</button></div>
+      </div>
+    </div>
+
+    <div class="info-row">
+      <div class="info-ic">📍</div>
+      <div class="info-content" style="flex:1;">
+        <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
+        ${p.lieu ? `<iframe class="info-map" loading="lazy" src="https://www.google.com/maps?q=${encodeURIComponent(p.lieu)}&output=embed"></iframe>
+          <a href="${escapeHtml(p.map || mapUrlFromLieu(p.lieu))}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
+      </div>
+      <button class="info-pencil" data-edit="lieu" title="Modifier le lieu">✎</button>
+    </div>
+  `;
+
+  rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
+  rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p, true));
+  const learnMore = document.getElementById("infoLearnMore");
+  if(learnMore) learnMore.addEventListener("click", ()=> toast("Les images restent uniquement sur cet appareil ; seul le catalogue (CSV) peut être sauvegardé sur Drive."));
+}
+
+function startInlineEdit(containerId, field, p, isLieu){
+  const container = document.getElementById(containerId);
+  if(!container || container.querySelector("input")) return;
+  const current = field==="date" ? (p.dateAchat||"") : (p.lieu||"");
+  const wrap = document.createElement("div");
+  wrap.className = "info-inline-edit";
+  wrap.innerHTML = `<input type="${field==='date'?'date':'text'}" value="${escapeHtml(current)}"><button class="btn copper" style="padding:5px 10px;">OK</button>`;
+  container.appendChild(wrap);
+  const input = wrap.querySelector("input");
+  input.focus();
+  wrap.querySelector("button").addEventListener("click", async ()=>{
+    if(field==="date") p.dateAchat = input.value || p.dateAchat;
+    else p.lieu = input.value.trim();
+    await idbPut("photos", p);
+    populateFilterOptions();
+    renderGrid();
+    autoBuildCsv();
+    renderInfoModal(p);
+  });
+}
+
+document.getElementById("btnFav").addEventListener("click", async ()=>{
+  const p = getSelected(); if(!p) return;
+  p.favori = !p.favori;
+  await idbPut("photos", p);
+  renderGrid();
+  toast(p.favori ? "Ajouté aux favoris." : "Retiré des favoris.");
+});
+
+document.getElementById("btnTrash").addEventListener("click", async ()=>{
+  const p = getSelected(); if(!p) return;
+  if(!confirm(`Supprimer « ${p.fileName} » du catalogue ?`)) return;
+  p.corbeille = true;
+  await idbPut("photos", p);
+  State.selectedId = null;
+  populateFilterOptions();
+  renderGrid();
+  toast("Image envoyée à la corbeille.");
+  autoBuildCsv();
+});
+
+document.getElementById("btnMore").addEventListener("click", ()=>{ if(getSelected()) openModal("modalMore"); });
+
+document.getElementById("btnZoomToggle").addEventListener("click", ()=>{ if(getSelected()) openLoupe(State.selectedId); });
+
+/* ---------------------------------------------------------------
+   11. Loupe / Diaporama (plein écran)
+   --------------------------------------------------------------- */
+const slideshowEl = document.getElementById("slideshow");
+const slideshowImg = document.getElementById("slideshowImg");
+let loupeZoom = 1, loupeX=0, loupeY=0, loupeDrag=false, loupeStart={x:0,y:0}, loupeOrigin={x:0,y:0};
+
+function applyLoupeTransform(){
+  slideshowImg.style.transform = `translate(${loupeX}px, ${loupeY}px) scale(${loupeZoom})`;
+}
+function openLoupe(id){
+  State.slideshowMode = "loupe";
+  State.slideshowList = activePhotos();
+  State.slideshowIndex = State.slideshowList.findIndex(p=>p.id===id);
+  showSlideshowFrame();
+  loupeZoom=1; loupeX=0; loupeY=0; applyLoupeTransform();
+  slideshowEl.classList.add("show");
+}
+function openDiaporama(id){
+  State.slideshowMode = "diaporama";
+  State.slideshowList = activePhotos();
+  State.slideshowIndex = Math.max(0, State.slideshowList.findIndex(p=>p.id===id));
+  showSlideshowFrame();
+  slideshowEl.classList.add("show");
+  clearInterval(State.slideshowTimer);
+  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 3200);
+}
+function showSlideshowFrame(){
+  const p = State.slideshowList[State.slideshowIndex];
+  if(!p) return closeSlideshow();
+  slideshowImg.src = p.dataUrl;
+  slideshowImg.style.transform = `rotate(${p.rotation||0}deg)`;
+  slideshowImg.style.filter = p.filterCss || "none";
+}
+function stepSlideshow(dir){
+  if(State.slideshowList.length===0) return;
+  State.slideshowIndex = (State.slideshowIndex + dir + State.slideshowList.length) % State.slideshowList.length;
+  showSlideshowFrame();
+}
+function closeSlideshow(){
+  slideshowEl.classList.remove("show");
+  clearInterval(State.slideshowTimer);
+  State.slideshowTimer = null;
+}
+document.addEventListener("keydown", (e)=>{
+  if(!slideshowEl.classList.contains("show")) return;
+  if(e.key==="Escape") closeSlideshow();
+  if(e.key==="ArrowRight") stepSlideshow(1);
+  if(e.key==="ArrowLeft") stepSlideshow(-1);
+});
+// "Retour" Android -> historique
+window.addEventListener("popstate", ()=>{ if(slideshowEl.classList.contains("show")) closeSlideshow(); });
+slideshowEl.addEventListener("click", (e)=>{ if(e.target===slideshowEl) closeSlideshow(); });
+
+slideshowEl.addEventListener("wheel", (e)=>{
+  if(State.slideshowMode!=="loupe") return;
+  e.preventDefault();
+  loupeZoom = Math.min(5, Math.max(0.5, loupeZoom + (e.deltaY<0?0.15:-0.15)));
+  applyLoupeTransform();
+}, {passive:false});
+slideshowImg.addEventListener("mousedown", (e)=>{
+  if(State.slideshowMode!=="loupe") return;
+  loupeDrag = true;
+  loupeStart = {x:e.clientX, y:e.clientY};
+  loupeOrigin = {x:loupeX, y:loupeY};
+});
+window.addEventListener("mousemove", (e)=>{
+  if(!loupeDrag) return;
+  loupeX = loupeOrigin.x + (e.clientX - loupeStart.x);
+  loupeY = loupeOrigin.y + (e.clientY - loupeStart.y);
+  applyLoupeTransform();
+});
+window.addEventListener("mouseup", ()=> loupeDrag=false);
+
+/* ---------------------------------------------------------------
+   12. Modale "Plus d'info" : télécharger / diaporama / pivoter / album
+   --------------------------------------------------------------- */
+document.getElementById("actDownload").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  const a = document.createElement("a");
+  a.href = p.dataUrl; a.download = p.fileName || "image.jpg";
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("Téléchargement lancé.");
+});
+document.getElementById("actSlideshow").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  closeModal("modalMore");
+  openDiaporama(p.id);
+});
+document.getElementById("actRotateLeft").addEventListener("click", async ()=>{
+  const p = getSelected(); if(!p) return;
+  p.rotation = ((p.rotation||0) - 45) % 360;
+  await idbPut("photos", p);
+  renderGrid();
+  toast("Image pivotée de 45° vers la gauche.");
+});
+document.getElementById("actAddAlbum").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  closeModal("modalMore");
+  renderAlbumList();
+  openModal("modalAlbum");
+});
+
+/* ---------------------------------------------------------------
+   13. Albums
+   --------------------------------------------------------------- */
+let albumSelection = new Set();
+function renderAlbumList(){
+  const p = getSelected();
+  albumSelection = new Set(p && p.albums ? p.albums : []);
+  const list = document.getElementById("albumList");
+  if(State.albums.length===0){
+    list.innerHTML = `<p class="drive-note">Aucun album pour l'instant. Créez-en un ci-dessous.</p>`;
+    return;
+  }
+  list.innerHTML = "";
+  State.albums.forEach(a=>{
+    const div = document.createElement("div");
+    div.className = "album-item" + (albumSelection.has(a.name) ? " selected":"");
+    div.textContent = a.name;
+    div.addEventListener("click", ()=>{
+      if(albumSelection.has(a.name)) albumSelection.delete(a.name); else albumSelection.add(a.name);
+      div.classList.toggle("selected");
+    });
+    list.appendChild(div);
+  });
+}
+document.getElementById("btnCreateAlbum").addEventListener("click", async ()=>{
+  const name = document.getElementById("newAlbumName").value.trim();
+  if(!name) return toast("Donnez un nom à l'album.");
+  if(!State.albums.find(a=>a.name===name)){
+    const rec = {id:uid("al"), name};
+    await idbPut("albums", rec);
+    State.albums.push(rec);
+  }
+  albumSelection.add(name);
+  document.getElementById("newAlbumName").value = "";
+  renderAlbumList();
+});
+document.getElementById("btnConfirmAlbum").addEventListener("click", async ()=>{
+  const p = getSelected(); if(!p) return;
+  p.albums = [...albumSelection];
+  await idbPut("photos", p);
+  renderGrid();
+  closeModal("modalAlbum");
+  toast("Albums mis à jour pour cette image.");
+});
+
+/* ---------------------------------------------------------------
+   14. Nouvelle Entrée / Nouvel Auteur
+   --------------------------------------------------------------- */
+document.getElementById("btnNewEntry").addEventListener("click", ()=>{
+  ["neDate"].forEach(id=> document.getElementById(id).value = new Date().toISOString().slice(0,10));
+  ["neSupport","nePersonnage","neLieu","neEtiquette"].forEach(id=> document.getElementById(id).value="");
+  document.getElementById("neAuteur").value = "Philippe";
+  document.getElementById("neFile").value = "";
+  populateAuteurDatalist();
+  openModal("modalNewEntry");
+});
+// Pré-remplissage automatique (date/lieu/personnage) dès qu'un fichier est choisi,
+// à partir du nom du fichier — reste modifiable avant d'enregistrer.
+document.getElementById("neFile").addEventListener("change", (e)=>{
+  const file = e.target.files[0]; if(!file) return;
+  const meta = parseFileNameMeta(file.name);
+  const dateEl = document.getElementById("neDate");
+  const lieuEl = document.getElementById("neLieu");
+  const persEl = document.getElementById("nePersonnage");
+  if(meta.dateAchat) dateEl.value = meta.dateAchat;
+  if(meta.lieu && !lieuEl.value) lieuEl.value = meta.lieu;
+  if(meta.personnage && !persEl.value) persEl.value = meta.personnage;
+});
+document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
+  const fileInput = document.getElementById("neFile");
+  if(!fileInput.files[0]) return toast("Choisissez une image.");
+  const file = fileInput.files[0];
+  const dataUrl = await readFileAsDataURL(file);
+  const dims = await getImageDimensions(dataUrl);
+  const exif = await readBasicExif(file);
+  const lieu = document.getElementById("neLieu").value.trim();
+  const rec = {
+    id: uid("ph"), fileName: file.name, titre:"", dataUrl,
+    dateAchat: document.getElementById("neDate").value || new Date().toISOString().slice(0,10),
+    personnage: document.getElementById("nePersonnage").value.trim(),
+    lieu,
+    support: document.getElementById("neSupport").value.trim(),
+    etiquette: document.getElementById("neEtiquette").value.trim(),
+    auteur: document.getElementById("neAuteur").value.trim() || "Philippe",
+    favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
+    sizeBytes:file.size, width:dims.width, height:dims.height, exif,
+    optique: exifCameraName(exif), poids: Math.round(file.size/1024), map: mapUrlFromLieu(lieu)
+  };
+  await idbPut("photos", rec);
+  State.photos.push(rec);
+  populateFilterOptions();
+  renderGrid();
+  closeModal("modalNewEntry");
+  toast("Nouvelle entrée ajoutée au catalogue.");
+  autoBuildCsv();
+});
+
+document.getElementById("btnNewAuteur").addEventListener("click", ()=>{
+  document.getElementById("naName").value = "";
+  document.getElementById("naNote").value = "";
+  openModal("modalNewAuteur");
+});
+document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
+  const name = document.getElementById("naName").value.trim();
+  if(!name) return toast("Donnez un nom à l'auteur.");
+  const rec = {id:uid("au"), name, note: document.getElementById("naNote").value.trim()};
+  await idbPut("auteurs", rec);
+  State.auteurs.push(rec);
+  populateAuteurDatalist();
+  closeModal("modalNewAuteur");
+  toast("Auteur ajouté.");
+});
+
+/* ---------------------------------------------------------------
+   15. CSV — génération automatique, export, import
+   --------------------------------------------------------------- */
+const CSV_COLUMNS = ["id","fileName","dateAchat","personnage","lieu","support","etiquette","auteur","favori","corbeille","rotation","albums","filterKey","optique","poids","map"];
+function csvEscape(v){
+  const s = (v===undefined||v===null) ? "" : String(v);
+  return /[",;\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function buildCsv(){
+  const rows = [CSV_COLUMNS.join(";")];
+  State.photos.forEach(p=>{
+    rows.push(CSV_COLUMNS.map(c=>{
+      if(c==="albums") return csvEscape((p.albums||[]).join("|"));
+      return csvEscape(p[c]);
+    }).join(";"));
+  });
+  return rows.join("\n");
+}
+let currentCsv = "";
+function autoBuildCsv(){ currentCsv = buildCsv(); return currentCsv; }
+
+document.getElementById("btnExportCsv").addEventListener("click", ()=>{
+  const csv = autoBuildCsv();
+  const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "imago_catalogue.csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("Catalogue CSV exporté.");
+});
+
+document.getElementById("btnImportCsv").addEventListener("click", ()=> document.getElementById("csvFileInput").click());
+document.getElementById("csvFileInput").addEventListener("change", async (e)=>{
+  const file = e.target.files[0]; if(!file) return;
+  const text = await file.text();
+  await mergeCsvIntoCatalog(text);
+  e.target.value = "";
+});
+
+async function mergeCsvIntoCatalog(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+  if(lines.length<2) return toast("Fichier CSV vide.");
+  const header = parseCsvLine(lines[0]);
+  let updated=0, created=0;
+  for(let i=1;i<lines.length;i++){
+    const cells = parseCsvLine(lines[i]);
+    const row = {}; header.forEach((h,idx)=> row[h]=cells[idx]);
+    if(!row.fileName) continue;
+    let rec = State.photos.find(p=>p.fileName===row.fileName);
+    if(!rec){
+      rec = {id: uid("ph"), fileName:row.fileName, dataUrl:"", favori:false, corbeille:false, rotation:0, albums:[]};
+      State.photos.push(rec); created++;
+    } else updated++;
+    rec.dateAchat = row.dateAchat || rec.dateAchat;
+    rec.personnage = row.personnage || "";
+    rec.lieu = row.lieu || "";
+    rec.support = row.support || "";
+    rec.etiquette = row.etiquette || "";
+    rec.auteur = row.auteur || "Philippe";
+    rec.favori = row.favori === "true";
+    rec.corbeille = row.corbeille === "true";
+    rec.rotation = Number(row.rotation)||0;
+    rec.albums = row.albums ? row.albums.split("|").filter(Boolean) : [];
+    rec.filterKey = row.filterKey || null;
+    rec.filterCss = rec.filterKey ? (FILTER_PRESETS.find(f=>f.key===rec.filterKey)||{}).css || "" : "";
+    rec.optique = row.optique || rec.optique || "";
+    rec.poids = row.poids ? Number(row.poids) : (rec.poids || 0);
+    rec.map = row.map || rec.map || mapUrlFromLieu(rec.lieu);
+    await idbPut("photos", rec);
+  }
+  populateFilterOptions();
+  renderGrid();
+  toast(`Import CSV : ${created} créée(s), ${updated} mise(s) à jour. (Les images sans fichier local associé resteront sans vignette.)`);
+}
+function parseCsvLine(line){
+  const out=[]; let cur=""; let inQ=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(inQ){
+      if(c==='"' && line[i+1]==='"'){ cur+='"'; i++; }
+      else if(c==='"'){ inQ=false; }
+      else cur+=c;
+    }else{
+      if(c==='"') inQ=true;
+      else if(c===';'){ out.push(cur); cur=""; }
+      else cur+=c;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+/* ---------------------------------------------------------------
+   16. Google Drive — connexion / chargement / sauvegarde du CSV
+   (nécessite un identifiant client OAuth fourni par l'utilisateur)
+   --------------------------------------------------------------- */
+function setDriveBtnState(btnId, lblId, done, doneLabel){
+  const btn = document.getElementById(btnId);
+  document.getElementById(lblId).textContent = done ? doneLabel : btn.dataset.defaultLabel;
+  btn.classList.toggle("done", done);
+}
+["btnDriveConnect","btnDriveLoad","btnDriveSave"].forEach(id=>{
+  document.getElementById(id).dataset.defaultLabel = document.getElementById(
+    id==="btnDriveConnect"?"lblDriveConnect":id==="btnDriveLoad"?"lblDriveLoad":"lblDriveSave"
+  ).textContent;
+});
+
+document.getElementById("btnDriveConfig").addEventListener("click", ()=>{
+  const id = prompt("Collez votre identifiant client OAuth Google (Client ID se terminant par .apps.googleusercontent.com) :", State.drive.clientId||"");
+  if(id){
+    State.drive.clientId = id.trim();
+    localStorage.setItem("imago_drive_client_id", State.drive.clientId);
+    toast("Identifiant client enregistré localement.");
+  }
+});
+
+function loadGisScript(){
+  return new Promise((resolve, reject)=>{
+    if(window.google && window.google.accounts && window.google.accounts.oauth2) return resolve();
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.async = true; s.defer = true;
+    s.onload = ()=> resolve();
+    s.onerror = ()=> reject(new Error("Impossible de charger la bibliothèque Google (connexion internet requise pour Drive)."));
+    document.head.appendChild(s);
+  });
+}
+
+document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
+  if(!State.drive.clientId){
+    toast("Configurez d'abord votre identifiant client OAuth (lien sous les boutons Drive).");
+    return;
+  }
+  try{
+    await loadGisScript();
+    State.drive.tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: State.drive.clientId,
+      scope: "https://www.googleapis.com/auth/drive.file",
+      callback: (resp)=>{
+        if(resp.error){ toast("Connexion refusée : " + resp.error); return; }
+        State.drive.token = resp.access_token;
+        setDriveBtnState("btnDriveConnect","lblDriveConnect", true, "Connecté");
+        toast("Connecté à Google Drive.");
+      }
+    });
+    State.drive.tokenClient.requestAccessToken();
+  }catch(err){
+    toast(err.message);
+  }
+});
+
+async function driveApiFetch(url, opts={}){
+  if(!State.drive.token) throw new Error("Non connecté à Drive.");
+  opts.headers = Object.assign({}, opts.headers, {Authorization: "Bearer " + State.drive.token});
+  const res = await fetch(url, opts);
+  if(!res.ok) throw new Error("Erreur Drive API : " + res.status);
+  return res;
+}
+
+document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
+  try{
+    let fileId = State.drive.fileId;
+    if(!fileId){
+      const q = encodeURIComponent("name='imago_catalogue.csv' and trashed=false");
+      const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+      const data = await listRes.json();
+      if(data.files && data.files[0]) fileId = data.files[0].id;
+    }
+    if(!fileId){ toast("Aucun catalogue trouvé sur Drive. Utilisez d'abord « Sauver sur Drive »."); return; }
+    const fileRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+    const text = await fileRes.text();
+    await mergeCsvIntoCatalog(text);
+    State.drive.fileId = fileId;
+    localStorage.setItem("imago_drive_file_id", fileId);
+    setDriveBtnState("btnDriveLoad","lblDriveLoad", true, "Chargé");
+    toast("Catalogue chargé depuis Drive.");
+  }catch(err){ toast(err.message); }
+});
+
+document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
+  try{
+    const csv = autoBuildCsv();
+    const boundary = "imago_boundary_" + Date.now();
+    const metadata = {name:"imago_catalogue.csv", mimeType:"text/csv"};
+    const body =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
+    const isUpdate = !!State.drive.fileId;
+    const url = isUpdate
+      ? `https://www.googleapis.com/upload/drive/v3/files/${State.drive.fileId}?uploadType=multipart`
+      : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+    const res = await driveApiFetch(url, {
+      method: isUpdate ? "PATCH" : "POST",
+      headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
+      body
+    });
+    const data = await res.json();
+    if(data.id){
+      State.drive.fileId = data.id;
+      localStorage.setItem("imago_drive_file_id", data.id);
+    }
+    setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
+    toast("Catalogue sauvegardé sur Drive.");
+  }catch(err){ toast(err.message); }
+});
+
+/* ---------------------------------------------------------------
+   17. Démarrage
+   --------------------------------------------------------------- */
+loadAll();
+</script>
+</body>
+</html>
