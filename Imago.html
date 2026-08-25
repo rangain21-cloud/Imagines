@@ -537,6 +537,7 @@ button{font-family:inherit;}
              aria-owns=":1" aria-controls=":1" aria-description="Aucun destinataire sélectionné" autofocus
              placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo">
       <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
+      <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalShare">Annuler</button>
@@ -1465,14 +1466,46 @@ document.getElementById("shareCombo").addEventListener("keydown", (e)=>{
   }
 });
 document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
-  const p = getSelected();
-  const names = [...document.getElementById("shareChips").children].map(c=>c.textContent);
-  if(p && names.length){
-    p.sharedWith = [...new Set([...(p.sharedWith||[]), ...names])];
-    await idbPut("photos", p);
+  const p = getSelected(); if(!p) return;
+  const chips = [...document.getElementById("shareChips").children].map(c=>c.textContent.trim());
+  if(chips.length===0){
+    toast("Ajoutez au moins un destinataire (tapez l'adresse puis appuyez sur Entrée).");
+    return;
   }
-  closeModal("modalShare");
-  toast("Partage préparé (destinataires enregistrés localement — l'envoi réel nécessite la connexion Drive).");
+  if(!State.drive.token){
+    toast("Connectez-vous d'abord à Drive (menu ☰ → Connexion → Connecter à Drive) : le partage envoie réellement l'image, il faut être authentifié.");
+    return;
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const emails = chips.filter(c=>emailRegex.test(c));
+  const rejected = chips.filter(c=>!emailRegex.test(c));
+  if(emails.length===0){
+    toast("Le partage réel via Drive ne fonctionne qu'avec une adresse e-mail complète (ex. nom@exemple.com) — un numéro ou un nom seul ne suffit pas.");
+    return;
+  }
+  const btn = document.getElementById("btnConfirmShare");
+  const originalLabel = btn.textContent;
+  btn.textContent = "Envoi…"; btn.disabled = true;
+  try{
+    const uploaded = await ensurePhotoUploadedToDrive(p);
+    p.driveFileId = uploaded.id;
+    p.driveWebViewLink = uploaded.webViewLink || "";
+    for(const email of emails){
+      await shareDriveFileWithEmail(uploaded.id, email);
+    }
+    p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
+    await idbPut("photos", p);
+    renderGrid();
+    closeModal("modalShare");
+    toast(
+      `Image envoyée et partagée sur Drive avec ${emails.join(", ")}.` +
+      (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "")
+    );
+  }catch(err){
+    toast("Échec de l'envoi : " + err.message);
+  }finally{
+    btn.textContent = originalLabel; btn.disabled = false;
+  }
 });
 
 /* -- Suggestions de retouche (préréglages CSS filter, façon Google Photos) -- */
@@ -1771,7 +1804,7 @@ function renderInfoModal(p){
       <div class="info-ic">⇪</div>
       <div class="info-content">
         <div class="main-line">${shared ? "Partagée avec " + escapeHtml(shared) : "Non partagée"}</div>
-        <div class="sub-line">Utilisez le bouton « Partager » de la barre du haut</div>
+        <div class="sub-line">Utilisez le bouton « Partager » de la barre du haut${p.driveWebViewLink ? ` · <a href="${escapeHtml(p.driveWebViewLink)}" target="_blank" rel="noopener" class="small-link">Voir le fichier sur Drive ↗</a>` : ""}</div>
       </div>
     </div>
 
@@ -1779,7 +1812,7 @@ function renderInfoModal(p){
       <div class="info-ic">☁</div>
       <div class="info-content">
         <div class="main-line">${State.drive.fileId ? "Catalogue synchronisé avec Drive" : "Non synchronisée avec Drive"}</div>
-        <div class="sub-line">Seules les métadonnées (CSV) sont envoyées sur Drive, pas les fichiers image. <button class="small-link" id="infoLearnMore">En savoir plus</button></div>
+        <div class="sub-line">Le catalogue (CSV) est synchronisé via « Sauver sur Drive ». Une image n'est envoyée sur Drive qu'au moment où vous utilisez « Partager ». <button class="small-link" id="infoLearnMore">En savoir plus</button></div>
       </div>
     </div>
 
@@ -1798,7 +1831,7 @@ function renderInfoModal(p){
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
   rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p, true));
   const learnMore = document.getElementById("infoLearnMore");
-  if(learnMore) learnMore.addEventListener("click", ()=> toast("Les images restent uniquement sur cet appareil ; seul le catalogue (CSV) peut être sauvegardé sur Drive."));
+  if(learnMore) learnMore.addEventListener("click", ()=> toast("Les images restent sur cet appareil par défaut. « Sauver sur Drive » ne synchronise que le catalogue (CSV). Pour envoyer une image précise sur Drive, utilisez « Partager »."));
 }
 
 function startInlineEdit(containerId, field, p, isLieu){
@@ -2237,6 +2270,40 @@ async function driveApiFetch(url, opts={}){
   const res = await fetch(url, opts);
   if(!res.ok) throw new Error("Erreur Drive API : " + res.status);
   return res;
+}
+
+/* -----------------------------------------------------------------
+   Partage réel d'une image via Google Drive : upload du fichier
+   (une seule fois, réutilisé ensuite via p.driveFileId) puis création
+   d'une permission Drive pour chaque adresse e-mail destinataire —
+   c'est CE dernier appel qui déclenche l'e-mail « X a partagé un
+   fichier avec vous » envoyé par Google.
+   ----------------------------------------------------------------- */
+async function ensurePhotoUploadedToDrive(p){
+  if(p.driveFileId) return {id: p.driveFileId, webViewLink: p.driveWebViewLink || ""};
+  const match = (p.dataUrl||"").match(/^data:([^;]+);base64,([\s\S]*)$/);
+  if(!match) throw new Error("Image introuvable en mémoire.");
+  const mime = match[1] || "image/jpeg";
+  const base64Data = match[2];
+  const boundary = "imago_img_boundary_" + Date.now();
+  const metadata = {name: p.fileName || "image.jpg"};
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: ${mime}\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64Data}\r\n--${boundary}--`;
+  const res = await driveApiFetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink`, {
+    method: "POST",
+    headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
+    body
+  });
+  const data = await res.json();
+  return {id: data.id, webViewLink: data.webViewLink || ""};
+}
+async function shareDriveFileWithEmail(fileId, email){
+  await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?sendNotificationEmail=true`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({role:"reader", type:"user", emailAddress: email})
+  });
 }
 
 document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
