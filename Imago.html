@@ -834,12 +834,14 @@ function uid(prefix="id"){ return prefix + "_" + Date.now().toString(36) + Math.
    2. Toast
    --------------------------------------------------------------- */
 let toastTimer=null;
-function toast(msg){
+function toast(msg, durationMs){
   const el = document.getElementById("toast");
   el.textContent = msg;
   el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=> el.classList.remove("show"), 2600);
+  // les messages longs (souvent des erreurs détaillées) restent affichés plus longtemps
+  const duration = durationMs || Math.min(9000, Math.max(2600, msg.length * 60));
+  toastTimer = setTimeout(()=> el.classList.remove("show"), duration);
 }
 
 /* ---------------------------------------------------------------
@@ -1502,6 +1504,7 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
       (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "")
     );
   }catch(err){
+    console.error("Échec du partage Drive :", err);
     toast("Échec de l'envoi : " + err.message);
   }finally{
     btn.textContent = originalLabel; btn.disabled = false;
@@ -2267,8 +2270,30 @@ document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
 async function driveApiFetch(url, opts={}){
   if(!State.drive.token) throw new Error("Non connecté à Drive.");
   opts.headers = Object.assign({}, opts.headers, {Authorization: "Bearer " + State.drive.token});
-  const res = await fetch(url, opts);
-  if(!res.ok) throw new Error("Erreur Drive API : " + res.status);
+  let res;
+  try{
+    res = await fetch(url, opts);
+  }catch(networkErr){
+    console.error("Drive API — échec réseau (CORS, hors ligne, domaine bloqué…) :", networkErr, url);
+    throw new Error("Impossible de joindre l'API Google Drive (réseau/CORS). Voir la console (F12) pour le détail.");
+  }
+  if(!res.ok){
+    let detail = "";
+    try{
+      const errBody = await res.clone().json();
+      detail = errBody && errBody.error && errBody.error.message ? errBody.error.message : "";
+    }catch(e){ /* corps non-JSON, tant pis */ }
+    console.error(`Drive API — erreur ${res.status} sur ${url}`, detail);
+    if(res.status === 401){
+      // Jeton expiré (~1h de validité) : on force une reconnexion propre.
+      State.drive.token = null;
+      setDriveBtnState("btnDriveConnect","lblDriveConnect", false, "");
+      setDriveBtnState("btnDriveLoad","lblDriveLoad", false, "");
+      setDriveBtnState("btnDriveSave","lblDriveSave", false, "");
+      throw new Error("Votre session Drive a expiré — reconnectez-vous (menu ☰ → Connecter à Drive) puis réessayez.");
+    }
+    throw new Error(`Erreur Drive API (${res.status})${detail ? " — " + detail : ""}`);
+  }
   return res;
 }
 
