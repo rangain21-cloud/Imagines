@@ -621,6 +621,7 @@ button{font-family:inherit;}
             <label for="edMap">Map</label>
             <div style="display:flex; gap:8px;">
               <input type="text" id="edMap" placeholder="https://www.google.com/maps/search/?api=1&query=…" style="flex:1;">
+              <button class="btn" id="edMapGps" type="button" title="Utiliser les coordonnées GPS EXIF du fichier">📍 GPS EXIF</button>
               <button class="btn" id="edMapOpen" type="button" title="Ouvrir dans Google Maps">🗺 Ouvrir</button>
             </div>
           </div>
@@ -1016,7 +1017,7 @@ folderInput.addEventListener("change", async ()=>{
       personnage: meta.personnage, lieu: meta.lieu, support:"numérique", etiquette:"", auteur:"Philippe",
       favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
       sizeBytes: file.size, width:dims.width, height:dims.height, exif,
-      optique: exifCameraName(exif), poids: Math.round(file.size/1024), map: mapUrlFromLieu(meta.lieu)
+      optique: exifCameraName(exif), poids: Math.round(file.size/1024), map: bestMapUrl(meta.lieu, exif)
     };
     await idbPut("photos", rec);
     State.photos.push(rec);
@@ -1037,6 +1038,20 @@ function exifCameraName(exif){
 function mapUrlFromLieu(lieu){
   if(!lieu) return "";
   return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(lieu);
+}
+// URL Maps à partir de coordonnées GPS décimales (ex. issues des métadonnées EXIF du fichier)
+function mapUrlFromGps(lat, lon){
+  if(typeof lat!=="number" || typeof lon!=="number" || Number.isNaN(lat) || Number.isNaN(lon)) return "";
+  return "https://www.google.com/maps/search/?api=1&query=" + lat.toFixed(6) + "," + lon.toFixed(6);
+}
+function hasGpsExif(exif){
+  return !!(exif && typeof exif.gpsLat==="number" && typeof exif.gpsLon==="number");
+}
+// Choisit la meilleure URL Map disponible : priorité aux coordonnées GPS EXIF du fichier,
+// à défaut on retombe sur une recherche par mot-clé sur le texte du champ "Lieu".
+function bestMapUrl(lieu, exif){
+  if(hasGpsExif(exif)) return mapUrlFromGps(exif.gpsLat, exif.gpsLon);
+  return mapUrlFromLieu(lieu);
 }
 
 function readFileAsDataURL(file){
@@ -1132,9 +1147,9 @@ async function readBasicExif(file){
           const get32 = (o)=> view.getUint32(o, little);
           const firstIFD = tiffStart + get32(tiffStart+4);
           const exif = {};
-          function readIFD(ifdOffset, wantExifPointer){
+          function readIFD(ifdOffset, wantExifPointer, wantGpsPointer){
             const n = get16(ifdOffset);
-            let exifPointer = null;
+            let exifPointer = null, gpsPointer = null;
             for(let i=0;i<n;i++){
               const entry = ifdOffset + 2 + i*12;
               const tag = get16(entry);
@@ -1145,17 +1160,41 @@ async function readBasicExif(file){
                 const ptr = tiffStart + get32(valOffset);
                 return get32(ptr) / (get32(ptr+4)||1);
               };
+              // triplet degrés/minutes/secondes (tags GPSLatitude/GPSLongitude, type RATIONAL x3)
+              const readRationalTriplet = ()=>{
+                const ptr = tiffStart + get32(valOffset);
+                const vals = [];
+                for(let k=0;k<3;k++) vals.push(get32(ptr+k*8) / (get32(ptr+k*8+4)||1));
+                return vals;
+              };
               if(tag===0x010F && type===2) exif.make = readAscii(view, tiffStart+get32(valOffset), count);
               if(tag===0x0110 && type===2) exif.model = readAscii(view, tiffStart+get32(valOffset), count);
               if(tag===0x8769) exifPointer = tiffStart + get32(valOffset);
+              if(tag===0x8825) gpsPointer = tiffStart + get32(valOffset);
               if(tag===0x829D) exif.fNumber = readRational();
               if(tag===0x829A) exif.exposureTime = readRational();
               if(tag===0x920A) exif.focalLength = readRational();
               if(tag===0x8827) exif.iso = type===3 ? get16(valOffset) : get32(valOffset);
+              // --- tags de l'IFD GPS (0x0001-0x0004 : latitude/longitude + repère N/S/E/O) ---
+              if(tag===0x0001 && type===2) exif.gpsLatRef = String.fromCharCode(view.getUint8(valOffset));
+              if(tag===0x0002 && type===5) exif.gpsLatDMS = readRationalTriplet();
+              if(tag===0x0003 && type===2) exif.gpsLonRef = String.fromCharCode(view.getUint8(valOffset));
+              if(tag===0x0004 && type===5) exif.gpsLonDMS = readRationalTriplet();
             }
-            if(wantExifPointer && exifPointer) readIFD(exifPointer, false);
+            if(wantExifPointer && exifPointer) readIFD(exifPointer, false, false);
+            if(wantGpsPointer && gpsPointer) readIFD(gpsPointer, false, false);
           }
-          readIFD(firstIFD, true);
+          readIFD(firstIFD, true, true);
+          // conversion des coordonnées GPS (degrés/minutes/secondes) en décimal signé
+          if(exif.gpsLatDMS && exif.gpsLonDMS){
+            const dmsToDecimal = (d)=> d[0] + d[1]/60 + d[2]/3600;
+            let lat = dmsToDecimal(exif.gpsLatDMS);
+            let lon = dmsToDecimal(exif.gpsLonDMS);
+            if(exif.gpsLatRef === "S") lat = -lat;
+            if(exif.gpsLonRef === "O" || exif.gpsLonRef === "W") lon = -lon;
+            if(!Number.isNaN(lat) && !Number.isNaN(lon)){ exif.gpsLat = lat; exif.gpsLon = lon; }
+          }
+          delete exif.gpsLatDMS; delete exif.gpsLonDMS; delete exif.gpsLatRef; delete exif.gpsLonRef;
           return Object.keys(exif).length ? exif : null;
         }
       }
@@ -1415,7 +1454,7 @@ document.getElementById("btnEdit").addEventListener("click", ()=>{
   document.getElementById("edAuteur").value = p.auteur || "Philippe";
   document.getElementById("edOptique").value = p.optique || "";
   document.getElementById("edPoids").value = p.poids || (p.sizeBytes ? Math.round(p.sizeBytes/1024) : "");
-  document.getElementById("edMap").value = p.map || mapUrlFromLieu(p.lieu);
+  document.getElementById("edMap").value = p.map || bestMapUrl(p.lieu, p.exif);
   document.getElementById("edFavori").value = p.favori ? "true" : "false";
   syncSlidersFromDraft();
   refreshEditPreview();
@@ -1434,18 +1473,37 @@ document.getElementById("edRecalcBtn").addEventListener("click", ()=>{
   if(meta.lieu){ document.getElementById("edLieu").value = meta.lieu; changed.push("lieu"); }
   if(meta.personnage){ document.getElementById("edPersonnage").value = meta.personnage; changed.push("personnage"); }
   const mapEl = document.getElementById("edMap");
-  if(meta.lieu && (!mapEl.value || mapEl.value === mapUrlFromLieu(p.lieu))) mapEl.value = mapUrlFromLieu(meta.lieu);
+  // ne touche pas au champ Map si une URL a déjà été personnalisée à la main ;
+  // sinon on ne le régénère depuis le texte du lieu que si le fichier n'a pas de GPS EXIF
+  // (le GPS reste toujours prioritaire — voir le bouton "📍 GPS EXIF")
+  const mapWasAuto = !mapEl.value || mapEl.value === mapUrlFromLieu(p.lieu) || mapEl.value === bestMapUrl(p.lieu, p.exif);
+  if(mapWasAuto){
+    if(hasGpsExif(p.exif)){ mapEl.value = mapUrlFromGps(p.exif.gpsLat, p.exif.gpsLon); changed.push("map (coordonnées GPS EXIF)"); }
+    else if(meta.lieu){ mapEl.value = mapUrlFromLieu(meta.lieu); changed.push("map (texte du lieu)"); }
+  }
   toast(changed.length ? `Relu depuis le nom du fichier : ${changed.join(", ")}. Vérifiez avant d'enregistrer.` : "Aucune information reconnaissable dans ce nom de fichier.");
+});
+document.getElementById("edMapGps").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  if(hasGpsExif(p.exif)){
+    document.getElementById("edMap").value = mapUrlFromGps(p.exif.gpsLat, p.exif.gpsLon);
+    toast(`URL Map régénérée depuis les coordonnées GPS EXIF du fichier (${p.exif.gpsLat.toFixed(6)}, ${p.exif.gpsLon.toFixed(6)}).`);
+  } else {
+    toast("Ce fichier ne contient pas de coordonnées GPS dans ses métadonnées EXIF.");
+  }
 });
 document.getElementById("edMapOpen").addEventListener("click", ()=>{
   const url = document.getElementById("edMap").value.trim();
   if(url) window.open(url, "_blank", "noopener");
   else toast("Aucune adresse Map renseignée pour cette image.");
 });
-// régénère automatiquement l'URL Map proposée quand le champ Lieu change (si l'utilisateur n'a pas déjà personnalisé le champ Map)
+// régénère automatiquement l'URL Map proposée quand le champ Lieu change, mais seulement
+// si le champ Map était encore "automatique" et que le fichier n'a pas de coordonnées GPS EXIF
+// (le GPS, plus fiable, reste prioritaire et n'est jamais écrasé par une simple modification du texte)
 document.getElementById("edLieu").addEventListener("input", (e)=>{
   const mapEl = document.getElementById("edMap");
   const p = getSelected();
+  if(p && hasGpsExif(p.exif)) return;
   const wasAuto = !mapEl.value || mapEl.value === mapUrlFromLieu(p ? p.lieu : "");
   if(wasAuto) mapEl.value = mapUrlFromLieu(e.target.value.trim());
 });
@@ -1523,6 +1581,8 @@ function renderInfoModal(p){
   const exifLines = fmtExif(p.exif);
   const dims = (p.width && p.height) ? `${p.width} × ${p.height}` : "";
   const shared = (p.sharedWith && p.sharedWith.length) ? p.sharedWith.join(", ") : null;
+  const gpsOk = hasGpsExif(p.exif);
+  const mapQuery = gpsOk ? (p.exif.gpsLat + "," + p.exif.gpsLon) : encodeURIComponent(p.lieu || "");
 
   rows.innerHTML = `
     <div class="info-row">
@@ -1572,8 +1632,9 @@ function renderInfoModal(p){
       <div class="info-ic">📍</div>
       <div class="info-content" style="flex:1;">
         <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
-        ${p.lieu ? `<iframe class="info-map" loading="lazy" src="https://www.google.com/maps?q=${encodeURIComponent(p.lieu)}&output=embed"></iframe>
-          <a href="${escapeHtml(p.map || mapUrlFromLieu(p.lieu))}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
+        ${gpsOk ? `<div class="sub-line">📍 Coordonnées GPS (EXIF) : ${p.exif.gpsLat.toFixed(6)}, ${p.exif.gpsLon.toFixed(6)}</div>` : ""}
+        ${(p.lieu || gpsOk) ? `<iframe class="info-map" loading="lazy" src="https://www.google.com/maps?q=${mapQuery}&output=embed"></iframe>
+          <a href="${escapeHtml(p.map || bestMapUrl(p.lieu, p.exif))}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
       </div>
       <button class="info-pencil" data-edit="lieu" title="Modifier le lieu">✎</button>
     </div>
@@ -1819,7 +1880,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
     auteur: document.getElementById("neAuteur").value.trim() || "Philippe",
     favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
     sizeBytes:file.size, width:dims.width, height:dims.height, exif,
-    optique: exifCameraName(exif), poids: Math.round(file.size/1024), map: mapUrlFromLieu(lieu)
+    optique: exifCameraName(exif), poids: Math.round(file.size/1024), map: bestMapUrl(lieu, exif)
   };
   await idbPut("photos", rec);
   State.photos.push(rec);
@@ -1913,7 +1974,7 @@ async function mergeCsvIntoCatalog(text){
     rec.filterCss = rec.filterKey ? (FILTER_PRESETS.find(f=>f.key===rec.filterKey)||{}).css || "" : "";
     rec.optique = row.optique || rec.optique || "";
     rec.poids = row.poids ? Number(row.poids) : (rec.poids || 0);
-    rec.map = row.map || rec.map || mapUrlFromLieu(rec.lieu);
+    rec.map = row.map || rec.map || bestMapUrl(rec.lieu, rec.exif);
     await idbPut("photos", rec);
   }
   populateFilterOptions();
