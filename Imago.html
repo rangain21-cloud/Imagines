@@ -1457,21 +1457,41 @@ document.getElementById("btnShare").addEventListener("click", ()=>{
   document.getElementById("shareCombo").value = "";
   openModal("modalShare");
 });
+function addShareChip(rawValue){
+  const value = (rawValue||"").trim();
+  if(!value) return;
+  const chips = document.getElementById("shareChips");
+  // évite les doublons si on clique deux fois
+  if([...chips.children].some(c=>c.textContent.trim()===value)) return;
+  const chip = document.createElement("span");
+  chip.className = "btn"; chip.style.padding="4px 10px"; chip.style.fontSize="12px";
+  chip.textContent = value;
+  chips.appendChild(chip);
+}
 document.getElementById("shareCombo").addEventListener("keydown", (e)=>{
   if(e.key==="Enter" && e.target.value.trim()){
-    const chips = document.getElementById("shareChips");
-    const chip = document.createElement("span");
-    chip.className = "btn"; chip.style.padding="4px 10px"; chip.style.fontSize="12px";
-    chip.textContent = e.target.value.trim();
-    chips.appendChild(chip);
+    addShareChip(e.target.value);
+    e.target.value = "";
+  }
+});
+// Si l'utilisateur quitte le champ sans appuyer sur Entrée, on valide quand même sa saisie.
+document.getElementById("shareCombo").addEventListener("blur", (e)=>{
+  if(e.target.value.trim()){
+    addShareChip(e.target.value);
     e.target.value = "";
   }
 });
 document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
+  // Valide aussi ce qui reste tapé dans le champ (sans Entrée pressée) avant d'envoyer.
+  const comboEl = document.getElementById("shareCombo");
+  if(comboEl.value.trim()){
+    addShareChip(comboEl.value);
+    comboEl.value = "";
+  }
   const chips = [...document.getElementById("shareChips").children].map(c=>c.textContent.trim());
   if(chips.length===0){
-    toast("Ajoutez au moins un destinataire (tapez l'adresse puis appuyez sur Entrée).");
+    toast("Ajoutez au moins un destinataire (saisissez une adresse e-mail).");
     return;
   }
   if(!State.drive.token){
