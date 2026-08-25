@@ -1014,19 +1014,29 @@ folderInput.addEventListener("change", async ()=>{
     const exif = await readBasicExif(file);
     const meta = parseFileNameMeta(file.name);
     const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
+
+    // Le candidat 'lieu' n'est chargé que si Wikipédia confirme une commune ;
+    // sinon on ne charge rien et le mot rejoint plutôt le personnage.
+    let lieu = "", personnage = meta.personnage;
+    if(meta.lieuCandidate){
+      const verified = await verifyCommuneWikipedia(meta.lieuCandidate);
+      if(verified.ok) lieu = verified.name;
+      else personnage = [meta.lieuCandidate, meta.personnage].filter(Boolean).join(", ");
+    }
+
     const rec = {
       id: uid("ph"),
       fileName: file.name,
-      titre: buildTitre(meta.lieu, meta.personnage),
+      titre: buildTitre(lieu, personnage),
       dataUrl,
       dateAchat,
-      personnage: meta.personnage, lieu: meta.lieu, support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
+      personnage, lieu, support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
       favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
       sizeBytes: file.size, width:dims.width, height:dims.height, exif,
       optique: exifCameraName(exif), poids: Math.round(file.size/1024),
       gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
       gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
-      map: mapUrl(exif, meta.lieu)
+      map: mapUrl(exif, lieu)
     };
     await idbPut("photos", rec);
     State.photos.push(rec);
@@ -1036,7 +1046,7 @@ folderInput.addEventListener("change", async ()=>{
   document.getElementById("folderStatus").textContent = `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue.`;
   populateFilterOptions();
   renderGrid();
-  toast(`${added} image(s) importée(s) — date/lieu/personnage proposés depuis le nom de fichier, à vérifier.`);
+  toast(`${added} image(s) importée(s) — date proposée depuis le nom de fichier, lieu vérifié via Wikipédia (commune uniquement), à contrôler.`);
   autoBuildCsv();
 });
 
@@ -1135,15 +1145,79 @@ function parseFileNameMeta(fileName){
   let tokens = rest.split(/[-_ .]+/).filter(t=> t && t!=="&");
   // ignore un éventuel compteur numérique isolé en tête (ex: "_1_") qui n'est ni un lieu ni un personnage
   if(tokens.length > 1 && /^\d+$/.test(tokens[0])) tokens = tokens.slice(1);
-  let lieu = "", personnage = "";
+
+  // "SUJET depuis LIEU" (ex: "Eclipse depuis l'Ebaudiaz") : le lieu réel suit
+  // "depuis", ce qui précède est un mot-clé descriptif (étiquette), pas un lieu.
+  let etiquette = "";
+  const depuisIdx = tokens.findIndex(t => t.toLowerCase() === "depuis");
+  if(depuisIdx !== -1){
+    etiquette = tokens.slice(0, depuisIdx).join(" ");
+    tokens = tokens.slice(depuisIdx + 1);
+  }
+  // Compteur numérique parfois accolé au dernier mot (ex: "Ebaudiaz2")
+  if(tokens.length){
+    const m = tokens[tokens.length-1].match(/^(.*[A-Za-zÀ-ÖØ-öø-ÿ])(\d{1,2})$/);
+    if(m) tokens[tokens.length-1] = m[1];
+  }
+
+  let lieuCandidate = "", personnage = "";
   if(tokens.length >= 1){
     let lieuTokenCount = 1;
     if(tokens.length > 1 && LIEU_ARTICLES.includes(tokens[0].toLowerCase())) lieuTokenCount = 2;
-    lieu = tokens.slice(0, lieuTokenCount).join(" ");
+    lieuCandidate = tokens.slice(0, lieuTokenCount).join(" ");
     personnage = tokens.slice(lieuTokenCount).join(", ");
   }
-  return {dateAchat, lieu, personnage};
+  // Le lieu n'est qu'une PROPOSITION à ce stade : voir verifyCommuneWikipedia()
+  // pour la confirmation avant de charger réellement la rubrique 'lieu'.
+  return {dateAchat, lieuCandidate, personnage, etiquette};
 }
+
+/* -----------------------------------------------------------------
+   Vérification du candidat "lieu" auprès de Wikipédia : on ne charge
+   la rubrique 'lieu' que si le nom correspond avéré à une commune
+   (France/Belgique/Suisse...), jamais sur simple ressemblance. Sinon,
+   on n'invente rien : la rubrique reste vide et le candidat est
+   replacé en 'personnage' pour ne pas perdre l'information.
+   Nécessite une connexion internet ; en cas d'échec réseau, on
+   considère prudemment que ce n'est PAS confirmé (on ne charge rien).
+   ----------------------------------------------------------------- */
+async function verifyCommuneWikipedia(candidate){
+  if(!candidate || !candidate.trim()) return {ok:false};
+  const name = candidate.trim();
+  try{
+    // 1) Tentative directe sur le titre exact
+    const direct = await fetchWikiSummary(name);
+    if(direct && isCommuneText(direct.description, direct.extract) && direct.type !== "disambiguation"){
+      return {ok:true, name: direct.title || name};
+    }
+    // 2) Sinon, recherche élargie (utile pour les casses/accents/homonymes)
+    const searchUrl = `https://fr.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srlimit=3&srsearch=${encodeURIComponent(name + " commune")}`;
+    const res = await fetch(searchUrl);
+    if(!res.ok) return {ok:false};
+    const data = await res.json();
+    const results = (data.query && data.query.search) || [];
+    for(const r of results){
+      const snippetText = (r.snippet||"").replace(/<[^>]+>/g, "");
+      if(/\bcommune\b/i.test(snippetText)){
+        return {ok:true, name: r.title};
+      }
+    }
+    return {ok:false};
+  }catch(e){
+    return {ok:false}; // pas de connexion / erreur réseau : on ne charge rien par prudence
+  }
+}
+async function fetchWikiSummary(title){
+  try{
+    const res = await fetch(`https://fr.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
+    if(!res.ok) return null;
+    return await res.json();
+  }catch(e){ return null; }
+}
+function isCommuneText(...parts){
+  return /\bcommune\b/i.test(parts.filter(Boolean).join(" "));
+}
+
 /* Lecteur EXIF minimal (JPEG uniquement) — Make, Model, FNumber,
    ExposureTime, FocalLength, ISO, et coordonnées GPS (lat/lon décimales,
    façon Google Photos : le lieu vient du fichier, pas de son nom). */
@@ -1542,16 +1616,28 @@ document.getElementById("edGeolocateBtn").addEventListener("click", async ()=>{
     btn.textContent = originalLabel; btn.disabled = false;
   }
 });
-document.getElementById("edRecalcBtn").addEventListener("click", ()=>{
+document.getElementById("edRecalcBtn").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
   const meta = parseFileNameMeta(p.fileName);
+  const btn = document.getElementById("edRecalcBtn");
+  const originalLabel = btn.textContent;
+  btn.textContent = "…"; btn.disabled = true;
   let changed = [];
   if(meta.dateAchat){ document.getElementById("edDate").value = meta.dateAchat; changed.push("date"); }
-  if(meta.lieu){ document.getElementById("edLieu").value = meta.lieu; changed.push("lieu"); }
   if(meta.personnage){ document.getElementById("edPersonnage").value = meta.personnage; changed.push("personnage"); }
   if(meta.etiquette){ document.getElementById("edEtiquette").value = meta.etiquette; changed.push("étiquette"); }
-  const mapEl = document.getElementById("edMap");
-  if(meta.lieu && (!mapEl.value || mapEl.value === mapUrl(p.exif, p.lieu))) mapEl.value = mapUrlFromLieu(meta.lieu);
+  if(meta.lieuCandidate){
+    const verified = await verifyCommuneWikipedia(meta.lieuCandidate);
+    if(verified.ok){
+      document.getElementById("edLieu").value = verified.name;
+      changed.push(`lieu (« ${verified.name} » confirmé commune sur Wikipédia)`);
+      const mapEl = document.getElementById("edMap");
+      if(!mapEl.value || mapEl.value === mapUrl(p.exif, p.lieu)) mapEl.value = mapUrlFromLieu(verified.name);
+    } else {
+      changed.push(`« ${meta.lieuCandidate} » non confirmé comme commune — lieu non modifié`);
+    }
+  }
+  btn.textContent = originalLabel; btn.disabled = false;
   toast(changed.length ? `Relu depuis le nom du fichier : ${changed.join(", ")}. Vérifiez avant d'enregistrer.` : "Aucune information reconnaissable dans ce nom de fichier.");
 });
 document.getElementById("edMapOpen").addEventListener("click", ()=>{
@@ -1647,14 +1733,11 @@ function renderInfoModal(p){
   const dims = (p.width && p.height) ? `${p.width} × ${p.height}` : "";
   const shared = (p.sharedWith && p.sharedWith.length) ? p.sharedWith.join(", ") : null;
 
-  // Localisation : priorité absolue aux coordonnées GPS du fichier (précises),
-  // le texte du champ Lieu ne sert de repli que si le fichier n'a pas de GPS.
+  // Aperçu carte : UNIQUEMENT à partir du GPS embarqué dans le fichier — jamais
+  // à partir du texte du champ Lieu (trop imprécis pour un pointeur cartographique).
   const hasGps = (p.gpsLat!=null && p.gpsLon!=null);
-  const hasLocation = hasGps || !!p.lieu;
-  const mapEmbedSrc = hasGps
-    ? `https://www.google.com/maps?q=${p.gpsLat.toFixed(6)},${p.gpsLon.toFixed(6)}&z=15&output=embed`
-    : `https://www.google.com/maps?q=${encodeURIComponent(p.lieu)}&output=embed`;
-  const mapLinkHref = p.map || (hasGps ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : mapUrlFromLieu(p.lieu));
+  const mapEmbedSrc = hasGps ? `https://www.google.com/maps?q=${p.gpsLat.toFixed(6)},${p.gpsLon.toFixed(6)}&z=15&output=embed` : null;
+  const mapLinkHref = hasGps ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : (p.lieu ? mapUrlFromLieu(p.lieu) : null);
 
   rows.innerHTML = `
     <div class="info-row">
@@ -1705,8 +1788,8 @@ function renderInfoModal(p){
       <div class="info-content" style="flex:1;">
         <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
         ${hasGps ? `<div class="sub-line">${escapeHtml(decimalToDMS(p.gpsLat, p.gpsLon))} · ${p.gpsLat.toFixed(6)}, ${p.gpsLon.toFixed(6)}</div>` : ""}
-        ${hasLocation ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>
-          <a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
+        ${hasGps ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>` : `<div class="sub-line">Aucune coordonnée GPS dans ce fichier — pas d'aperçu carte.</div>`}
+        ${mapLinkHref ? `<a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
       </div>
       <button class="info-pencil" data-edit="lieu" title="Modifier le lieu">✎</button>
     </div>
@@ -1924,15 +2007,22 @@ document.getElementById("btnNewEntry").addEventListener("click", ()=>{
 });
 // Pré-remplissage automatique (date/lieu/personnage) dès qu'un fichier est choisi,
 // à partir du nom du fichier — reste modifiable avant d'enregistrer.
-document.getElementById("neFile").addEventListener("change", (e)=>{
+// Le lieu n'est rempli que si Wikipédia confirme qu'il s'agit d'une commune.
+document.getElementById("neFile").addEventListener("change", async (e)=>{
   const file = e.target.files[0]; if(!file) return;
   const meta = parseFileNameMeta(file.name);
   const dateEl = document.getElementById("neDate");
   const lieuEl = document.getElementById("neLieu");
   const persEl = document.getElementById("nePersonnage");
+  const etiqEl = document.getElementById("neEtiquette");
   if(meta.dateAchat) dateEl.value = meta.dateAchat;
-  if(meta.lieu && !lieuEl.value) lieuEl.value = meta.lieu;
+  if(meta.etiquette && !etiqEl.value) etiqEl.value = meta.etiquette;
   if(meta.personnage && !persEl.value) persEl.value = meta.personnage;
+  if(meta.lieuCandidate && !lieuEl.value){
+    const verified = await verifyCommuneWikipedia(meta.lieuCandidate);
+    if(verified.ok) lieuEl.value = verified.name;
+    else if(!persEl.value) persEl.value = meta.lieuCandidate; // non confirmé : ne va pas dans Lieu
+  }
 });
 document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   const fileInput = document.getElementById("neFile");
