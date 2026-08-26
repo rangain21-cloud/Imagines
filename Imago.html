@@ -157,6 +157,7 @@ button{font-family:inherit;}
   height:calc(100vh - var(--topbar-h) - 96px);
   min-height:360px;
   overflow:hidden;
+  transition: margin-right .18s ease;
 }
 .viewer-scroll{
   position:absolute; inset:0; overflow:auto;
@@ -182,6 +183,11 @@ button{font-family:inherit;}
   display:none;
 }
 .viewer-fav-mark.show{display:block;}
+.viewer-missing{
+  color:var(--ink-dim); font-family:var(--font-display); font-size:17px; text-align:center;
+  max-width:420px; padding:30px;
+}
+.viewer-missing .sub{font-family:var(--font-ui); font-size:12.5px; margin-top:10px; line-height:1.5;}
 .nav-btn{
   position:absolute; top:50%; transform:translateY(-50%);
   width:46px; height:46px; border-radius:50%;
@@ -307,6 +313,26 @@ button{font-family:inherit;}
 .modal-body{padding:18px 20px;}
 .modal-foot{padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:10px;}
 
+/* ---------- panneau Infos ancré à droite de l'image (grand écran) ---------- */
+@media (min-width: 761px){
+  #modalInfo.modal-overlay{
+    display:none; background:transparent; padding:0;
+    position:fixed; top:var(--topbar-h); right:0; bottom:0; left:auto;
+    width:380px; max-width:36vw;
+    align-items:stretch; justify-content:stretch;
+    z-index:120;
+  }
+  #modalInfo.modal-overlay.show{ display:flex; }
+  #modalInfo .modal{
+    width:100%; max-width:none; height:100%; max-height:none; border-radius:0;
+    border-left:1px solid var(--line); box-shadow:-10px 0 28px rgba(0,0,0,.45);
+    display:flex; flex-direction:column;
+  }
+  #modalInfo .modal-body{ flex:1; overflow-y:auto; }
+  .main.info-open .grid-toolbar,
+  .main.info-open .viewer-wrap{ margin-right: 380px; transition: margin-right .18s ease; }
+}
+
 .field-row{margin-bottom:14px;}
 .field-row label{display:block; font-size:12px; color:var(--ink-dim); margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;}
 .field-row input, .field-row select, .field-row textarea{
@@ -327,8 +353,24 @@ button{font-family:inherit;}
 .edit-preview-wrap{
   background:#0d1712; border-bottom:1px solid var(--line);
   display:flex; align-items:center; justify-content:center; padding:14px;
+  position:relative;
 }
-.edit-preview-wrap img{max-width:100%; border-radius:2px; transition:filter .15s ease, transform .15s ease;}
+.edit-preview-wrap img{max-width:100%; max-height:260px; border-radius:2px; transition:filter .15s ease, transform .15s ease; display:block;}
+.edit-preview-wrap.cropping img{ transform:none !important; } /* rotation ignorée pendant le recadrage (voir note) */
+.crop-overlay{
+  position:absolute; cursor:crosshair; z-index:5;
+  background:rgba(0,0,0,.35);
+}
+.crop-rect{
+  position:absolute; border:2px dashed var(--copper-hi);
+  background:rgba(199,125,59,.18);
+  box-shadow:0 0 0 2000px rgba(0,0,0,.35);
+}
+.crop-toolbar{
+  display:flex; gap:8px; padding:10px 14px; background:var(--bg-panel-2);
+  border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap;
+}
+.crop-toolbar .hint{font-size:12px; color:var(--ink-dim); margin-right:auto;}
 .edit-tabs{
   display:flex; border-bottom:1px solid var(--line); background:var(--bg-panel-2);
 }
@@ -496,6 +538,10 @@ button{font-family:inherit;}
         <div class="viewer-stage" id="viewerStage">
           <div class="viewer-fav-mark" id="viewerFavMark">★</div>
           <img id="viewerImg" src="" alt="">
+          <div class="viewer-missing hidden" id="viewerMissing">
+            📷 Image non disponible sur cet appareil
+            <div class="sub">Ce catalogue a été chargé depuis Drive (métadonnées uniquement) ; le fichier image lui-même n'a jamais été importé ici. Utilisez « Choisir un dossier d'images… » pour l'ajouter, ou consultez-le sur l'appareil où il a été importé.</div>
+          </div>
         </div>
       </div>
       <button class="nav-btn nav-right" id="navNext" title="Image suivante" aria-label="Image suivante">›</button>
@@ -555,8 +601,14 @@ button{font-family:inherit;}
   <div class="modal wide">
     <div class="modal-head"><h2>Modifier</h2><button class="modal-close" data-close="modalEdit">×</button></div>
 
-    <div class="edit-preview-wrap">
-      <img id="edPreviewImg" src="" alt="" style="max-height:220px;">
+    <div class="edit-preview-wrap" id="editPreviewWrap">
+      <img id="edPreviewImg" src="" alt="">
+      <div class="crop-overlay hidden" id="cropOverlay"><div class="crop-rect hidden" id="cropRect"></div></div>
+    </div>
+    <div class="crop-toolbar hidden" id="cropToolbar">
+      <span class="hint">Faites glisser sur l'image pour définir la zone à conserver.</span>
+      <button class="btn reset" id="cropCancelBtn" type="button">Annuler</button>
+      <button class="btn copper" id="cropApplyBtn" type="button">Appliquer le recadrage</button>
     </div>
 
     <div class="edit-tabs" role="tablist">
@@ -579,6 +631,7 @@ button{font-family:inherit;}
           <button class="btn" id="edRotateLeftBtn">↺ Pivoter à gauche (−45°)</button>
           <button class="btn" id="edRotateRightBtn">↻ Pivoter à droite (+45°)</button>
           <button class="btn reset" id="edRotateResetBtn">Réinitialiser la rotation</button>
+          <button class="btn" id="edCropBtn" type="button">✂ Rogner l'image…</button>
         </div>
       </div>
 
@@ -948,7 +1001,16 @@ function renderGrid(){
   document.getElementById("resultCount").textContent = `Image ${idx+1} sur ${list.length}`;
 
   const img = document.getElementById("viewerImg");
-  img.src = p.dataUrl;
+  const missing = document.getElementById("viewerMissing");
+  if(p.dataUrl){
+    img.classList.remove("hidden");
+    missing.classList.add("hidden");
+    img.src = p.dataUrl;
+  } else {
+    img.classList.add("hidden");
+    missing.classList.remove("hidden");
+    img.removeAttribute("src");
+  }
   img.alt = p.fileName || "";
   img.dataset.rotation = p.rotation || 0;
   img.style.filter = p.filterCss || "none";
@@ -1484,13 +1546,25 @@ sidebarOverlay.addEventListener("click", ()=> toggleSidebarDrawer(false));
 /* ---------------------------------------------------------------
    9. Modales : ouverture / fermeture génériques
    --------------------------------------------------------------- */
-function openModal(id){ document.getElementById(id).classList.add("show"); }
-function closeModal(id){ document.getElementById(id).classList.remove("show"); }
+function openModal(id){
+  document.getElementById(id).classList.add("show");
+  if(id==="modalInfo"){
+    document.querySelector(".main").classList.add("info-open");
+    setTimeout(applyViewerZoom, 190); // laisse le temps à la transition CSS de la largeur
+  }
+}
+function closeModal(id){
+  document.getElementById(id).classList.remove("show");
+  if(id==="modalInfo"){
+    document.querySelector(".main").classList.remove("info-open");
+    setTimeout(applyViewerZoom, 190);
+  }
+}
 document.querySelectorAll("[data-close]").forEach(btn=>{
   btn.addEventListener("click", ()=> closeModal(btn.dataset.close));
 });
 document.querySelectorAll(".modal-overlay").forEach(ov=>{
-  ov.addEventListener("click", (e)=>{ if(e.target===ov) ov.classList.remove("show"); });
+  ov.addEventListener("click", (e)=>{ if(e.target===ov) closeModal(ov.id); });
 });
 
 /* ---------------------------------------------------------------
@@ -1663,9 +1737,107 @@ document.getElementById("edRotateResetBtn").addEventListener("click", ()=>{
   editDraft.rotation = 0; refreshEditPreview();
 });
 
+/* -----------------------------------------------------------------
+   Recadrage (rogner) : rectangle de sélection dessiné par glisser sur
+   l'aperçu. Simplification assumée : le recadrage s'applique sur
+   l'image NON pivotée (rotation remise à 0 au préalable si besoin) —
+   gérer un rectangle sur une image pivotée à l'écran demanderait de
+   ré-projeter les coordonnées, complexité non nécessaire ici.
+   ----------------------------------------------------------------- */
+let cropState = null; // {startX, startY} en coordonnées écran pendant le glisser
+function startCropMode(){
+  if((editDraft.rotation||0) % 360 !== 0){
+    toast("Réinitialisez d'abord la rotation avant de rogner l'image.");
+    return;
+  }
+  document.getElementById("editPreviewWrap").classList.add("cropping");
+  document.getElementById("cropOverlay").classList.remove("hidden");
+  document.getElementById("cropToolbar").classList.remove("hidden");
+  document.getElementById("cropRect").classList.add("hidden");
+  const img = document.getElementById("edPreviewImg");
+  const overlay = document.getElementById("cropOverlay");
+  // L'overlay calque exactement le rectangle affiché de l'image
+  overlay.style.left = img.offsetLeft + "px";
+  overlay.style.top = img.offsetTop + "px";
+  overlay.style.width = img.clientWidth + "px";
+  overlay.style.height = img.clientHeight + "px";
+}
+function exitCropMode(){
+  document.getElementById("editPreviewWrap").classList.remove("cropping");
+  document.getElementById("cropOverlay").classList.add("hidden");
+  document.getElementById("cropToolbar").classList.add("hidden");
+  cropState = null;
+}
+document.getElementById("edCropBtn").addEventListener("click", startCropMode);
+document.getElementById("cropCancelBtn").addEventListener("click", exitCropMode);
+
+const cropOverlayEl = document.getElementById("cropOverlay");
+const cropRectEl = document.getElementById("cropRect");
+cropOverlayEl.addEventListener("mousedown", (e)=>{
+  const bounds = cropOverlayEl.getBoundingClientRect();
+  cropState = {startX: e.clientX - bounds.left, startY: e.clientY - bounds.top};
+  cropRectEl.classList.remove("hidden");
+  cropRectEl.style.left = cropState.startX + "px";
+  cropRectEl.style.top = cropState.startY + "px";
+  cropRectEl.style.width = "0px";
+  cropRectEl.style.height = "0px";
+});
+window.addEventListener("mousemove", (e)=>{
+  if(!cropState) return;
+  const bounds = cropOverlayEl.getBoundingClientRect();
+  let x = e.clientX - bounds.left, y = e.clientY - bounds.top;
+  x = Math.max(0, Math.min(x, bounds.width));
+  y = Math.max(0, Math.min(y, bounds.height));
+  const left = Math.min(x, cropState.startX);
+  const top = Math.min(y, cropState.startY);
+  const w = Math.abs(x - cropState.startX);
+  const h = Math.abs(y - cropState.startY);
+  cropRectEl.style.left = left + "px";
+  cropRectEl.style.top = top + "px";
+  cropRectEl.style.width = w + "px";
+  cropRectEl.style.height = h + "px";
+});
+window.addEventListener("mouseup", ()=>{
+  if(cropState) cropState = "done"; // fige le rectangle, l'utilisateur clique ensuite sur "Appliquer"
+});
+
+document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
+  const img = document.getElementById("edPreviewImg");
+  const rectW = parseFloat(cropRectEl.style.width)||0;
+  const rectH = parseFloat(cropRectEl.style.height)||0;
+  if(rectW < 8 || rectH < 8){
+    toast("Dessinez d'abord un rectangle de sélection sur l'image.");
+    return;
+  }
+  // Mise à l'échelle : coordonnées affichées → pixels réels de l'image
+  const scaleX = img.naturalWidth / img.clientWidth;
+  const scaleY = img.naturalHeight / img.clientHeight;
+  const sx = parseFloat(cropRectEl.style.left) * scaleX;
+  const sy = parseFloat(cropRectEl.style.top) * scaleY;
+  const sw = rectW * scaleX;
+  const sh = rectH * scaleY;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(sw);
+  canvas.height = Math.round(sh);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+
+  editDraft.dataUrl = newDataUrl;
+  editDraft.width = canvas.width;
+  editDraft.height = canvas.height;
+  editDraft.cropped = true;
+  document.getElementById("edPreviewImg").src = newDataUrl;
+  exitCropMode();
+  toast("Recadrage appliqué à l'aperçu — cliquez sur « Enregistrer » pour le conserver.");
+});
+
 document.getElementById("btnEdit").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
   editDraft = Object.assign({}, p); // copie de travail — rien n'est écrit tant que "Enregistrer" n'est pas cliqué
+  editDraft.cropped = false;
+  exitCropMode();
   document.getElementById("edPreviewImg").src = p.dataUrl;
   document.getElementById("edFileName").value = p.fileName || "";
   document.getElementById("edDate").value = p.dateAchat || "";
@@ -1770,6 +1942,14 @@ document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
   p.rotation = editDraft.rotation || 0;
   p.filterCss = editDraft.filterCss || "";
   p.filterKey = editDraft.filterKey || null;
+  if(editDraft.cropped && editDraft.dataUrl){
+    p.dataUrl = editDraft.dataUrl;
+    p.width = editDraft.width;
+    p.height = editDraft.height;
+    // ré-estime le poids depuis la nouvelle image (taille du base64 ≈ 3/4 de sa longueur)
+    p.poids = Math.round((editDraft.dataUrl.length * 0.75) / 1024);
+    p.sizeBytes = Math.round(editDraft.dataUrl.length * 0.75);
+  }
   // Le titre reste "Lieu - Personnage" tant qu'il n'a pas été personnalisé à la main
   // (dans la modale Information) ; sinon on respecte le titre choisi par l'utilisateur.
   if(!p.titre || p.titre === previousAutoTitre){
@@ -2580,12 +2760,12 @@ document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
    empêcher une sortie ; après confirmation, un second appui sur Retour
    suffit à quitter réellement. */
 let exitGuardPushed = false;
+function pushExitGuard(){
+  try{ history.pushState({imagoGuard:true}, "", location.href); exitGuardPushed = true; }catch(e){ console.warn("Garde de sortie indisponible :", e); }
+}
 function markCsvDirty(){
-  const wasDirty = State.dirty;
   State.dirty = true;
-  if(!wasDirty && !exitGuardPushed){
-    try{ history.pushState({imagoGuard:true}, "", location.href); exitGuardPushed = true; }catch(e){}
-  }
+  if(!exitGuardPushed) pushExitGuard();
 }
 function markCsvClean(){
   State.dirty = false;
@@ -2597,10 +2777,15 @@ window.addEventListener("popstate", ()=>{
       "Quitter Imago quand même ? (appuyez à nouveau sur Retour pour confirmer la sortie)"
     );
     if(!leave){
-      try{ history.pushState({imagoGuard:true}, "", location.href); exitGuardPushed = true; }catch(e){}
+      pushExitGuard();
     } else {
       exitGuardPushed = false;
     }
+  } else if(exitGuardPushed){
+    // Rien à protéger : on rend la garde transparente en laissant réellement
+    // sortir dès ce premier appui, au lieu d'exiger un second "Retour" inutile.
+    exitGuardPushed = false;
+    history.back();
   }
 });
 window.addEventListener("beforeunload", (e)=>{
@@ -2610,6 +2795,11 @@ window.addEventListener("beforeunload", (e)=>{
     return "";
   }
 });
+// La garde est active dès le chargement de la page (et non plus seulement à
+// partir de la première modification) : ainsi, le bouton Retour Android /
+// Alt+← est TOUJOURS intercepté au moins une fois, ce qui évite de manquer
+// la confirmation si celle-ci arrive avant toute modification détectée.
+pushExitGuard();
 
 /* ---------------------------------------------------------------
    18. Démarrage
