@@ -1022,14 +1022,12 @@ folderInput.addEventListener("change", async ()=>{
     const meta = parseFileNameMeta(file.name);
     const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
 
-    // Le candidat 'lieu' n'est chargé que si Wikipédia confirme une commune ;
-    // sinon on ne charge rien et le mot rejoint plutôt le personnage.
-    let lieu = "", personnage = meta.personnage;
-    if(meta.lieuCandidate){
-      const verified = await verifyCommuneWikipedia(meta.lieuCandidate);
-      if(verified.ok) lieu = verified.name;
-      else personnage = [meta.lieuCandidate, meta.personnage].filter(Boolean).join(", ");
-    }
+    // Le candidat 'lieu' n'est PAS vérifié ici (ça ralentirait l'import d'un
+    // dossier entier avec un aller-retour réseau par image). Il est stocké
+    // tel quel dans lieuCandidate ; la vérification Wikipédia ne se fait
+    // qu'à la demande, depuis la modale Infos, pour l'image consultée.
+    const lieu = "";
+    const personnage = meta.personnage;
 
     const rec = {
       id: uid("ph"),
@@ -1037,7 +1035,7 @@ folderInput.addEventListener("change", async ()=>{
       titre: buildTitre(lieu, personnage),
       dataUrl,
       dateAchat,
-      personnage, lieu, support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
+      personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
       favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
       sizeBytes: file.size, width:dims.width, height:dims.height, exif,
       optique: exifCameraName(exif), poids: Math.round(file.size/1024),
@@ -1053,7 +1051,7 @@ folderInput.addEventListener("change", async ()=>{
   document.getElementById("folderStatus").textContent = `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue.`;
   populateFilterOptions();
   renderGrid();
-  toast(`${added} image(s) importée(s) — date proposée depuis le nom de fichier, lieu vérifié via Wikipédia (commune uniquement), à contrôler.`);
+  toast(`${added} image(s) importée(s) — date/personnage proposés depuis le nom de fichier. Ouvrez « Information » sur une image pour vérifier son lieu via Wikipédia.`);
   autoBuildCsv();
 });
 
@@ -1192,34 +1190,50 @@ async function verifyCommuneWikipedia(candidate){
   if(!candidate || !candidate.trim()) return {ok:false};
   const name = candidate.trim();
   try{
-    // 1) Tentative directe sur le titre exact
+    // 1) Tentative directe sur le titre exact (espaces → underscore, format canonique MediaWiki)
     const direct = await fetchWikiSummary(name);
     if(direct && isCommuneText(direct.description, direct.extract) && direct.type !== "disambiguation"){
-      return {ok:true, name: direct.title || name};
+      return {ok:true, name: direct.title ? direct.title.replace(/_/g," ") : name};
     }
     // 2) Sinon, recherche élargie (utile pour les casses/accents/homonymes)
     const searchUrl = `https://fr.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srlimit=3&srsearch=${encodeURIComponent(name + " commune")}`;
+    console.log("Wikipédia — recherche élargie :", searchUrl);
     const res = await fetch(searchUrl);
-    if(!res.ok) return {ok:false};
+    if(!res.ok){
+      console.warn("Wikipédia — recherche élargie : réponse non-OK", res.status);
+      return {ok:false};
+    }
     const data = await res.json();
     const results = (data.query && data.query.search) || [];
+    console.log("Wikipédia — résultats de recherche :", results.map(r=>r.title));
     for(const r of results){
       const snippetText = (r.snippet||"").replace(/<[^>]+>/g, "");
       if(/\bcommune\b/i.test(snippetText)){
         return {ok:true, name: r.title};
       }
     }
+    console.log(`Wikipédia — aucun résultat ne confirme "${name}" comme commune.`);
     return {ok:false};
   }catch(e){
+    console.error("Wikipédia — échec de la vérification (réseau/CORS) :", e);
     return {ok:false}; // pas de connexion / erreur réseau : on ne charge rien par prudence
   }
 }
 async function fetchWikiSummary(title){
   try{
-    const res = await fetch(`https://fr.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
-    if(!res.ok) return null;
+    const titleParam = title.trim().replace(/ /g, "_");
+    const url = `https://fr.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(titleParam)}`;
+    console.log("Wikipédia — résumé direct :", url);
+    const res = await fetch(url);
+    if(!res.ok){
+      console.log("Wikipédia — résumé direct : réponse non-OK", res.status);
+      return null;
+    }
     return await res.json();
-  }catch(e){ return null; }
+  }catch(e){
+    console.error("Wikipédia — échec du résumé direct (réseau/CORS) :", e);
+    return null;
+  }
 }
 function isCommuneText(...parts){
   return /\bcommune\b/i.test(parts.filter(Boolean).join(" "));
@@ -1847,6 +1861,10 @@ function renderInfoModal(p){
       <div class="info-ic">📍</div>
       <div class="info-content" style="flex:1;">
         <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
+        ${(!p.lieu && p.lieuCandidate) ? `
+          <div class="sub-line">Détecté dans le nom du fichier : « ${escapeHtml(p.lieuCandidate)} » (non vérifié)</div>
+          <button class="btn" id="infoVerifyLieuBtn" type="button" style="margin-top:6px; padding:6px 10px; font-size:12px;">🌐 Vérifier via Wikipédia</button>
+        ` : ""}
         ${hasGps ? `<div class="sub-line">${escapeHtml(decimalToDMS(p.gpsLat, p.gpsLon))} · ${p.gpsLat.toFixed(6)}, ${p.gpsLon.toFixed(6)}</div>` : ""}
         ${hasGps ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>` : `<div class="sub-line">Aucune coordonnée GPS dans ce fichier — pas d'aperçu carte.</div>`}
         ${mapLinkHref ? `<a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
@@ -1857,6 +1875,24 @@ function renderInfoModal(p){
 
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
   rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p, true));
+  const verifyBtn = document.getElementById("infoVerifyLieuBtn");
+  if(verifyBtn){
+    verifyBtn.addEventListener("click", async ()=>{
+      verifyBtn.textContent = "Vérification…"; verifyBtn.disabled = true;
+      const verified = await verifyCommuneWikipedia(p.lieuCandidate);
+      if(verified.ok){
+        p.lieu = verified.name;
+        p.lieuCandidate = "";
+        if(!p.titre || p.titre === buildTitre("", p.personnage)) p.titre = buildTitre(p.lieu, p.personnage);
+      } else {
+        toast(`« ${p.lieuCandidate} » non confirmé comme commune sur Wikipédia. Voir la console (F12) pour le détail ; vous pouvez aussi le saisir manuellement (crayon).`);
+      }
+      await idbPut("photos", p);
+      populateFilterOptions();
+      renderGrid();
+      renderInfoModal(p);
+    });
+  }
   const learnMore = document.getElementById("infoLearnMore");
   if(learnMore) learnMore.addEventListener("click", ()=> toast("Les images restent sur cet appareil par défaut. « Sauver sur Drive » ne synchronise que le catalogue (CSV). Pour envoyer une image précise sur Drive, utilisez « Partager »."));
 }
@@ -2137,11 +2173,23 @@ document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
    15. CSV — génération automatique, export, import
    --------------------------------------------------------------- */
 const CSV_COLUMNS = ["id","fileName","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","corbeille","rotation","albums","filterKey","optique","poids","map"];
-/* Titre auto-construit "Lieu - Personnage". Reste éditable dans la modale
-   Information : si l'utilisateur le personnalise, il n'est plus regénéré
-   automatiquement (voir logique de préservation dans btnSaveEdit). */
+/* Titre auto-construit à partir de Lieu + Personnage, nettoyé de toute
+   ponctuation parasite (virgule, tiret, underscore, esperluette) et du
+   mot de liaison "et", pour ne garder que les mots utiles. Reste
+   éditable dans la modale Information : si l'utilisateur le
+   personnalise, il n'est plus regénéré automatiquement (voir logique
+   de préservation dans btnSaveEdit). */
+function cleanTitrePart(s){
+  if(!s) return "";
+  return s
+    .replace(/[,\-_&]/g, " ")
+    .split(/\s+/)
+    .filter(w => w && w.toLowerCase() !== "et")
+    .join(" ")
+    .trim();
+}
 function buildTitre(lieu, personnage){
-  return [lieu, personnage].filter(Boolean).join(" - ");
+  return [cleanTitrePart(lieu), cleanTitrePart(personnage)].filter(Boolean).join(" ");
 }
 function csvEscape(v){
   const s = (v===undefined||v===null) ? "" : String(v);
