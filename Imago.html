@@ -537,7 +537,7 @@ button{font-family:inherit;}
              aria-owns=":1" aria-controls=":1" aria-description="Aucun destinataire sélectionné" autofocus
              placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo">
       <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
-      <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
+      <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalShare">Annuler</button>
@@ -821,7 +821,7 @@ const State = {
   selectedId: null,
   viewIndex: 0,
   view: {scale:1},
-  drive: {clientId: localStorage.getItem("imago_drive_client_id")||"", token:null, tokenClient:null, fileId: localStorage.getItem("imago_drive_file_id")||""},
+  drive: {clientId: localStorage.getItem("imago_drive_client_id")||"", token:null, tokenClient:null, fileId: localStorage.getItem("imago_drive_file_id")||"", folderId: localStorage.getItem("imago_drive_folder_id")||""},
   slideshowMode: "loupe", // "loupe" | "diaporama"
   slideshowList: [],
   slideshowIndex: 0,
@@ -2245,12 +2245,27 @@ function setDriveBtnState(btnId, lblId, done, doneLabel){
 
 document.getElementById("btnDriveConfig").addEventListener("click", ()=>{
   const id = prompt("Collez votre identifiant client OAuth Google (Client ID se terminant par .apps.googleusercontent.com) :", State.drive.clientId||"");
-  if(id){
-    State.drive.clientId = id.trim();
-    localStorage.setItem("imago_drive_client_id", State.drive.clientId);
-    toast("Identifiant client enregistré localement.");
+  if(id==null) return; // annulé
+  const cleaned = sanitizeClientId(id);
+  if(!cleaned){ toast("Champ vide, rien n'a été enregistré."); return; }
+  const looksValid = /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/i.test(cleaned);
+  State.drive.clientId = cleaned;
+  localStorage.setItem("imago_drive_client_id", cleaned);
+  if(!looksValid){
+    toast(`⚠ Enregistré, mais ce texte ne ressemble pas à un vrai Client ID Google (attendu : chiffres-lettres.apps.googleusercontent.com). Valeur enregistrée : « ${cleaned} ». Revérifiez le copier-coller (les claviers mobiles remplacent parfois le tiret par un tiret typographique).`);
+  } else {
+    toast(`Identifiant client enregistré sur cet appareil : ${cleaned.slice(0,14)}…${cleaned.slice(-28)}`);
   }
 });
+/* Nettoie les pièges classiques du copier-coller mobile : tirets typographiques,
+   guillemets collés, espaces/retours à la ligne invisibles au milieu du texte. */
+function sanitizeClientId(raw){
+  return String(raw)
+    .replace(/[\u2010-\u2015\u2212]/g, "-")      // tirets typographiques → tiret simple
+    .replace(/[\u2018\u2019\u201C\u201D"']/g, "") // guillemets droits/courbes accidentels
+    .replace(/\s+/g, "")                          // tout espace/saut de ligne, y compris au milieu
+    .trim();
+}
 
 function loadGisScript(){
   return new Promise((resolve, reject)=>{
@@ -2266,7 +2281,11 @@ function loadGisScript(){
 
 document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
   if(!State.drive.clientId){
-    toast("Configurez d'abord votre identifiant client OAuth (lien sous les boutons Drive).");
+    toast("Configurez d'abord votre identifiant client OAuth sur CET appareil (menu ☰ → lien sous les boutons Drive) — ce réglage n'est pas partagé entre vos appareils.");
+    return;
+  }
+  if(!/^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/i.test(State.drive.clientId)){
+    toast(`⚠ L'identifiant enregistré sur cet appareil ne ressemble pas à un Client ID valide (« ${State.drive.clientId} »). Reconfigurez-le via « Configurer l'identifiant client… ».`);
     return;
   }
   try{
@@ -2275,7 +2294,15 @@ document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
       client_id: State.drive.clientId,
       scope: "https://www.googleapis.com/auth/drive.file",
       callback: (resp)=>{
-        if(resp.error){ toast("Connexion refusée : " + resp.error); return; }
+        if(resp.error){
+          console.error("Google OAuth — erreur :", resp);
+          if(resp.error === "invalid_client"){
+            toast("Erreur invalid_client : Google ne reconnaît pas cet identifiant. Vérifiez qu'il est copié EXACTEMENT depuis Google Cloud Console (menu ☰ → Configurer l'identifiant client…), sans espace ni tiret modifié par le clavier.");
+          } else {
+            toast("Connexion refusée : " + resp.error);
+          }
+          return;
+        }
         State.drive.token = resp.access_token;
         setDriveBtnState("btnDriveConnect","lblDriveConnect", true, "Connecté");
         toast("Connecté à Google Drive.");
@@ -2283,6 +2310,7 @@ document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
     });
     State.drive.tokenClient.requestAccessToken();
   }catch(err){
+    console.error("Drive — échec de connexion :", err);
     toast(err.message);
   }
 });
@@ -2318,11 +2346,36 @@ async function driveApiFetch(url, opts={}){
 }
 
 /* -----------------------------------------------------------------
-   Partage réel d'une image via Google Drive : upload du fichier
-   (une seule fois, réutilisé ensuite via p.driveFileId) puis création
-   d'une permission Drive pour chaque adresse e-mail destinataire —
-   c'est CE dernier appel qui déclenche l'e-mail « X a partagé un
-   fichier avec vous » envoyé par Google.
+   Dossier Drive "IMAGINES" : créé une seule fois (recherché parmi les
+   fichiers de l'app grâce au scope drive.file, sinon créé), puis
+   réutilisé pour y ranger toutes les images envoyées via Partager.
+   ----------------------------------------------------------------- */
+async function ensureImaginesFolder(){
+  if(State.drive.folderId) return State.drive.folderId;
+  const q = encodeURIComponent("name='IMAGINES' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&spaces=drive`);
+  const listData = await listRes.json();
+  let folderId = listData.files && listData.files[0] ? listData.files[0].id : null;
+  if(!folderId){
+    const createRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?fields=id`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: "IMAGINES", mimeType: "application/vnd.google-apps.folder"})
+    });
+    const created = await createRes.json();
+    folderId = created.id;
+  }
+  State.drive.folderId = folderId;
+  localStorage.setItem("imago_drive_folder_id", folderId);
+  return folderId;
+}
+
+/* -----------------------------------------------------------------
+   Partage réel d'une image via Google Drive : upload du fichier dans
+   le dossier IMAGINES (une seule fois, réutilisé ensuite via
+   p.driveFileId) puis création d'une permission Drive pour chaque
+   adresse e-mail destinataire — c'est CE dernier appel qui déclenche
+   l'e-mail « X a partagé un fichier avec vous » envoyé par Google.
    ----------------------------------------------------------------- */
 async function ensurePhotoUploadedToDrive(p){
   if(p.driveFileId) return {id: p.driveFileId, webViewLink: p.driveWebViewLink || ""};
@@ -2330,8 +2383,9 @@ async function ensurePhotoUploadedToDrive(p){
   if(!match) throw new Error("Image introuvable en mémoire.");
   const mime = match[1] || "image/jpeg";
   const base64Data = match[2];
+  const folderId = await ensureImaginesFolder();
   const boundary = "imago_img_boundary_" + Date.now();
-  const metadata = {name: p.fileName || "image.jpg"};
+  const metadata = {name: p.fileName || "image.jpg", parents: [folderId]};
   const body =
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
     `--${boundary}\r\nContent-Type: ${mime}\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64Data}\r\n--${boundary}--`;
