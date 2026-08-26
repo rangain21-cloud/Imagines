@@ -829,7 +829,8 @@ const State = {
   slideshowMode: "loupe", // "loupe" | "diaporama"
   slideshowList: [],
   slideshowIndex: 0,
-  slideshowTimer: null
+  slideshowTimer: null,
+  dirty: false // true si le CSV a changé depuis la dernière sauvegarde (Drive ou export local)
 };
 
 function uid(prefix="id"){ return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
@@ -855,6 +856,7 @@ async function loadAll(){
   State.photos = await idbAll("photos");
   State.albums = await idbAll("albums");
   State.auteurs = await idbAll("auteurs");
+  await migrateDirtyTitres();
   populateFilterOptions();
   populateAuteurDatalist();
   renderGrid();
@@ -865,6 +867,31 @@ async function loadAll(){
   }
   if(State.drive.clientId){
     document.getElementById("folderStatus").textContent += "";
+  }
+}
+
+/* Nettoyage rétroactif, au démarrage : les titres constitués par une
+   version antérieure de l'app pouvaient contenir ponctuation/chiffres.
+   On ne touche qu'aux titres qui contiennent encore un chiffre ou un
+   caractère qui n'est ni une lettre ni un espace — un titre déjà propre
+   ou personnalisé sans ces caractères n'est pas modifié. */
+async function migrateDirtyTitres(){
+  let migrated = 0;
+  for(const p of State.photos){
+    const t = p.titre || "";
+    const looksDirty = /[0-9]/.test(t) || /[^\p{L}\s]/u.test(t);
+    if(looksDirty){
+      const clean = buildTitre(p.lieu, p.personnage);
+      if(clean !== p.titre){
+        p.titre = clean;
+        await idbPut("photos", p);
+        migrated++;
+      }
+    }
+  }
+  if(migrated){
+    autoBuildCsv();
+    toast(`${migrated} titre(s) ancien(s) nettoyé(s) automatiquement (ponctuation/chiffres retirés).`);
   }
 }
 
@@ -2173,16 +2200,15 @@ document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
    15. CSV — génération automatique, export, import
    --------------------------------------------------------------- */
 const CSV_COLUMNS = ["id","fileName","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","corbeille","rotation","albums","filterKey","optique","poids","map"];
-/* Titre auto-construit à partir de Lieu + Personnage, nettoyé de toute
-   ponctuation parasite (virgule, tiret, underscore, esperluette) et du
-   mot de liaison "et", pour ne garder que les mots utiles. Reste
-   éditable dans la modale Information : si l'utilisateur le
-   personnalise, il n'est plus regénéré automatiquement (voir logique
-   de préservation dans btnSaveEdit). */
+/* Titre auto-construit à partir de Lieu + Personnage : AUCUNE ponctuation,
+   AUCUN chiffre — uniquement des lettres et des espaces, sans le mot de
+   liaison "et". Reste éditable dans la modale Information : si
+   l'utilisateur le personnalise, il n'est plus regénéré automatiquement
+   (voir logique de préservation dans btnSaveEdit). */
 function cleanTitrePart(s){
   if(!s) return "";
   return s
-    .replace(/[,\-_&]/g, " ")
+    .replace(/[^\p{L}\s]/gu, " ")   // supprime TOUT sauf les lettres (accents compris) et les espaces : ponctuation, tirets, chiffres…
     .split(/\s+/)
     .filter(w => w && w.toLowerCase() !== "et")
     .join(" ")
@@ -2206,7 +2232,7 @@ function buildCsv(){
   return rows.join("\n");
 }
 let currentCsv = "";
-function autoBuildCsv(){ currentCsv = buildCsv(); return currentCsv; }
+function autoBuildCsv(){ currentCsv = buildCsv(); markCsvDirty(); return currentCsv; }
 
 document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   const csv = autoBuildCsv();
@@ -2215,6 +2241,7 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   a.href = URL.createObjectURL(blob);
   a.download = "imago_catalogue.csv";
   document.body.appendChild(a); a.click(); a.remove();
+  markCsvClean();
   toast("Catalogue CSV exporté.");
 });
 
@@ -2473,22 +2500,33 @@ async function shareDriveFileWithEmail(fileId, email){
 document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
   try{
-    let fileId = State.drive.fileId;
-    if(!fileId){
-      const folderId = await ensureImaginesFolder();
-      const q = encodeURIComponent(`name='imago_catalogue.csv' and '${folderId}' in parents and trashed=false`);
-      const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
-      const data = await listRes.json();
-      if(data.files && data.files[0]) fileId = data.files[0].id;
+    // On interroge TOUJOURS Drive (on ne se fie pas à un fileId mis en cache,
+    // qui pourrait pointer vers une version obsolète) et on trie par date de
+    // modification décroissante pour être certain de charger la DERNIÈRE
+    // instance du fichier — y compris s'il existe plusieurs fichiers du même
+    // nom dans IMAGINES suite à d'anciens essais.
+    const folderId = await ensureImaginesFolder();
+    const q = encodeURIComponent(`name='imago_catalogue.csv' and '${folderId}' in parents and trashed=false`);
+    const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=${encodeURIComponent("modifiedTime desc")}`);
+    const listData = await listRes.json();
+    const files = listData.files || [];
+    if(files.length===0){ toast("Aucun catalogue trouvé dans le dossier IMAGINES. Utilisez d'abord « Sauver sur Drive »."); return; }
+    const latest = files[0]; // le plus récent, grâce au tri par modifiedTime décroissant
+    if(files.length > 1){
+      console.warn(`${files.length} fichiers "imago_catalogue.csv" trouvés dans IMAGINES — le plus récent est utilisé.`, files);
     }
-    if(!fileId){ toast("Aucun catalogue trouvé dans le dossier IMAGINES. Utilisez d'abord « Sauver sur Drive »."); return; }
-    const fileRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+    const fileRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${latest.id}?alt=media`);
     const text = await fileRes.text();
     await mergeCsvIntoCatalog(text);
-    State.drive.fileId = fileId;
-    localStorage.setItem("imago_drive_file_id", fileId);
+    State.drive.fileId = latest.id;
+    localStorage.setItem("imago_drive_file_id", latest.id);
     setDriveBtnState("btnDriveLoad","lblDriveLoad", true, "Chargé");
-    toast("Catalogue chargé depuis le dossier IMAGINES.");
+    markCsvClean();
+    const dateStr = latest.modifiedTime ? new Date(latest.modifiedTime).toLocaleString("fr-FR") : "date inconnue";
+    toast(
+      `Dernière version du catalogue chargée depuis IMAGINES (modifiée le ${dateStr}).` +
+      (files.length > 1 ? ` ${files.length} fichiers portaient ce nom — le plus récent a été retenu, les autres sont ignorés.` : "")
+    );
   }catch(err){ toast(err.message); }
 });
 
@@ -2521,12 +2559,60 @@ document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
       localStorage.setItem("imago_drive_file_id", data.id);
     }
     setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
+    markCsvClean();
     toast("Catalogue sauvegardé dans le dossier IMAGINES.");
   }catch(err){ toast(err.message); }
 });
 
+/* -----------------------------------------------------------------
+   17. Confirmation de sortie si le CSV n'est pas sauvegardé sur Drive
+   -----------------------------------------------------------------
+   - markCsvDirty() : appelé automatiquement à chaque reconstruction du
+     CSV (donc à chaque changement de catalogue). Empile un état
+     d'historique "garde" au premier changement, pour intercepter le
+     bouton Retour Android / Alt+← (déclenche 'popstate').
+   - markCsvClean() : appelé après une sauvegarde réussie (Drive ou
+     export local), désarme la garde.
+   - 'beforeunload' reste un filet de sécurité générique pour la
+     fermeture d'onglet/rechargement/saisie d'une autre adresse — son
+     texte est imposé par le navigateur, on ne peut pas le personnaliser.
+   NB : par sécurité navigateur, aucune page web ne peut totalement
+   empêcher une sortie ; après confirmation, un second appui sur Retour
+   suffit à quitter réellement. */
+let exitGuardPushed = false;
+function markCsvDirty(){
+  const wasDirty = State.dirty;
+  State.dirty = true;
+  if(!wasDirty && !exitGuardPushed){
+    try{ history.pushState({imagoGuard:true}, "", location.href); exitGuardPushed = true; }catch(e){}
+  }
+}
+function markCsvClean(){
+  State.dirty = false;
+}
+window.addEventListener("popstate", ()=>{
+  if(State.dirty){
+    const leave = confirm(
+      "Le catalogue contient des modifications non sauvegardées sur Google Drive (CSV).\n\n" +
+      "Quitter Imago quand même ? (appuyez à nouveau sur Retour pour confirmer la sortie)"
+    );
+    if(!leave){
+      try{ history.pushState({imagoGuard:true}, "", location.href); exitGuardPushed = true; }catch(e){}
+    } else {
+      exitGuardPushed = false;
+    }
+  }
+});
+window.addEventListener("beforeunload", (e)=>{
+  if(State.dirty){
+    e.preventDefault();
+    e.returnValue = "";
+    return "";
+  }
+});
+
 /* ---------------------------------------------------------------
-   17. Démarrage
+   18. Démarrage
    --------------------------------------------------------------- */
 loadAll();
 </script>
