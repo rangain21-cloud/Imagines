@@ -699,6 +699,7 @@ button{font-family:inherit;}
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalEdit">Annuler</button>
+      <button class="btn" id="btnSaveEditDownload">💾 Enregistrer + télécharger</button>
       <button class="btn copper" id="btnSaveEdit">Enregistrer</button>
     </div>
   </div>
@@ -883,10 +884,18 @@ const State = {
   slideshowList: [],
   slideshowIndex: 0,
   slideshowTimer: null,
-  dirty: false // true si le CSV a changé depuis la dernière sauvegarde (Drive ou export local)
+  dirty: false, // true si le CSV a changé depuis la dernière sauvegarde (Drive ou export local)
+  catalogFileName: null // ex: "Catalogue-0001.csv" — attribué à l'ouverture du dossier local
 };
 
 function uid(prefix="id"){ return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+/* Attribue le prochain numéro de catalogue disponible, format Catalogue-xxxx.csv
+   (compteur sur 4 chiffres). Comme la session repart toujours de zéro, on ne
+   peut pas savoir quels numéros existent déjà ailleurs : on démarre donc à 1
+   à chaque nouveau dossier sans catalogue détecté. */
+function nextCatalogFileName(){
+  return "Catalogue-0001.csv";
+}
 
 /* ---------------------------------------------------------------
    2. Toast
@@ -903,49 +912,31 @@ function toast(msg, durationMs){
 }
 
 /* ---------------------------------------------------------------
-   3. Chargement initial
+   3. Chargement initial — session TOUJOURS vierge : aucune image ni
+   catalogue n'est restauré d'une session précédente. Seuls les
+   référentiels transverses (albums, auteurs) persistent, car ils ne
+   sont pas liés à un dossier particulier. La photothèque ne vit qu'en
+   mémoire, le temps de la session, et sa source de vérité est le
+   dossier local + son fichier Catalogue-xxxx.csv (voir importFolder).
    --------------------------------------------------------------- */
 async function loadAll(){
-  State.photos = await idbAll("photos");
+  State.photos = [];
+  await clearPhotosStore(); // purge toute image résiduelle d'une session précédente
   State.albums = await idbAll("albums");
   State.auteurs = await idbAll("auteurs");
-  await migrateDirtyTitres();
   populateFilterOptions();
   populateAuteurDatalist();
   renderGrid();
-  const folderName = await idbGetMeta("folderName", "");
-  if(folderName){
-    document.getElementById("folderStatus").textContent =
-      `Dernier dossier : "${folderName}" — ${State.photos.length} image(s) en catalogue.`;
-  }
-  if(State.drive.clientId){
-    document.getElementById("folderStatus").textContent += "";
-  }
+  document.getElementById("folderStatus").textContent = "Aucun dossier chargé pour l'instant.";
 }
-
-/* Nettoyage rétroactif, au démarrage : les titres constitués par une
-   version antérieure de l'app pouvaient contenir ponctuation/chiffres.
-   On ne touche qu'aux titres qui contiennent encore un chiffre ou un
-   caractère qui n'est ni une lettre ni un espace — un titre déjà propre
-   ou personnalisé sans ces caractères n'est pas modifié. */
-async function migrateDirtyTitres(){
-  let migrated = 0;
-  for(const p of State.photos){
-    const t = p.titre || "";
-    const looksDirty = /[0-9]/.test(t) || /[^\p{L}\s]/u.test(t);
-    if(looksDirty){
-      const clean = buildTitre(p.lieu, p.personnage);
-      if(clean !== p.titre){
-        p.titre = clean;
-        await idbPut("photos", p);
-        migrated++;
-      }
-    }
-  }
-  if(migrated){
-    autoBuildCsv();
-    toast(`${migrated} titre(s) ancien(s) nettoyé(s) automatiquement (ponctuation/chiffres retirés).`);
-  }
+async function clearPhotosStore(){
+  const db = await openDB();
+  return new Promise((res)=>{
+    const tx = db.transaction("photos", "readwrite");
+    tx.objectStore("photos").clear();
+    tx.oncomplete = ()=> res(true);
+    tx.onerror = ()=> res(false);
+  });
 }
 
 /* ---------------------------------------------------------------
@@ -1019,6 +1010,11 @@ function renderGrid(){
 
   applyViewerZoom();
   updateToolbarState();
+  // Si le panneau Infos est ouvert, il doit toujours refléter l'image
+  // actuellement affichée dans le visualiseur — y compris après ‹ › ou un swipe.
+  if(document.getElementById("modalInfo").classList.contains("show")){
+    renderInfoModal(p);
+  }
 }
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -1097,7 +1093,8 @@ document.body.appendChild(folderInput);
 document.getElementById("btnPickFolder").addEventListener("click", ()=> folderInput.click());
 
 folderInput.addEventListener("change", async ()=>{
-  const files = [...folderInput.files].filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
+  const allFiles = [...folderInput.files];
+  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
   const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier";
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
@@ -1136,8 +1133,23 @@ folderInput.addEventListener("change", async ()=>{
     State.photos.push(rec);
     added++;
   }
-  await idbSetMeta("folderName", folderName);
-  document.getElementById("folderStatus").textContent = `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue.`;
+
+  // Recherche d'un catalogue existant dans CE MÊME dossier (format Catalogue-xxxx.csv).
+  // webkitdirectory nous donne tous les fichiers du dossier, CSV compris, en un seul
+  // choix utilisateur : pas besoin d'une sélection séparée.
+  const catalogFile = allFiles.find(f => /^Catalogue-\d+\.csv$/i.test(f.name));
+  if(catalogFile){
+    const text = await catalogFile.text();
+    await mergeCsvIntoCatalog(text);
+    State.catalogFileName = catalogFile.name;
+    document.getElementById("folderStatus").textContent =
+      `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue. Catalogue existant « ${catalogFile.name} » chargé.`;
+  } else {
+    State.catalogFileName = nextCatalogFileName();
+    document.getElementById("folderStatus").textContent =
+      `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue. Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`;
+  }
+
   populateFilterOptions();
   renderGrid();
   toast(`${added} image(s) importée(s) — date/personnage proposés depuis le nom de fichier. Ouvrez « Information » sur une image pour vérifier son lieu via Wikipédia.`);
@@ -1926,8 +1938,8 @@ document.getElementById("edLieu").addEventListener("input", (e)=>{
   if(wasAuto) mapEl.value = mapUrlFromLieu(e.target.value.trim());
 });
 
-document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
-  const p = getSelected(); if(!p || !editDraft) return;
+function applyEditFormToSelectedPhoto(){
+  const p = getSelected(); if(!p || !editDraft) return null;
   const previousAutoTitre = buildTitre(p.lieu, p.personnage); // titre "auto" avant modification
   p.dateAchat = document.getElementById("edDate").value || p.dateAchat;
   p.support = document.getElementById("edSupport").value.trim();
@@ -1955,12 +1967,34 @@ document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
   if(!p.titre || p.titre === previousAutoTitre){
     p.titre = buildTitre(p.lieu, p.personnage);
   }
+  return p;
+}
+document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
+  const p = applyEditFormToSelectedPhoto(); if(!p) return;
   await idbPut("photos", p);
   populateFilterOptions();
   renderGrid();
   closeModal("modalEdit");
   toast("Modifications enregistrées.");
   autoBuildCsv();
+});
+document.getElementById("btnSaveEditDownload").addEventListener("click", async ()=>{
+  const p = applyEditFormToSelectedPhoto(); if(!p) return;
+  await idbPut("photos", p);
+  populateFilterOptions();
+  renderGrid();
+  closeModal("modalEdit");
+  autoBuildCsv();
+  let finalUrl = p.dataUrl;
+  try{
+    if((p.rotation||0) % 360 !== 0 || (p.filterCss && p.filterCss !== "none")){
+      finalUrl = await renderFinalImageDataUrl(p);
+    }
+  }catch(e){ console.warn("Aplatissement impossible, téléchargement de l'original :", e); }
+  const a = document.createElement("a");
+  a.href = finalUrl; a.download = p.fileName || "image.jpg";
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("Modifications enregistrées et image téléchargée localement (rotation/filtre/recadrage inclus).");
 });
 
 document.getElementById("btnInfo").addEventListener("click", ()=>{
@@ -2226,12 +2260,44 @@ window.addEventListener("mouseup", ()=> loupeDrag=false);
 /* ---------------------------------------------------------------
    12. Modale "Plus d'info" : télécharger / diaporama / pivoter / album
    --------------------------------------------------------------- */
-document.getElementById("actDownload").addEventListener("click", ()=>{
+/* Aplatit rotation + filtre CSS dans les pixels réels de l'image (le
+   recadrage, lui, est déjà gravé dans p.dataUrl dès l'enregistrement dans
+   Modifier). Nécessaire pour que "Télécharger" sauvegarde vraiment tout
+   ce qui a été modifié, pas seulement un rendu visuel côté écran. */
+function renderFinalImageDataUrl(p){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const rot = ((p.rotation||0) % 360 + 360) % 360;
+      const rad = rot * Math.PI/180;
+      const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+      const w = Math.round(img.naturalWidth*cos + img.naturalHeight*sin);
+      const h = Math.round(img.naturalWidth*sin + img.naturalHeight*cos);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if(p.filterCss && p.filterCss !== "none"){ try{ ctx.filter = p.filterCss; }catch(e){} }
+      ctx.translate(w/2, h/2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -img.naturalWidth/2, -img.naturalHeight/2);
+      resolve(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    img.onerror = reject;
+    img.src = p.dataUrl;
+  });
+}
+document.getElementById("actDownload").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
+  let finalUrl = p.dataUrl;
+  try{
+    if((p.rotation||0) % 360 !== 0 || (p.filterCss && p.filterCss !== "none")){
+      finalUrl = await renderFinalImageDataUrl(p);
+    }
+  }catch(e){ console.warn("Aplatissement des modifications impossible, téléchargement de l'original :", e); }
   const a = document.createElement("a");
-  a.href = p.dataUrl; a.download = p.fileName || "image.jpg";
+  a.href = finalUrl; a.download = p.fileName || "image.jpg";
   document.body.appendChild(a); a.click(); a.remove();
-  toast("Téléchargement lancé.");
+  toast("Image enregistrée localement (rotation/filtre/recadrage inclus) — dans le dossier de téléchargements de votre appareil.");
 });
 document.getElementById("actSlideshow").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
@@ -2415,14 +2481,15 @@ let currentCsv = "";
 function autoBuildCsv(){ currentCsv = buildCsv(); markCsvDirty(); return currentCsv; }
 
 document.getElementById("btnExportCsv").addEventListener("click", ()=>{
+  if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
   const csv = autoBuildCsv();
   const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "imago_catalogue.csv";
+  a.download = State.catalogFileName;
   document.body.appendChild(a); a.click(); a.remove();
   markCsvClean();
-  toast("Catalogue CSV exporté.");
+  toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.`);
 });
 
 document.getElementById("btnImportCsv").addEventListener("click", ()=> document.getElementById("csvFileInput").click());
@@ -2683,29 +2750,33 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
     // On interroge TOUJOURS Drive (on ne se fie pas à un fileId mis en cache,
     // qui pourrait pointer vers une version obsolète) et on trie par date de
     // modification décroissante pour être certain de charger la DERNIÈRE
-    // instance du fichier — y compris s'il existe plusieurs fichiers du même
-    // nom dans IMAGINES suite à d'anciens essais.
+    // instance du fichier. Si un dossier local est déjà ouvert cette session,
+    // on cherche PRÉCISÉMENT son catalogue (Catalogue-xxxx.csv) ; sinon on
+    // prend le plus récent catalogue trouvé dans IMAGINES, quel qu'il soit.
     const folderId = await ensureImaginesFolder();
-    const q = encodeURIComponent(`name='imago_catalogue.csv' and '${folderId}' in parents and trashed=false`);
+    const nameClause = State.catalogFileName ? `name='${State.catalogFileName}'` : `name contains 'Catalogue-'`;
+    const q = encodeURIComponent(`${nameClause} and '${folderId}' in parents and trashed=false`);
     const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=${encodeURIComponent("modifiedTime desc")}`);
     const listData = await listRes.json();
-    const files = listData.files || [];
-    if(files.length===0){ toast("Aucun catalogue trouvé dans le dossier IMAGINES. Utilisez d'abord « Sauver sur Drive »."); return; }
+    let files = listData.files || [];
+    if(!State.catalogFileName) files = files.filter(f=>/^Catalogue-\d+\.csv$/i.test(f.name));
+    if(files.length===0){ toast("Aucun catalogue Catalogue-xxxx.csv trouvé dans le dossier IMAGINES. Utilisez d'abord « Sauver sur Drive »."); return; }
     const latest = files[0]; // le plus récent, grâce au tri par modifiedTime décroissant
     if(files.length > 1){
-      console.warn(`${files.length} fichiers "imago_catalogue.csv" trouvés dans IMAGINES — le plus récent est utilisé.`, files);
+      console.warn(`${files.length} catalogues candidats trouvés dans IMAGINES — le plus récent est utilisé.`, files);
     }
     const fileRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${latest.id}?alt=media`);
     const text = await fileRes.text();
     await mergeCsvIntoCatalog(text);
     State.drive.fileId = latest.id;
+    State.catalogFileName = latest.name;
     localStorage.setItem("imago_drive_file_id", latest.id);
     setDriveBtnState("btnDriveLoad","lblDriveLoad", true, "Chargé");
     markCsvClean();
     const dateStr = latest.modifiedTime ? new Date(latest.modifiedTime).toLocaleString("fr-FR") : "date inconnue";
     toast(
-      `Dernière version du catalogue chargée depuis IMAGINES (modifiée le ${dateStr}).` +
-      (files.length > 1 ? ` ${files.length} fichiers portaient ce nom — le plus récent a été retenu, les autres sont ignorés.` : "")
+      `« ${latest.name} » chargé depuis IMAGINES (modifié le ${dateStr}).` +
+      (files.length > 1 ? ` ${files.length} catalogues candidats — le plus récent a été retenu.` : "")
     );
   }catch(err){ toast(err.message); }
 });
@@ -2713,6 +2784,7 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
 document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
   try{
+    if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
     const folderId = await ensureImaginesFolder();
     const csv = autoBuildCsv();
     const boundary = "imago_boundary_" + Date.now();
@@ -2720,8 +2792,8 @@ document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
     // 'parents' n'est accepté qu'à la création : sur une mise à jour (PATCH), Drive
     // rejetterait ce champ, le fichier reste de toute façon déjà dans IMAGINES.
     const metadata = isUpdate
-      ? {name:"imago_catalogue.csv", mimeType:"text/csv"}
-      : {name:"imago_catalogue.csv", mimeType:"text/csv", parents:[folderId]};
+      ? {name: State.catalogFileName, mimeType:"text/csv"}
+      : {name: State.catalogFileName, mimeType:"text/csv", parents:[folderId]};
     const body =
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
       `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
@@ -2740,7 +2812,7 @@ document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
     }
     setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
     markCsvClean();
-    toast("Catalogue sauvegardé dans le dossier IMAGINES.");
+    toast(`« ${State.catalogFileName} » sauvegardé dans le dossier IMAGINES.`);
   }catch(err){ toast(err.message); }
 });
 
