@@ -447,6 +447,10 @@ button{font-family:inherit;}
       La connexion Google Drive nécessite un identifiant client OAuth (Google Cloud Console, API Drive activée).
       <button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
     </p>
+    <p class="drive-note">
+      Tout est rangé dans un seul dossier Drive, <b>IMAGINES</b> (créé automatiquement s'il n'existe pas encore, ou réutilisé s'il existe déjà — y compris si vous l'avez créé vous-même). Pour cela, l'autorisation demandée est un accès Drive complet plutôt que limité aux seuls fichiers créés par l'app : un dossier existant que vous avez créé à la main n'est visible pour l'app que de cette façon.
+      <button class="small-link" id="btnForgetFolder">Oublier le dossier mis en cache…</button>
+    </p>
   </div>
 
   <div class="pave">
@@ -2257,6 +2261,12 @@ document.getElementById("btnDriveConfig").addEventListener("click", ()=>{
     toast(`Identifiant client enregistré sur cet appareil : ${cleaned.slice(0,14)}…${cleaned.slice(-28)}`);
   }
 });
+document.getElementById("btnForgetFolder").addEventListener("click", ()=>{
+  if(!confirm("Oublier le dossier IMAGINES mis en cache sur cet appareil ? La prochaine action Drive recherchera à nouveau le dossier existant (ou en créera un si vraiment aucun n'est trouvé).")) return;
+  State.drive.folderId = "";
+  localStorage.removeItem("imago_drive_folder_id");
+  toast("Dossier oublié — il sera redétecté au prochain envoi ou à la prochaine sauvegarde.");
+});
 /* Nettoie les pièges classiques du copier-coller mobile : tirets typographiques,
    guillemets collés, espaces/retours à la ligne invisibles au milieu du texte. */
 function sanitizeClientId(raw){
@@ -2292,7 +2302,10 @@ document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
     await loadGisScript();
     State.drive.tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: State.drive.clientId,
-      scope: "https://www.googleapis.com/auth/drive.file",
+      // Scope large (pas drive.file) : nécessaire pour retrouver le dossier IMAGINES
+      // que vous avez créé vous-même dans Drive (l'app ne peut voir que ce qu'elle
+      // a créé avec le scope restreint drive.file). Voir la note du menu ☰.
+      scope: "https://www.googleapis.com/auth/drive",
       callback: (resp)=>{
         if(resp.error){
           console.error("Google OAuth — erreur :", resp);
@@ -2346,14 +2359,18 @@ async function driveApiFetch(url, opts={}){
 }
 
 /* -----------------------------------------------------------------
-   Dossier Drive "IMAGINES" : créé une seule fois (recherché parmi les
-   fichiers de l'app grâce au scope drive.file, sinon créé), puis
-   réutilisé pour y ranger toutes les images envoyées via Partager.
+   Dossier Drive "IMAGINES" : réceptacle UNIQUE de l'application.
+   Recherché une seule fois (y compris un dossier que vous avez créé
+   vous-même dans Drive — voir la note sur le scope ci-dessous), puis
+   son ID est mis en cache (localStorage) pour ne plus jamais relancer
+   cette recherche ni recréer de doublon.
+   S'il en existe plusieurs (ex. doublons d'anciens essais), on choisit
+   le plus ANCIEN, en général celui que vous avez créé à la main.
    ----------------------------------------------------------------- */
 async function ensureImaginesFolder(){
   if(State.drive.folderId) return State.drive.folderId;
   const q = encodeURIComponent("name='IMAGINES' and mimeType='application/vnd.google-apps.folder' and trashed=false");
-  const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&spaces=drive`);
+  const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,createdTime)&orderBy=createdTime&spaces=drive`);
   const listData = await listRes.json();
   let folderId = listData.files && listData.files[0] ? listData.files[0].id : null;
   if(!folderId){
@@ -2410,32 +2427,38 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
   try{
     let fileId = State.drive.fileId;
     if(!fileId){
-      const q = encodeURIComponent("name='imago_catalogue.csv' and trashed=false");
+      const folderId = await ensureImaginesFolder();
+      const q = encodeURIComponent(`name='imago_catalogue.csv' and '${folderId}' in parents and trashed=false`);
       const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
       const data = await listRes.json();
       if(data.files && data.files[0]) fileId = data.files[0].id;
     }
-    if(!fileId){ toast("Aucun catalogue trouvé sur Drive. Utilisez d'abord « Sauver sur Drive »."); return; }
+    if(!fileId){ toast("Aucun catalogue trouvé dans le dossier IMAGINES. Utilisez d'abord « Sauver sur Drive »."); return; }
     const fileRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
     const text = await fileRes.text();
     await mergeCsvIntoCatalog(text);
     State.drive.fileId = fileId;
     localStorage.setItem("imago_drive_file_id", fileId);
     setDriveBtnState("btnDriveLoad","lblDriveLoad", true, "Chargé");
-    toast("Catalogue chargé depuis Drive.");
+    toast("Catalogue chargé depuis le dossier IMAGINES.");
   }catch(err){ toast(err.message); }
 });
 
 document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
   try{
+    const folderId = await ensureImaginesFolder();
     const csv = autoBuildCsv();
     const boundary = "imago_boundary_" + Date.now();
-    const metadata = {name:"imago_catalogue.csv", mimeType:"text/csv"};
+    const isUpdate = !!State.drive.fileId;
+    // 'parents' n'est accepté qu'à la création : sur une mise à jour (PATCH), Drive
+    // rejetterait ce champ, le fichier reste de toute façon déjà dans IMAGINES.
+    const metadata = isUpdate
+      ? {name:"imago_catalogue.csv", mimeType:"text/csv"}
+      : {name:"imago_catalogue.csv", mimeType:"text/csv", parents:[folderId]};
     const body =
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
       `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
-    const isUpdate = !!State.drive.fileId;
     const url = isUpdate
       ? `https://www.googleapis.com/upload/drive/v3/files/${State.drive.fileId}?uploadType=multipart`
       : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
@@ -2450,7 +2473,7 @@ document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
       localStorage.setItem("imago_drive_file_id", data.id);
     }
     setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
-    toast("Catalogue sauvegardé sur Drive.");
+    toast("Catalogue sauvegardé dans le dossier IMAGINES.");
   }catch(err){ toast(err.message); }
 });
 
