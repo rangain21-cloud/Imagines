@@ -352,6 +352,18 @@ button{font-family:inherit;}
 .gallery-empty .sub{font-family:var(--font-ui); font-size:12.5px; margin-top:10px; line-height:1.5;}
 .gallery-toggle-btn{margin-left:6px;}
 
+/* ---------- tableau des personnages ---------- */
+.personnage-table{width:100%; border-collapse:collapse; margin-top:4px;}
+.personnage-table th{
+  text-align:left; font-size:11px; letter-spacing:.05em; text-transform:uppercase;
+  color:var(--ink-dim); padding:8px 10px; border-bottom:1px solid var(--line);
+}
+.personnage-table td{padding:8px 10px; border-bottom:1px solid var(--line); font-size:13.5px; vertical-align:middle;}
+.personnage-table tr:last-child td{border-bottom:none;}
+.personnage-table .pt-count{color:var(--ink-dim); font-size:12px; white-space:nowrap;}
+.personnage-table .pt-actions{display:flex; gap:6px; justify-content:flex-end; white-space:nowrap;}
+.personnage-table .pt-actions .btn{padding:6px 10px; font-size:12.5px;}
+
 /* ---------- modals ---------- */
 .modal-overlay{
   position:fixed; inset:0; background:rgba(6,10,8,.72); z-index:1000;
@@ -520,6 +532,7 @@ button{font-family:inherit;}
     <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
     <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
     <button class="tool-btn" id="btnInfo" title="Information"><span class="ic">ⓘ</span><span>Information</span></button>
+    <button class="tool-btn" id="btnPersonnages" title="Personnages"><span class="ic">🧑</span><span>Personnages</span></button>
     <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
     <button class="tool-btn" id="btnTrash" title="Corbeille"><span class="ic">🗑</span><span>Corbeille</span></button>
     <button class="tool-btn" id="btnMore" title="Plus d'info"><span class="ic">⋯</span><span>Plus d'info</span></button>
@@ -827,6 +840,26 @@ button{font-family:inherit;}
       <button class="btn copper" id="btnCreateAlbum">Créer et ajouter</button>
       <button class="btn copper" id="btnConfirmAlbum">Ajouter</button>
     </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: PERSONNAGES ============== -->
+<div class="modal-overlay" id="modalPersonnages">
+  <div class="modal wide">
+    <div class="modal-head"><h2>Personnages</h2><button class="modal-close" data-close="modalPersonnages">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" style="margin:0 0 12px;">
+        Chaque ligne correspond à un mot-clé du champ « Personnage ». Éditer ou supprimer un
+        mot-clé le répercute dans toutes les images du catalogue qui le portent — la
+        correspondance est exacte et sensible à la casse.
+      </p>
+      <table class="personnage-table" id="personnageTable">
+        <thead><tr><th>Personnage</th><th>Images</th><th></th></tr></thead>
+        <tbody id="personnageTableBody"></tbody>
+      </table>
+      <p class="drive-note hidden" id="personnageEmpty">Aucun personnage renseigné pour l'instant.</p>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close="modalPersonnages">Fermer</button></div>
   </div>
 </div>
 
@@ -1567,6 +1600,119 @@ function removeTokenFromPersonnage(personnage, token){
     .filter(s => s && s.toLowerCase() !== token.toLowerCase())
     .join(", ");
 }
+
+/* ---------------------------------------------------------------
+   Modale « Personnages » : liste des mots-clés du champ Personnage
+   (un mot-clé = un des éléments séparés par une virgule dans ce
+   champ), avec renommage ou suppression répercutés sur TOUTES les
+   lignes du catalogue. Recherche/comparaison EXACTE et SENSIBLE À LA
+   CASSE (contrairement à removeTokenFromPersonnage ci-dessus, utilisé
+   ailleurs dans un but différent et volontairement insensible à la casse).
+   --------------------------------------------------------------- */
+function personnageTokens(personnage){
+  return (personnage||"").split(",").map(s=>s.trim()).filter(Boolean);
+}
+function personnageKeywordStats(){
+  const map = new Map(); // mot-clé exact -> nombre d'images
+  State.photos.filter(p=>!p.corbeille).forEach(p=>{
+    personnageTokens(p.personnage).forEach(tok=>{
+      map.set(tok, (map.get(tok)||0) + 1);
+    });
+  });
+  return [...map.entries()].sort((a,b)=> a[0].localeCompare(b[0], "fr"));
+}
+function renderPersonnagesTable(){
+  const stats = personnageKeywordStats();
+  const table = document.getElementById("personnageTable");
+  const tbody = document.getElementById("personnageTableBody");
+  const empty = document.getElementById("personnageEmpty");
+  tbody.innerHTML = "";
+  if(stats.length===0){
+    table.classList.add("hidden");
+    empty.classList.remove("hidden");
+    return;
+  }
+  table.classList.remove("hidden");
+  empty.classList.add("hidden");
+  stats.forEach(([tok, count])=>{
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    tdName.textContent = tok;
+    tr.appendChild(tdName);
+
+    const tdCount = document.createElement("td");
+    tdCount.className = "pt-count";
+    tdCount.textContent = `${count} image${count>1?"s":""}`;
+    tr.appendChild(tdCount);
+
+    const tdActions = document.createElement("td");
+    tdActions.className = "pt-actions";
+    const btnEdit = document.createElement("button");
+    btnEdit.className = "btn"; btnEdit.type = "button"; btnEdit.textContent = "Éditer";
+    btnEdit.addEventListener("click", ()=> promptEditPersonnageKeyword(tok));
+    const btnDel = document.createElement("button");
+    btnDel.className = "btn reset"; btnDel.type = "button"; btnDel.textContent = "Supprimer";
+    btnDel.addEventListener("click", ()=> promptDeletePersonnageKeyword(tok));
+    tdActions.appendChild(btnEdit);
+    tdActions.appendChild(btnDel);
+    tr.appendChild(tdActions);
+
+    tbody.appendChild(tr);
+  });
+}
+function promptEditPersonnageKeyword(oldTok){
+  const val = prompt(`Remplacer le personnage « ${oldTok} » par :`, oldTok);
+  if(val===null) return; // annulé
+  const newTok = val.trim();
+  if(!newTok){ toast("Le nouveau mot-clé ne peut pas être vide."); return; }
+  if(newTok === oldTok) return;
+  renamePersonnageKeywordEverywhere(oldTok, newTok);
+}
+function promptDeletePersonnageKeyword(tok){
+  if(!confirm(`Supprimer le personnage « ${tok} » de toutes les images du catalogue ?`)) return;
+  deletePersonnageKeywordEverywhere(tok);
+}
+async function renamePersonnageKeywordEverywhere(oldTok, newTok){
+  let touched = 0;
+  for(const p of State.photos){
+    const tokens = personnageTokens(p.personnage);
+    if(!tokens.includes(oldTok)) continue; // correspondance exacte, sensible à la casse
+    const seen = new Set();
+    p.personnage = tokens
+      .map(t => t===oldTok ? newTok : t)
+      .filter(t => seen.has(t) ? false : (seen.add(t), true)) // évite un doublon si newTok existait déjà
+      .join(", ");
+    p.titre = buildTitre(p.lieu, p.personnage);
+    await idbPut("photos", p);
+    touched++;
+  }
+  finishPersonnageBulkEdit(`« ${oldTok} » renommé en « ${newTok} » dans ${touched} image${touched>1?"s":""}.`);
+}
+async function deletePersonnageKeywordEverywhere(tok){
+  let touched = 0;
+  for(const p of State.photos){
+    const tokens = personnageTokens(p.personnage);
+    if(!tokens.includes(tok)) continue; // correspondance exacte, sensible à la casse
+    p.personnage = tokens.filter(t => t!==tok).join(", ");
+    p.titre = buildTitre(p.lieu, p.personnage);
+    await idbPut("photos", p);
+    touched++;
+  }
+  finishPersonnageBulkEdit(`« ${tok} » supprimé de ${touched} image${touched>1?"s":""}.`);
+}
+function finishPersonnageBulkEdit(message){
+  populateFilterOptions();
+  renderGrid();
+  renderGallery();
+  renderPersonnagesTable();
+  autoBuildCsv();
+  toast(message);
+}
+document.getElementById("btnPersonnages").addEventListener("click", ()=>{
+  renderPersonnagesTable();
+  openModal("modalPersonnages");
+});
 
 /* Lecteur EXIF minimal (JPEG uniquement) — Make, Model, FNumber,
    ExposureTime, FocalLength, ISO, et coordonnées GPS (lat/lon décimales,
