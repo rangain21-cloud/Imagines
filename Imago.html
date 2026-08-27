@@ -1008,16 +1008,27 @@ const State = {
   slideshowIndex: 0,
   slideshowTimer: null,
   dirty: false, // true si le CSV a changé depuis la dernière sauvegarde (Drive ou export local)
-  catalogFileName: null // ex: "Catalogue-0001.csv" — attribué à l'ouverture du dossier local
+  catalogFileName: null, // ex: "Catalogue-0001.csv" — attribué à l'ouverture du dossier local
+  folderName: null // nom du dossier choisi via « Choisir un dossier d'images… », sert à nommer Catalogue-xxxx.csv
 };
 
 function uid(prefix="id"){ return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
-/* Attribue le prochain numéro de catalogue disponible, format Catalogue-xxxx.csv
-   (compteur sur 4 chiffres). Comme la session repart toujours de zéro, on ne
-   peut pas savoir quels numéros existent déjà ailleurs : on démarre donc à 1
-   à chaque nouveau dossier sans catalogue détecté. */
+/* Nettoie un nom de dossier pour en faire un nom de fichier valide sous
+   Windows/macOS/Linux : caractères interdits remplacés par "_", espaces
+   superflus compactés, longueur raisonnable. */
+function sanitizeFileNamePart(name){
+  const cleaned = String(name||"")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned ? cleaned.slice(0,80) : "0001";
+}
+/* Nom du fichier catalogue : Catalogue-xxxx.csv, où "xxxx" est le nom du
+   dossier d'images choisi via « Choisir un dossier d'images… » (State.folderName).
+   Si aucun dossier n'a encore été choisi dans la session (ex. sauvegarde
+   Drive avant tout import local), on retombe sur "0001". */
 function nextCatalogFileName(){
-  return "Catalogue-0001.csv";
+  return "Catalogue-" + sanitizeFileNamePart(State.folderName) + ".csv";
 }
 
 /* ---------------------------------------------------------------
@@ -1354,6 +1365,7 @@ folderInput.addEventListener("change", async ()=>{
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
   const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier";
+  State.folderName = folderName;
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
 
   // ---- 1) Catalogue existant : s'il y en a plusieurs candidats (ex. suffixes
@@ -2993,16 +3005,36 @@ function buildCsv(){
 let currentCsv = "";
 function autoBuildCsv(){ currentCsv = buildCsv(); markCsvDirty(); return currentCsv; }
 
+/* Construit un CSV à 2 colonnes (fileName + le champ demandé) à partir de
+   State.photos, pour les exports annexes lieu.csv / map.csv : chaque ligne
+   du catalogue principal donne une ligne ici, "fileName" servant de clé de
+   correspondance entre les 3 fichiers exportés. */
+function buildFieldCsv(field){
+  const rows = ["fileName;" + field];
+  State.photos.forEach(p=>{
+    rows.push(csvEscape(p.fileName) + ";" + csvEscape(p[field]));
+  });
+  return rows.join("\n");
+}
+function downloadCsvFile(csvText, fileName){
+  const blob = new Blob(["\uFEFF"+csvText], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
 document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
   const csv = autoBuildCsv();
-  const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = State.catalogFileName;
-  document.body.appendChild(a); a.click(); a.remove();
+  downloadCsvFile(csv, State.catalogFileName);
+  // Règle : le champ "info-Lieu-Text" (p.lieu) de chaque ligne est en plus
+  // reporté dans lieu.csv, et le champ "info-map" (p.map) dans map.csv.
+  downloadCsvFile(buildFieldCsv("lieu"), "lieu.csv");
+  downloadCsvFile(buildFieldCsv("map"), "map.csv");
   markCsvClean();
-  toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.`);
+  toast(`« ${State.catalogFileName} », « lieu.csv » et « map.csv » exportés — déposez-les dans le dossier de vos images pour qu'ils soient retrouvés automatiquement au prochain import.`);
 });
 
 document.getElementById("btnImportCsv").addEventListener("click", ()=> document.getElementById("csvFileInput").click());
