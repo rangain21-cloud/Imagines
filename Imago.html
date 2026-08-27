@@ -595,6 +595,7 @@ button{font-family:inherit;}
   <div class="pave">
     <h3>Photothèque locale</h3>
     <button class="btn copper" id="btnPickFolder" style="width:100%; margin-bottom:8px;">📁 Choisir un dossier d'images…</button>
+    <button class="btn" id="btnPickFiles" style="width:100%; margin-bottom:8px;">🖼️ Sélectionner des images (si le dossier échoue)…</button>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
   </div>
 
@@ -682,7 +683,8 @@ button{font-family:inherit;}
     <div class="modal-body">
       <input class="combo-input" type="text" size="46" role="combobox"
              aria-owns=":1" aria-controls=":1" aria-description="Aucun destinataire sélectionné" autofocus
-             placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo">
+             placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo" list="shareEmailList" autocomplete="off">
+      <datalist id="shareEmailList"></datalist>
       <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
       <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
     </div>
@@ -1526,12 +1528,12 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
   step();
 }
 
-folderInput.addEventListener("change", async ()=>{
+async function handleFilesSelected(fileList, folderNameOverride){
   const myImportToken = ++importToken;
-  const allFiles = [...folderInput.files];
+  const allFiles = [...fileList];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
-  const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier";
+  const folderName = folderNameOverride || (files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier");
   State.folderName = folderName;
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
 
@@ -1607,7 +1609,24 @@ folderInput.addEventListener("change", async ()=>{
     toast(`${priorityFiles.length} photo(s) récente(s) affichée(s) — chargement des ${restFiles.length} autre(s) en arrière-plan…`);
     importRestInBackground(restFiles, csvRowByFileName, stats, myImportToken, folderName, catalogCandidates);
   }
-});
+}
+folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.files));
+
+/* Solution de repli pour Android : certains dossiers (notamment les médias
+   WhatsApp, sous stockage cloisonné "scoped storage") renvoient une erreur
+   NotReadableError via le sélecteur de DOSSIER (<input webkitdirectory>),
+   même si les fichiers sont listés correctement — Chrome n'obtient alors
+   qu'un accès virtuel, pas le contenu réel. Le sélecteur d'IMAGES classique
+   (galerie/fichiers système, sans mode dossier) utilise un mécanisme
+   d'autorisation différent (par fichier) qui fonctionne dans ce cas. */
+const filePickerInput = document.createElement("input");
+filePickerInput.type = "file";
+filePickerInput.accept = "image/*";
+filePickerInput.multiple = true;
+filePickerInput.className = "hidden";
+document.body.appendChild(filePickerInput);
+document.getElementById("btnPickFiles").addEventListener("click", ()=> filePickerInput.click());
+filePickerInput.addEventListener("change", ()=> handleFilesSelected(filePickerInput.files, "Sélection manuelle"));
 
 function exifCameraName(exif){
   if(!exif) return "";
@@ -2327,6 +2346,45 @@ document.querySelectorAll(".modal-overlay").forEach(ov=>{
 /* ---------------------------------------------------------------
    10. Boutons de la barre supérieure
    --------------------------------------------------------------- */
+/* Historique des adresses e-mail utilisées pour le partage Drive, conservé
+   entre les sessions (localStorage) et proposé via un <datalist> attaché au
+   champ de saisie — l'utilisateur retrouve ainsi ses destinataires habituels
+   sans avoir à les retaper. */
+const RECENT_SHARE_EMAILS_KEY = "imago_recent_share_emails";
+const RECENT_SHARE_EMAILS_MAX = 30;
+function loadRecentShareEmails(){
+  try{
+    const raw = localStorage.getItem(RECENT_SHARE_EMAILS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(e){
+    console.warn("Historique des e-mails de partage illisible, réinitialisation.", e);
+    return [];
+  }
+}
+function saveRecentShareEmails(list){
+  try{
+    localStorage.setItem(RECENT_SHARE_EMAILS_KEY, JSON.stringify(list.slice(0, RECENT_SHARE_EMAILS_MAX)));
+  }catch(e){
+    console.warn("Impossible d'enregistrer l'historique des e-mails de partage.", e);
+  }
+}
+function renderShareEmailDatalist(){
+  const dl = document.getElementById("shareEmailList");
+  if(!dl) return;
+  const emails = loadRecentShareEmails();
+  dl.innerHTML = emails.map(e=> `<option value="${e.replace(/"/g,"&quot;")}"></option>`).join("");
+}
+function rememberShareEmails(emails){
+  if(!emails || !emails.length) return;
+  const existing = loadRecentShareEmails();
+  // les adresses les plus récemment utilisées remontent en tête de liste
+  const merged = [...emails, ...existing.filter(e=> !emails.includes(e))];
+  saveRecentShareEmails(merged);
+  renderShareEmailDatalist();
+}
+renderShareEmailDatalist();
+
 document.getElementById("btnShare").addEventListener("click", ()=>{
   if(!getSelected()) return;
   document.getElementById("shareChips").innerHTML = "";
@@ -2393,6 +2451,7 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
     }
     p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
     await idbPut("photos", p);
+    rememberShareEmails(emails);
     renderGrid();
     closeModal("modalShare");
     toast(
