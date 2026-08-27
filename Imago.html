@@ -1360,7 +1360,168 @@ document.body.appendChild(folderInput);
 
 document.getElementById("btnPickFolder").addEventListener("click", ()=> folderInput.click());
 
+/* Nombre d'images les plus récentes traitées et affichées immédiatement ;
+   le reste du dossier est traité ensuite en arrière-plan, par petits
+   paquets, sans bloquer l'écran (voir plus bas). */
+const IMPORT_PRIORITY_COUNT = 50;
+const IMPORT_BACKGROUND_CHUNK = 15;
+let importToken = 0; // incrémenté à chaque nouvel import, pour abandonner un import en arrière-plan devenu obsolète (nouveau dossier choisi entre-temps)
+
+/* Estimation RAPIDE (sans lire le contenu du fichier, donc quasi instantanée
+   même sur 700 photos) de la date d'une image, utilisée uniquement pour
+   décider quelles photos sont "les plus récentes" à afficher en priorité :
+   date déjà connue du catalogue > date déduite du nom de fichier > date de
+   modification du fichier. */
+function estimateFileDate(file, existingRow){
+  if(existingRow && existingRow.dateAchat) return existingRow.dateAchat;
+  const meta = parseFileNameMeta(file.name);
+  if(meta.dateAchat) return meta.dateAchat;
+  if(file.lastModified) return new Date(file.lastModified).toISOString().slice(0,10);
+  return "";
+}
+
+/* Traite un seul fichier (lecture, dimensions, EXIF, construction de la
+   fiche photo, sauvegarde best-effort en IndexedDB) et met à jour les
+   compteurs partagés `stats`. Ne touche à AUCUN élément d'écran : c'est à
+   l'appelant de rafraîchir l'affichage, par lots, une fois un paquet traité. */
+async function importOneFile(file, csvRowByFileName, stats){
+  if(State.photos.find(p=>p.fileName===file.name)) return; // doublon dans la sélection elle-même
+  try{
+    // Sur Android, un fichier "vu" dans le sélecteur de dossier peut ne pas
+    // être réellement lisible (ex. photo Google Photos non téléchargée sur
+    // l'appareil, permission révoquée entre-temps…) : la lecture échoue
+    // alors avec une exception. On l'isole ici par fichier pour ne jamais
+    // interrompre le traitement des autres à cause d'une seule image en
+    // défaut — sans ce try/catch, une erreur au 1er fichier annulait
+    // silencieusement tout l'import et laissait le 1er écran vide.
+    const dataUrl = await readFileAsDataURL(file);
+    const dims = await getImageDimensions(dataUrl);
+    const exif = await readBasicExif(file);
+    const existingRow = csvRowByFileName.get(file.name);
+
+    let rec;
+    if(existingRow){
+      // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
+      rec = {
+        id: uid("ph"), fileName: file.name, dataUrl,
+        titre: existingRow.titre || "",
+        dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
+        personnage: existingRow.personnage || "",
+        lieu: existingRow.lieu || "",
+        lieuCandidate: "",
+        support: existingRow.support || "numérique",
+        etiquette: existingRow.etiquette || "",
+        auteur: existingRow.auteur || "Philippe",
+        favori: existingRow.favori === "true",
+        corbeille: existingRow.corbeille === "true",
+        rotation: Number(existingRow.rotation)||0,
+        albums: existingRow.albums ? existingRow.albums.split("|").filter(Boolean) : [],
+        sharedWith: [],
+        filterKey: existingRow.filterKey || null,
+        filterCss: existingRow.filterKey ? (FILTER_PRESETS.find(f=>f.key===existingRow.filterKey)||{}).css || "" : "",
+        optique: existingRow.optique || exifCameraName(exif),
+        poids: existingRow.poids ? Number(existingRow.poids) : Math.round(file.size/1024),
+        map: existingRow.map || mapUrl(exif, existingRow.lieu || ""),
+        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+        gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
+        gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null
+      };
+      if(!rec.titre) rec.titre = buildTitre(rec.lieu, rec.personnage);
+      stats.reused++;
+    } else {
+      // Image absente du catalogue : nouvelle entrée, métadonnées proposées
+      // depuis le nom de fichier (à vérifier/compléter par l'utilisateur).
+      const meta = parseFileNameMeta(file.name);
+      const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
+      const lieu = "";
+      const personnage = meta.personnage;
+      rec = {
+        id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl, dateAchat,
+        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
+        favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
+        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+        optique: exifCameraName(exif), poids: Math.round(file.size/1024),
+        gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
+        gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
+        map: mapUrl(exif, lieu)
+      };
+      stats.added++;
+    }
+    // La photo est ajoutée à l'affichage (mémoire) même si sa sauvegarde
+    // persistante échoue : sur certains navigateurs/WebViews Android, le
+    // stockage IndexedDB est restreint ou indisponible (navigation privée,
+    // quota…) — mieux vaut afficher la photo pour la session en cours que
+    // de la perdre entièrement à cause d'une erreur de stockage.
+    State.photos.push(rec);
+    try{
+      await idbPut("photos", rec);
+    }catch(storageErr){
+      console.warn(`Sauvegarde persistante impossible pour "${file.name}" (affichée pour cette session uniquement).`, storageErr);
+      if(!stats.firstErrorDetail) stats.firstErrorDetail = `Stockage : ${(storageErr && storageErr.message) || String(storageErr)}`;
+    }
+  }catch(err){
+    console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
+    stats.failedFiles.push(file.name);
+    if(!stats.firstErrorDetail) stats.firstErrorDetail = `${(err && (err.name||err.code)) || "Erreur"} : ${(err && err.message) || String(err)}`;
+  }
+}
+
+/* Met à jour le message de statut (et, en fin d'import, le toast récap).
+   `stillLoading` indique qu'il reste des photos à traiter en arrière-plan. */
+function reportImportProgress(folderName, catalogCandidates, stats, stillLoading){
+  const {added, reused, failedFiles, firstErrorDetail} = stats;
+  const processed = added + reused;
+  const allFailed = failedFiles.length>0 && processed===0;
+  const androidHint = allFailed
+    ? " Aucune des photos sélectionnées n'a pu être lue : sur Android, essayez de choisir le dossier via l'app « Fichiers »/« Mes fichiers » plutôt que via Google Photos/Galerie — cette dernière ne donne parfois qu'un accès virtuel aux photos, sans en livrer le contenu réel au navigateur."
+    : "";
+  const failNote = failedFiles.length
+    ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
+      (firstErrorDetail ? ` — détail : ${firstErrorDetail}` : "") + androidHint
+    : "";
+  const loadingNote = stillLoading ? " Le reste du dossier continue de se charger en arrière-plan…" : "";
+  document.getElementById("folderStatus").textContent = (catalogCandidates.length
+    ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
+    : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`
+  ) + failNote + loadingNote;
+}
+
+/* Traite le reste du dossier (au-delà des IMPORT_PRIORITY_COUNT photos déjà
+   affichées) par petits paquets, en cédant la main entre chaque paquet
+   (requestIdleCallback) pour ne jamais geler l'interface — la planche-contact
+   se complète alors progressivement sous les yeux de l'utilisateur au lieu
+   de le faire attendre un import complet avant tout affichage. */
+function importRestInBackground(restFiles, csvRowByFileName, stats, token, folderName, catalogCandidates){
+  let offset = 0;
+  const step = async ()=>{
+    if(token !== importToken) return; // un autre import a démarré entre-temps : on abandonne celui-ci
+    const chunk = restFiles.slice(offset, offset + IMPORT_BACKGROUND_CHUNK);
+    for(const file of chunk){
+      if(token !== importToken) return;
+      await importOneFile(file, csvRowByFileName, stats);
+    }
+    if(token !== importToken) return;
+    offset += IMPORT_BACKGROUND_CHUNK;
+    const stillLoading = offset < restFiles.length;
+    renderGallery(); // complète la planche-contact avec les photos du paquet qui vient d'être traité
+    reportImportProgress(folderName, catalogCandidates, stats, stillLoading);
+    if(stillLoading){
+      if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
+      else setTimeout(step, 0);
+    } else {
+      toast(
+        `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
+        (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : ""),
+        stats.failedFiles.length ? 12000 : undefined
+      );
+      autoBuildCsv();
+    }
+  };
+  step();
+}
+
 folderInput.addEventListener("change", async ()=>{
+  const myImportToken = ++importToken;
   const allFiles = [...folderInput.files];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
@@ -1395,119 +1556,51 @@ folderInput.addEventListener("change", async ()=>{
   } else {
     State.catalogFileName = nextCatalogFileName();
   }
+  if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant la lecture du catalogue
 
-  // ---- 2) Images : celles déjà présentes dans le catalogue ("déjà lues")
+  // ---- 2) Tri par date estimée décroissante (sans lire le contenu des
+  // fichiers, donc quasi instantané même sur 700 photos), pour isoler les
+  // IMPORT_PRIORITY_COUNT images les plus récentes : ce sont elles qui sont
+  // traitées et affichées EN PREMIER, pour un 1er écran quasi immédiat quel
+  // que soit le nombre total de photos du dossier.
+  const sortedFiles = files.slice().sort((a,b)=>{
+    const da = estimateFileDate(a, csvRowByFileName.get(a.name));
+    const db = estimateFileDate(b, csvRowByFileName.get(b.name));
+    return (db||"").localeCompare(da||"");
+  });
+  const priorityFiles = sortedFiles.slice(0, IMPORT_PRIORITY_COUNT);
+  const restFiles = sortedFiles.slice(IMPORT_PRIORITY_COUNT);
+
+  // ---- 3) Images : celles déjà présentes dans le catalogue ("déjà lues")
   // reprennent TELLES QUELLES les métadonnées du CSV, sans repasser par
   // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
-  let added = 0, reused = 0;
-  const failedFiles = [];
-  let firstErrorDetail = "";
-  for(const file of files){
-    if(State.photos.find(p=>p.fileName===file.name)) continue; // doublon dans la sélection elle-même
-    try{
-      // Sur Android, un fichier "vu" dans le sélecteur de dossier peut ne pas
-      // être réellement lisible (ex. photo Google Photos non téléchargée sur
-      // l'appareil, permission révoquée entre-temps…) : FileReader échoue
-      // alors avec une exception. On l'isole ici par fichier pour ne jamais
-      // interrompre le traitement des 26 autres à cause d'une seule image
-      // en défaut — sans ce try/catch, une erreur au 1er fichier annulait
-      // silencieusement tout l'import et laissait le 1er écran vide.
-      const dataUrl = await readFileAsDataURL(file);
-      const dims = await getImageDimensions(dataUrl);
-      const exif = await readBasicExif(file);
-      const existingRow = csvRowByFileName.get(file.name);
-
-      let rec;
-      if(existingRow){
-        // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
-        rec = {
-          id: uid("ph"), fileName: file.name, dataUrl,
-          titre: existingRow.titre || "",
-          dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
-          personnage: existingRow.personnage || "",
-          lieu: existingRow.lieu || "",
-          lieuCandidate: "",
-          support: existingRow.support || "numérique",
-          etiquette: existingRow.etiquette || "",
-          auteur: existingRow.auteur || "Philippe",
-          favori: existingRow.favori === "true",
-          corbeille: existingRow.corbeille === "true",
-          rotation: Number(existingRow.rotation)||0,
-          albums: existingRow.albums ? existingRow.albums.split("|").filter(Boolean) : [],
-          sharedWith: [],
-          filterKey: existingRow.filterKey || null,
-          filterCss: existingRow.filterKey ? (FILTER_PRESETS.find(f=>f.key===existingRow.filterKey)||{}).css || "" : "",
-          optique: existingRow.optique || exifCameraName(exif),
-          poids: existingRow.poids ? Number(existingRow.poids) : Math.round(file.size/1024),
-          map: existingRow.map || mapUrl(exif, existingRow.lieu || ""),
-          sizeBytes: file.size, width:dims.width, height:dims.height, exif,
-          gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
-          gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null
-        };
-        if(!rec.titre) rec.titre = buildTitre(rec.lieu, rec.personnage);
-        reused++;
-      } else {
-        // Image absente du catalogue : nouvelle entrée, métadonnées proposées
-        // depuis le nom de fichier (à vérifier/compléter par l'utilisateur).
-        const meta = parseFileNameMeta(file.name);
-        const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
-        const lieu = "";
-        const personnage = meta.personnage;
-        rec = {
-          id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl, dateAchat,
-          personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
-          favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
-          sizeBytes: file.size, width:dims.width, height:dims.height, exif,
-          optique: exifCameraName(exif), poids: Math.round(file.size/1024),
-          gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
-          gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
-          map: mapUrl(exif, lieu)
-        };
-        added++;
-      }
-      // La photo est ajoutée à l'affichage (mémoire) même si sa sauvegarde
-      // persistante échoue : sur certains navigateurs/WebViews Android, le
-      // stockage IndexedDB est restreint ou indisponible (navigation privée,
-      // quota…) — mieux vaut afficher la photo pour la session en cours que
-      // de la perdre entièrement à cause d'une erreur de stockage.
-      State.photos.push(rec);
-      try{
-        await idbPut("photos", rec);
-      }catch(storageErr){
-        console.warn(`Sauvegarde persistante impossible pour "${file.name}" (affichée pour cette session uniquement).`, storageErr);
-        if(!firstErrorDetail) firstErrorDetail = `Stockage : ${(storageErr && storageErr.message) || String(storageErr)}`;
-      }
-    }catch(err){
-      console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
-      failedFiles.push(file.name);
-      if(!firstErrorDetail) firstErrorDetail = `${(err && (err.name||err.code)) || "Erreur"} : ${(err && err.message) || String(err)}`;
-    }
+  const stats = { added:0, reused:0, failedFiles:[], firstErrorDetail:"" };
+  for(const file of priorityFiles){
+    if(myImportToken !== importToken) return;
+    await importOneFile(file, csvRowByFileName, stats);
   }
+  if(myImportToken !== importToken) return;
 
-  const allFailed = failedFiles.length>0 && failedFiles.length===files.length;
-  const androidHint = allFailed
-    ? " Aucune des photos sélectionnées n'a pu être lue : sur Android, essayez de choisir le dossier via l'app « Fichiers »/« Mes fichiers » plutôt que via Google Photos/Galerie — cette dernière ne donne parfois qu'un accès virtuel aux photos, sans en livrer le contenu réel au navigateur."
-    : "";
-  const failNote = failedFiles.length
-    ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
-      (firstErrorDetail ? ` — détail : ${firstErrorDetail}` : "") + androidHint
-    : "";
-  document.getElementById("folderStatus").textContent = (catalogCandidates.length
-    ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
-    : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`
-  ) + failNote;
-
+  // ---- 4) 1er écran affiché dès le lot prioritaire terminé — le reste du
+  // dossier (s'il y en a) continue de se charger en arrière-plan sans que
+  // l'utilisateur ait à attendre.
   populateFilterOptions();
   renderGrid();
   openGallery();
-  toast(
-    `${added} nouvelle(s) image(s) importée(s), ${reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
-    (failedFiles.length ? ` ${failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${allFailed ? "Essayez via l'app « Fichiers » plutôt que Google Photos." : firstErrorDetail}` : ""),
-    failedFiles.length ? 12000 : undefined
-  );
-  autoBuildCsv();
+  reportImportProgress(folderName, catalogCandidates, stats, restFiles.length>0);
+  if(restFiles.length===0){
+    toast(
+      `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
+      (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : ""),
+      stats.failedFiles.length ? 12000 : undefined
+    );
+    autoBuildCsv();
+  } else {
+    toast(`${priorityFiles.length} photo(s) récente(s) affichée(s) — chargement des ${restFiles.length} autre(s) en arrière-plan…`);
+    importRestInBackground(restFiles, csvRowByFileName, stats, myImportToken, folderName, catalogCandidates);
+  }
 });
 
 function exifCameraName(exif){
