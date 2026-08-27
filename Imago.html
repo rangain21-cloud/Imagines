@@ -490,8 +490,7 @@ button{font-family:inherit;}
       <button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
     </p>
     <p class="drive-note">
-      Tout est rangé dans un seul dossier Drive, <b>IMAGINES</b> (créé automatiquement s'il n'existe pas encore, ou réutilisé s'il existe déjà — y compris si vous l'avez créé vous-même). Pour cela, l'autorisation demandée est un accès Drive complet plutôt que limité aux seuls fichiers créés par l'app : un dossier existant que vous avez créé à la main n'est visible pour l'app que de cette façon.
-      <button class="small-link" id="btnForgetFolder">Oublier le dossier mis en cache…</button>
+      Le dossier Drive, <b>IMAGINES</b> héberge vos partages.
     </p>
   </div>
 
@@ -1317,9 +1316,14 @@ function parseFileNameMeta(fileName){
     let lieuTokenCount = 1;
     if(tokens.length > 1 && LIEU_ARTICLES.includes(tokens[0].toLowerCase())) lieuTokenCount = 2;
     lieuCandidate = tokens.slice(0, lieuTokenCount).join(" ");
-    // Personnage : exclut le(s) mot(s) du lieu, bannit "et", toute ponctuation
-    // résiduelle et tout chiffre — ne garde qu'un mot-clé propre par personnage.
-    personnage = tokens.slice(lieuTokenCount)
+    // Personnage inclut TOUS les mots restants, y COMPRIS le(s) candidat(s)
+    // lieu : tant que Wikipédia n'a pas confirmé qu'il s'agit bien d'une
+    // commune, on ne peut pas savoir si "Léo" est un lieu ou un prénom — le
+    // garder ici évite de perdre un prénom quand le nom de fichier ne
+    // contient en réalité aucun lieu (ex. "2026-02-07 Léo 2.jpeg"). Il sera
+    // retiré automatiquement d'ici si/quand le lieu est confirmé.
+    // Bannit "et", toute ponctuation résiduelle et tout chiffre.
+    personnage = tokens
       .map(t => t.replace(/[^\p{L}]/gu, ""))
       .filter(t => t && t.toLowerCase() !== "et")
       .join(", ");
@@ -1389,6 +1393,15 @@ async function fetchWikiSummary(title){
 }
 function isCommuneText(...parts){
   return /\bcommune\b/i.test(parts.filter(Boolean).join(" "));
+}
+/* Retire un mot du champ Personnage (ex. quand ce mot vient d'être confirmé
+   comme un LIEU réel par Wikipédia — il ne doit plus traîner comme "personnage"). */
+function removeTokenFromPersonnage(personnage, token){
+  if(!personnage || !token) return personnage || "";
+  return personnage.split(",")
+    .map(s=>s.trim())
+    .filter(s => s && s.toLowerCase() !== token.toLowerCase())
+    .join(", ");
 }
 
 /* Lecteur EXIF minimal (JPEG uniquement) — Make, Model, FNumber,
@@ -1966,11 +1979,13 @@ document.getElementById("edRecalcBtn").addEventListener("click", async ()=>{
     const verified = await verifyCommuneWikipedia(meta.lieuCandidate);
     if(verified.ok){
       document.getElementById("edLieu").value = verified.name;
+      const persEl = document.getElementById("edPersonnage");
+      persEl.value = removeTokenFromPersonnage(persEl.value, meta.lieuCandidate); // ce n'était pas un prénom
       changed.push(`lieu (« ${verified.name} » confirmé commune sur Wikipédia)`);
       const mapEl = document.getElementById("edMap");
       if(!mapEl.value || mapEl.value === mapUrl(p.exif, p.lieu)) mapEl.value = mapUrlFromLieu(verified.name);
     } else {
-      changed.push(`« ${meta.lieuCandidate} » non confirmé comme commune — lieu non modifié`);
+      changed.push(`« ${meta.lieuCandidate} » non confirmé comme commune — conservé dans Personnage`);
     }
   }
   btn.textContent = originalLabel; btn.disabled = false;
@@ -2153,8 +2168,7 @@ function renderInfoModal(p){
     <div class="info-row">
       <div class="info-ic">☁</div>
       <div class="info-content">
-        <div class="main-line">${State.drive.fileId ? "Catalogue synchronisé avec Drive" : "Non synchronisée avec Drive"}</div>
-        <div class="sub-line">Le catalogue (CSV) est synchronisé via « Sauver sur Drive ». Une image n'est envoyée sur Drive qu'au moment où vous utilisez « Partager ». <button class="small-link" id="infoLearnMore">En savoir plus</button></div>
+        <div class="main-line">Une image est partageable via Gmail et Drive. <button class="small-link" id="infoLearnMore">En savoir plus</button></div>
       </div>
     </div>
 
@@ -2183,11 +2197,13 @@ function renderInfoModal(p){
       verifyBtn.textContent = "Vérification…"; verifyBtn.disabled = true;
       const verified = await verifyCommuneWikipedia(p.lieuCandidate);
       if(verified.ok){
+        const candidate = p.lieuCandidate;
         p.lieu = verified.name;
         p.lieuCandidate = "";
+        p.personnage = removeTokenFromPersonnage(p.personnage, candidate); // ce n'était pas un prénom
         if(!p.titre || p.titre === buildTitre("", p.personnage)) p.titre = buildTitre(p.lieu, p.personnage);
       } else {
-        toast(`« ${p.lieuCandidate} » non confirmé comme commune sur Wikipédia. Voir la console (F12) pour le détail ; vous pouvez aussi le saisir manuellement (crayon).`);
+        toast(`« ${p.lieuCandidate} » non confirmé comme commune sur Wikipédia — conservé dans Personnage. Voir la console (F12) pour le détail ; vous pouvez aussi le saisir manuellement (crayon).`);
       }
       await idbPut("photos", p);
       populateFilterOptions();
@@ -2448,11 +2464,13 @@ document.getElementById("neFile").addEventListener("change", async (e)=>{
   const etiqEl = document.getElementById("neEtiquette");
   if(meta.dateAchat) dateEl.value = meta.dateAchat;
   if(meta.etiquette && !etiqEl.value) etiqEl.value = meta.etiquette;
-  if(meta.personnage && !persEl.value) persEl.value = meta.personnage;
+  if(meta.personnage && !persEl.value) persEl.value = meta.personnage; // inclut déjà le candidat lieu par défaut
   if(meta.lieuCandidate && !lieuEl.value){
     const verified = await verifyCommuneWikipedia(meta.lieuCandidate);
-    if(verified.ok) lieuEl.value = verified.name;
-    else if(!persEl.value) persEl.value = meta.lieuCandidate; // non confirmé : ne va pas dans Lieu
+    if(verified.ok){
+      lieuEl.value = verified.name;
+      persEl.value = removeTokenFromPersonnage(persEl.value, meta.lieuCandidate); // ce n'était pas un prénom
+    }
   }
 });
 document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
@@ -2644,12 +2662,6 @@ document.getElementById("btnDriveConfig").addEventListener("click", ()=>{
   } else {
     toast(`Identifiant client enregistré sur cet appareil : ${cleaned.slice(0,14)}…${cleaned.slice(-28)}`);
   }
-});
-document.getElementById("btnForgetFolder").addEventListener("click", ()=>{
-  if(!confirm("Oublier le dossier IMAGINES mis en cache sur cet appareil ? La prochaine action Drive recherchera à nouveau le dossier existant (ou en créera un si vraiment aucun n'est trouvé).")) return;
-  State.drive.folderId = "";
-  localStorage.removeItem("imago_drive_folder_id");
-  toast("Dossier oublié — il sera redétecté au prochain envoi ou à la prochaine sauvegarde.");
 });
 /* Nettoie les pièges classiques du copier-coller mobile : tirets typographiques,
    guillemets collés, espaces/retours à la ligne invisibles au milieu du texte. */
