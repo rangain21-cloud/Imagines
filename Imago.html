@@ -1098,61 +1098,107 @@ folderInput.addEventListener("change", async ()=>{
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
   const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier";
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
-  let added = 0, skipped = 0;
+
+  // ---- 1) Catalogue existant : s'il y en a plusieurs candidats (ex. suffixes
+  // "(1)", "(2)" laissés par des téléchargements successifs), on ne garde QUE
+  // le plus récent (lastModified), et son nom est normalisé en Catalogue-xxxx.csv
+  // (sans suffixe) pour les sauvegardes suivantes.
+  const catalogCandidates = allFiles.filter(f => /^Catalogue-\d+.*\.csv$/i.test(f.name));
+  let csvRowByFileName = new Map();
+  if(catalogCandidates.length){
+    catalogCandidates.sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
+    const chosen = catalogCandidates[0];
+    if(catalogCandidates.length > 1){
+      console.warn(`${catalogCandidates.length} fichiers catalogue trouvés — seul le plus récent (${chosen.name}) est utilisé.`, catalogCandidates.map(f=>f.name));
+    }
+    const text = await chosen.text();
+    const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+    if(lines.length >= 2){
+      const header = parseCsvLine(lines[0]);
+      for(let i=1;i<lines.length;i++){
+        const cells = parseCsvLine(lines[i]);
+        const row = {}; header.forEach((h,idx)=> row[h]=cells[idx]);
+        if(row.fileName) csvRowByFileName.set(row.fileName, row);
+      }
+    }
+    const baseMatch = chosen.name.match(/^(Catalogue-\d+)/i);
+    State.catalogFileName = baseMatch ? baseMatch[1] + ".csv" : chosen.name;
+  } else {
+    State.catalogFileName = nextCatalogFileName();
+  }
+
+  // ---- 2) Images : celles déjà présentes dans le catalogue ("déjà lues")
+  // reprennent TELLES QUELLES les métadonnées du CSV, sans repasser par
+  // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
+  // déjà faite. Seules les images absentes du catalogue ("non lues") sont
+  // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
+  let added = 0, reused = 0;
   for(const file of files){
-    const already = State.photos.find(p=>p.fileName===file.name);
-    if(already){ skipped++; continue; }
+    if(State.photos.find(p=>p.fileName===file.name)) continue; // doublon dans la sélection elle-même
     const dataUrl = await readFileAsDataURL(file);
     const dims = await getImageDimensions(dataUrl);
     const exif = await readBasicExif(file);
-    const meta = parseFileNameMeta(file.name);
-    const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
+    const existingRow = csvRowByFileName.get(file.name);
 
-    // Le candidat 'lieu' n'est PAS vérifié ici (ça ralentirait l'import d'un
-    // dossier entier avec un aller-retour réseau par image). Il est stocké
-    // tel quel dans lieuCandidate ; la vérification Wikipédia ne se fait
-    // qu'à la demande, depuis la modale Infos, pour l'image consultée.
-    const lieu = "";
-    const personnage = meta.personnage;
-
-    const rec = {
-      id: uid("ph"),
-      fileName: file.name,
-      titre: buildTitre(lieu, personnage),
-      dataUrl,
-      dateAchat,
-      personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
-      favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
-      sizeBytes: file.size, width:dims.width, height:dims.height, exif,
-      optique: exifCameraName(exif), poids: Math.round(file.size/1024),
-      gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
-      gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
-      map: mapUrl(exif, lieu)
-    };
+    let rec;
+    if(existingRow){
+      // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
+      rec = {
+        id: uid("ph"), fileName: file.name, dataUrl,
+        titre: existingRow.titre || "",
+        dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
+        personnage: existingRow.personnage || "",
+        lieu: existingRow.lieu || "",
+        lieuCandidate: "",
+        support: existingRow.support || "numérique",
+        etiquette: existingRow.etiquette || "",
+        auteur: existingRow.auteur || "Philippe",
+        favori: existingRow.favori === "true",
+        corbeille: existingRow.corbeille === "true",
+        rotation: Number(existingRow.rotation)||0,
+        albums: existingRow.albums ? existingRow.albums.split("|").filter(Boolean) : [],
+        sharedWith: [],
+        filterKey: existingRow.filterKey || null,
+        filterCss: existingRow.filterKey ? (FILTER_PRESETS.find(f=>f.key===existingRow.filterKey)||{}).css || "" : "",
+        optique: existingRow.optique || exifCameraName(exif),
+        poids: existingRow.poids ? Number(existingRow.poids) : Math.round(file.size/1024),
+        map: existingRow.map || mapUrl(exif, existingRow.lieu || ""),
+        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+        gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
+        gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null
+      };
+      if(!rec.titre) rec.titre = buildTitre(rec.lieu, rec.personnage);
+      reused++;
+    } else {
+      // Image absente du catalogue : nouvelle entrée, métadonnées proposées
+      // depuis le nom de fichier (à vérifier/compléter par l'utilisateur).
+      const meta = parseFileNameMeta(file.name);
+      const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
+      const lieu = "";
+      const personnage = meta.personnage;
+      rec = {
+        id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl, dateAchat,
+        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
+        favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
+        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+        optique: exifCameraName(exif), poids: Math.round(file.size/1024),
+        gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
+        gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
+        map: mapUrl(exif, lieu)
+      };
+      added++;
+    }
     await idbPut("photos", rec);
     State.photos.push(rec);
-    added++;
   }
 
-  // Recherche d'un catalogue existant dans CE MÊME dossier (format Catalogue-xxxx.csv).
-  // webkitdirectory nous donne tous les fichiers du dossier, CSV compris, en un seul
-  // choix utilisateur : pas besoin d'une sélection séparée.
-  const catalogFile = allFiles.find(f => /^Catalogue-\d+\.csv$/i.test(f.name));
-  if(catalogFile){
-    const text = await catalogFile.text();
-    await mergeCsvIntoCatalog(text);
-    State.catalogFileName = catalogFile.name;
-    document.getElementById("folderStatus").textContent =
-      `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue. Catalogue existant « ${catalogFile.name} » chargé.`;
-  } else {
-    State.catalogFileName = nextCatalogFileName();
-    document.getElementById("folderStatus").textContent =
-      `Dossier "${folderName}" : ${added} image(s) ajoutée(s), ${skipped} déjà en catalogue. Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`;
-  }
+  document.getElementById("folderStatus").textContent = catalogCandidates.length
+    ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
+    : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`;
 
   populateFilterOptions();
   renderGrid();
-  toast(`${added} image(s) importée(s) — date/personnage proposés depuis le nom de fichier. Ouvrez « Information » sur une image pour vérifier son lieu via Wikipédia.`);
+  toast(`${added} nouvelle(s) image(s) importée(s), ${reused} déjà cataloguée(s) réutilisée(s) sans modification.`);
   autoBuildCsv();
 });
 
@@ -1271,7 +1317,12 @@ function parseFileNameMeta(fileName){
     let lieuTokenCount = 1;
     if(tokens.length > 1 && LIEU_ARTICLES.includes(tokens[0].toLowerCase())) lieuTokenCount = 2;
     lieuCandidate = tokens.slice(0, lieuTokenCount).join(" ");
-    personnage = tokens.slice(lieuTokenCount).join(", ");
+    // Personnage : exclut le(s) mot(s) du lieu, bannit "et", toute ponctuation
+    // résiduelle et tout chiffre — ne garde qu'un mot-clé propre par personnage.
+    personnage = tokens.slice(lieuTokenCount)
+      .map(t => t.replace(/[^\p{L}]/gu, ""))
+      .filter(t => t && t.toLowerCase() !== "et")
+      .join(", ");
   }
   // Le lieu n'est qu'une PROPOSITION à ce stade : voir verifyCommuneWikipedia()
   // pour la confirmation avant de charger réellement la rubrique 'lieu'.
@@ -2083,6 +2134,15 @@ function renderInfoModal(p){
     </div>
 
     <div class="info-row">
+      <div class="info-ic">🙂</div>
+      <div class="info-content" id="infoPersonnageText">
+        <div class="main-line">${p.personnage ? escapeHtml(p.personnage) : "Aucun personnage renseigné"}</div>
+        <div class="sub-line">Personnage</div>
+      </div>
+      <button class="info-pencil" data-edit="personnage" title="Modifier le(s) personnage(s)">✎</button>
+    </div>
+
+    <div class="info-row">
       <div class="info-ic">⇪</div>
       <div class="info-content">
         <div class="main-line">${shared ? "Partagée avec " + escapeHtml(shared) : "Non partagée"}</div>
@@ -2115,7 +2175,8 @@ function renderInfoModal(p){
   `;
 
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
-  rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p, true));
+  rows.querySelector('[data-edit="personnage"]').addEventListener("click", ()=> startInlineEdit("infoPersonnageText", "personnage", p));
+  rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p));
   const verifyBtn = document.getElementById("infoVerifyLieuBtn");
   if(verifyBtn){
     verifyBtn.addEventListener("click", async ()=>{
@@ -2138,10 +2199,10 @@ function renderInfoModal(p){
   if(learnMore) learnMore.addEventListener("click", ()=> toast("Les images restent sur cet appareil par défaut. « Sauver sur Drive » ne synchronise que le catalogue (CSV). Pour envoyer une image précise sur Drive, utilisez « Partager »."));
 }
 
-function startInlineEdit(containerId, field, p, isLieu){
+function startInlineEdit(containerId, field, p){
   const container = document.getElementById(containerId);
   if(!container || container.querySelector("input")) return;
-  const current = field==="date" ? (p.dateAchat||"") : (p.lieu||"");
+  const current = field==="date" ? (p.dateAchat||"") : field==="personnage" ? (p.personnage||"") : (p.lieu||"");
   const wrap = document.createElement("div");
   wrap.className = "info-inline-edit";
   wrap.innerHTML = `<input type="${field==='date'?'date':'text'}" value="${escapeHtml(current)}"><button class="btn copper" style="padding:5px 10px;">OK</button>`;
@@ -2150,6 +2211,7 @@ function startInlineEdit(containerId, field, p, isLieu){
   input.focus();
   wrap.querySelector("button").addEventListener("click", async ()=>{
     if(field==="date") p.dateAchat = input.value || p.dateAchat;
+    else if(field==="personnage") p.personnage = input.value.trim();
     else p.lieu = input.value.trim();
     await idbPut("photos", p);
     populateFilterOptions();
