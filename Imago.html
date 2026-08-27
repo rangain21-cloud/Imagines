@@ -1462,22 +1462,28 @@ async function importOneFile(file, csvRowByFileName, stats){
   }catch(err){
     console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
     stats.failedFiles.push(file.name);
-    if(!stats.firstErrorDetail) stats.firstErrorDetail = `${(err && (err.name||err.code)) || "Erreur"} : ${(err && err.message) || String(err)}`;
+    const detail = (err && err.message) || String(err);
+    if(!stats.failedDetails) stats.failedDetails = [];
+    if(stats.failedDetails.length < 3) stats.failedDetails.push(`"${file.name}" — ${detail}`);
+    if(!stats.firstErrorDetail) stats.firstErrorDetail = detail;
   }
 }
 
 /* Met à jour le message de statut (et, en fin d'import, le toast récap).
    `stillLoading` indique qu'il reste des photos à traiter en arrière-plan. */
 function reportImportProgress(folderName, catalogCandidates, stats, stillLoading){
-  const {added, reused, failedFiles, firstErrorDetail} = stats;
+  const {added, reused, failedFiles, failedDetails} = stats;
   const processed = added + reused;
   const allFailed = failedFiles.length>0 && processed===0;
   const androidHint = allFailed
     ? " Aucune des photos sélectionnées n'a pu être lue : sur Android, essayez de choisir le dossier via l'app « Fichiers »/« Mes fichiers » plutôt que via Google Photos/Galerie — cette dernière ne donne parfois qu'un accès virtuel aux photos, sans en livrer le contenu réel au navigateur."
     : "";
+  const detailNote = (failedDetails && failedDetails.length)
+    ? ` — détail : ${failedDetails.join(" ; ")}${failedFiles.length>failedDetails.length ? " ; …" : ""}`
+    : "";
   const failNote = failedFiles.length
     ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
-      (firstErrorDetail ? ` — détail : ${firstErrorDetail}` : "") + androidHint
+      detailNote + androidHint
     : "";
   const loadingNote = stillLoading ? " Le reste du dossier continue de se charger en arrière-plan…" : "";
   document.getElementById("folderStatus").textContent = (catalogCandidates.length
@@ -1576,7 +1582,7 @@ folderInput.addEventListener("change", async ()=>{
   // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
-  const stats = { added:0, reused:0, failedFiles:[], firstErrorDetail:"" };
+  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"" };
   for(const file of priorityFiles){
     if(myImportToken !== importToken) return;
     await importOneFile(file, csvRowByFileName, stats);
@@ -1653,33 +1659,93 @@ function arrayBufferToDataUrl(buf, mimeType){
   }
   return `data:${mimeType||"application/octet-stream"};base64,${btoa(binary)}`;
 }
+function delay(ms){ return new Promise(res=>setTimeout(res, ms)); }
+
+/* Certains fichiers "fantômes" (accès virtuel Google Photos) ne déclenchent
+   ni onload ni onerror : la lecture reste bloquée indéfiniment. On ajoute
+   donc un délai maximal par tentative, qui rejette explicitement avec un
+   message distinct d'une vraie erreur de lecture. */
+const READ_TIMEOUT_MS = 12000;
+const READ_MAX_ATTEMPTS = 4; // nombre de tentatives via FileReader, après l'essai arrayBuffer()
+function withTimeout(promise, ms, label){
+  return new Promise((resolve, reject)=>{
+    let done = false;
+    const t = setTimeout(()=>{
+      if(done) return;
+      done = true;
+      reject(new Error(`${label} : aucune réponse après ${Math.round(ms/1000)}s (ni succès ni erreur) — le fichier ne répond pas, signe typique d'un accès virtuel (ex. Google Photos) sans contenu réellement rapatrié sur l'appareil.`));
+    }, ms);
+    promise.then(
+      v=>{ if(done) return; done = true; clearTimeout(t); resolve(v); },
+      e=>{ if(done) return; done = true; clearTimeout(t); reject(e); }
+    );
+  });
+}
+
 function readFileViaFileReader(file){
   return new Promise((resolve, reject)=>{
     const r = new FileReader();
-    r.onload = ()=> resolve(r.result);
-    r.onerror = ()=> reject(new Error("FileReader: lecture impossible (fichier peut-être inaccessible depuis ce dossier)"));
-    r.readAsDataURL(file);
+    r.onload = ()=>{
+      const result = r.result;
+      const len = result && result.length ? result.length : 0;
+      if(!result || len < 30){
+        reject(new Error(`FileReader : lecture "terminée" mais résultat vide ou anormalement court (${len} caractère(s) reçus, ${file.size} octet(s) annoncés) — fichier probablement sans contenu réel accessible.`));
+        return;
+      }
+      resolve(result);
+    };
+    r.onerror = ()=>{
+      const err = r.error;
+      const name = (err && err.name) || "erreur inconnue";
+      const msg = (err && err.message) ? " — " + err.message : "";
+      const code = err && err.code!=null ? err.code : "?";
+      reject(new Error(`FileReader : ${name}${msg} (code ${code})`));
+    };
+    r.onabort = ()=> reject(new Error("FileReader : lecture interrompue (abort) avant la fin"));
+    try{
+      r.readAsDataURL(file);
+    }catch(syncErr){
+      reject(new Error(`FileReader : exception immédiate au lancement de la lecture — ${(syncErr && syncErr.message) || String(syncErr)}`));
+    }
   });
 }
-function delay(ms){ return new Promise(res=>setTimeout(res, ms)); }
+
 async function readFileAsDataURL(file){
+  const log = []; // trace de chaque tentative, pour un message final précis
+
   if(!file.size){
-    throw new Error("Fichier vide ou inaccessible (0 octet) — probablement un contenu non réellement présent sur l'appareil pour ce dossier.");
+    throw new Error(`Fichier annoncé à 0 octet par l'API File — aucun contenu à lire (nom : "${file.name}"). Probablement un contenu non réellement présent sur l'appareil pour ce dossier (accès virtuel type Google Photos).`);
   }
+
   // 1) file.arrayBuffer() : API Promise directe, souvent plus fiable que
-  //    FileReader sur les navigateurs Android récents.
+  //    FileReader sur les navigateurs Android récents. On compare la taille
+  //    réellement lue à la taille annoncée par l'API File.
   try{
-    const buf = await file.arrayBuffer();
-    if(buf.byteLength) return arrayBufferToDataUrl(buf, file.type);
-  }catch(e){ /* on retente via FileReader ci-dessous */ }
-  // 2) FileReader classique, avec une seconde tentative après une courte
-  //    pause si la première échoue (permission transitoire).
-  try{
-    return await readFileViaFileReader(file);
-  }catch(e1){
-    await delay(150);
-    return await readFileViaFileReader(file);
+    const buf = await withTimeout(file.arrayBuffer(), READ_TIMEOUT_MS, "arrayBuffer()");
+    if(buf.byteLength > 0){
+      if(buf.byteLength !== file.size){
+        console.warn(`"${file.name}" : arrayBuffer() a lu ${buf.byteLength} o alors que ${file.size} o étaient annoncés — résultat conservé.`);
+      }
+      return arrayBufferToDataUrl(buf, file.type);
+    }
+    log.push(`arrayBuffer() : 0 octet réellement lu (${file.size} o annoncé(s))`);
+  }catch(e){
+    log.push(`arrayBuffer() : ${(e && e.message) || String(e)}`);
   }
+
+  // 2) FileReader, plusieurs tentatives avec délai croissant entre chacune
+  //    (utile en cas d'échec transitoire de permission), chacune bornée par
+  //    un timeout pour ne jamais bloquer l'import sur un fichier fantôme.
+  for(let attempt=1; attempt<=READ_MAX_ATTEMPTS; attempt++){
+    try{
+      return await withTimeout(readFileViaFileReader(file), READ_TIMEOUT_MS, `FileReader (tentative ${attempt}/${READ_MAX_ATTEMPTS})`);
+    }catch(e){
+      log.push(`FileReader tentative ${attempt}/${READ_MAX_ATTEMPTS} : ${(e && e.message) || String(e)}`);
+      if(attempt < READ_MAX_ATTEMPTS) await delay(250 * attempt); // 250ms, 500ms, 750ms…
+    }
+  }
+
+  throw new Error(`Lecture impossible pour "${file.name}" (${file.size} o annoncé(s)) après ${1+READ_MAX_ATTEMPTS} tentative(s) — ${log.join(" | ")}`);
 }
 function getImageDimensions(dataUrl){
   return new Promise((resolve)=>{
