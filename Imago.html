@@ -535,6 +535,7 @@ button{font-family:inherit;}
   <div class="brand">📚 Copyract</div>
 
   <div class="topbar-tools">
+    <button class="tool-btn" id="btnBackToGallery" title="Retour galerie"><span class="ic">▦</span><span>Retour galerie</span></button>
     <button class="tool-btn" id="btnShare" title="Partager"><span class="ic">⇪</span><span>Partager</span></button>
     <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
     <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
@@ -1156,6 +1157,64 @@ function galleryPhotos(){
     .filter(p=>!p.corbeille)
     .sort((a,b)=> (b.dateAchat||"").localeCompare(a.dateAchat||""));
 }
+/* Affichage initial instantané limité aux images les plus récentes (déjà en
+   tête grâce au tri ci-dessus), le reste du catalogue étant ajouté ensuite
+   par petits paquets en arrière-plan — voir renderGallery() plus bas. */
+const GALLERY_INITIAL_BATCH = 40;
+const GALLERY_BACKGROUND_BATCH = 40;
+let galleryRenderToken = 0; // incrémenté à chaque renderGallery() pour invalider un remplissage en arrière-plan devenu obsolète
+function buildGalleryTile(p){
+  const tile = document.createElement("div");
+  tile.className = "gallery-tile";
+  tile.dataset.id = p.id;
+  tile.title = p.fileName || "";
+  if(p.favori){
+    const fav = document.createElement("span");
+    fav.className = "gallery-fav";
+    fav.textContent = "★";
+    tile.appendChild(fav);
+  }
+  if(p.dataUrl){
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = p.fileName || "";
+    img.src = p.dataUrl;
+    tile.appendChild(img);
+  } else {
+    const missing = document.createElement("div");
+    missing.className = "viewer-missing";
+    missing.style.padding = "10px";
+    missing.style.fontSize = "12px";
+    missing.textContent = "📷";
+    tile.appendChild(missing);
+  }
+  const dateEl = document.createElement("div");
+  dateEl.className = "gallery-date";
+  dateEl.textContent = p.dateAchat ? fmtDateFr(p.dateAchat) : (p.fileName||"");
+  tile.appendChild(dateEl);
+  return tile;
+}
+function appendGalleryTiles(grid, photos){
+  // Construction via noeuds DOM (et non via une concaténation de chaînes
+  // HTML) : avec plusieurs centaines de photos, mettre bout à bout toutes
+  // les dataUrl (base64) dans une seule chaîne dépasse la longueur de
+  // chaîne maximale du moteur JS ("RangeError: Invalid string length").
+  const frag = document.createDocumentFragment();
+  photos.forEach(p=> frag.appendChild(buildGalleryTile(p)));
+  grid.appendChild(frag);
+}
+function scheduleGalleryBackgroundFill(grid, rest, offset, token){
+  const step = ()=>{
+    if(token !== galleryRenderToken) return; // la galerie a été redessinée entre-temps : on abandonne ce remplissage périmé
+    const chunk = rest.slice(offset, offset + GALLERY_BACKGROUND_BATCH);
+    if(chunk.length===0) return;
+    appendGalleryTiles(grid, chunk);
+    const next = offset + GALLERY_BACKGROUND_BATCH;
+    if(next < rest.length) scheduleGalleryBackgroundFill(grid, rest, next, token);
+  };
+  if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
+  else setTimeout(step, 0);
+}
 function renderGallery(){
   const list = galleryPhotos();
   const grid = document.getElementById("galleryGrid");
@@ -1164,50 +1223,23 @@ function renderGallery(){
     ? `${list.length} image${list.length>1?"s":""}`
     : "";
   grid.innerHTML = "";
+  galleryRenderToken++;
+  const myToken = galleryRenderToken;
   if(list.length===0){
     empty.classList.remove("hidden");
     return;
   }
   empty.classList.add("hidden");
-  // Construction via noeuds DOM (et non via une concaténation de chaînes
-  // HTML) : avec plusieurs centaines de photos, mettre bout à bout toutes
-  // les dataUrl (base64) dans une seule chaîne dépasse la longueur de
-  // chaîne maximale du moteur JS ("RangeError: Invalid string length").
-  // Chaque <img> reçoit ici son src individuellement, et le chargement
-  // "lazy" évite de décoder d'un coup les images hors écran.
-  const frag = document.createDocumentFragment();
-  list.forEach(p=>{
-    const tile = document.createElement("div");
-    tile.className = "gallery-tile";
-    tile.dataset.id = p.id;
-    tile.title = p.fileName || "";
-    if(p.favori){
-      const fav = document.createElement("span");
-      fav.className = "gallery-fav";
-      fav.textContent = "★";
-      tile.appendChild(fav);
-    }
-    if(p.dataUrl){
-      const img = document.createElement("img");
-      img.loading = "lazy";
-      img.alt = p.fileName || "";
-      img.src = p.dataUrl;
-      tile.appendChild(img);
-    } else {
-      const missing = document.createElement("div");
-      missing.className = "viewer-missing";
-      missing.style.padding = "10px";
-      missing.style.fontSize = "12px";
-      missing.textContent = "📷";
-      tile.appendChild(missing);
-    }
-    const dateEl = document.createElement("div");
-    dateEl.className = "gallery-date";
-    dateEl.textContent = p.dateAchat ? fmtDateFr(p.dateAchat) : (p.fileName||"");
-    tile.appendChild(dateEl);
-    frag.appendChild(tile);
-  });
-  grid.appendChild(frag);
+  // 1) Les GALLERY_INITIAL_BATCH images les plus récentes sont affichées
+  //    tout de suite, pour un premier écran instantané même avec un
+  //    catalogue de plusieurs centaines de photos.
+  const firstBatch = list.slice(0, GALLERY_INITIAL_BATCH);
+  appendGalleryTiles(grid, firstBatch);
+  // 2) Le reste est chargé en arrière-plan, par petits paquets, sans
+  //    bloquer l'interface ; il s'arrête net si la galerie est redessinée
+  //    avant la fin (nouveau dossier chargé, etc.).
+  const rest = list.slice(GALLERY_INITIAL_BATCH);
+  if(rest.length) scheduleGalleryBackgroundFill(grid, rest, 0, myToken);
 }
 document.getElementById("galleryGrid").addEventListener("click", (e)=>{
   const tile = e.target.closest(".gallery-tile");
@@ -1228,6 +1260,7 @@ function closeGallery(){
   document.getElementById("galleryScreen").classList.add("hidden");
 }
 document.getElementById("galleryToggle").addEventListener("click", openGallery);
+document.getElementById("btnBackToGallery").addEventListener("click", openGallery);
 
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
