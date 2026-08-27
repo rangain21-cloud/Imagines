@@ -363,6 +363,13 @@ button{font-family:inherit;}
 .personnage-table .pt-count{color:var(--ink-dim); font-size:12px; white-space:nowrap;}
 .personnage-table .pt-actions{display:flex; gap:6px; justify-content:flex-end; white-space:nowrap;}
 .personnage-table .pt-actions .btn{padding:6px 10px; font-size:12.5px;}
+.pt-bulk-bar{
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  margin-bottom:10px; padding:9px 12px;
+  border:1px solid var(--copper); border-radius:6px; background:var(--bg-panel-2);
+}
+.pt-bulk-bar .pt-bulk-count{font-size:12.5px; color:var(--ink-dim); margin-right:auto;}
+.pt-row-check, #ptSelectAll{width:15px; height:15px; accent-color:var(--copper); cursor:pointer;}
 
 /* ---------- modals ---------- */
 .modal-overlay{
@@ -851,10 +858,16 @@ button{font-family:inherit;}
       <p class="drive-note" style="margin:0 0 12px;">
         Chaque ligne correspond à un mot-clé du champ « Personnage ». Éditer ou supprimer un
         mot-clé le répercute dans toutes les images du catalogue qui le portent — la
-        correspondance est exacte et sensible à la casse.
+        correspondance est exacte et sensible à la casse. Cochez plusieurs lignes pour les
+        regrouper ou les supprimer en une seule opération.
       </p>
+      <div class="pt-bulk-bar hidden" id="ptBulkBar">
+        <span class="pt-bulk-count" id="ptBulkCount"></span>
+        <button class="btn copper" id="ptBulkEdit" type="button">Corriger la sélection…</button>
+        <button class="btn reset" id="ptBulkDelete" type="button">Supprimer la sélection</button>
+      </div>
       <table class="personnage-table" id="personnageTable">
-        <thead><tr><th>Personnage</th><th>Images</th><th></th></tr></thead>
+        <thead><tr><th style="width:30px;"><input type="checkbox" id="ptSelectAll" title="Tout sélectionner"></th><th>Personnage</th><th>Images</th><th></th></tr></thead>
         <tbody id="personnageTableBody"></tbody>
       </table>
       <p class="drive-note hidden" id="personnageEmpty">Aucun personnage renseigné pour l'instant.</p>
@@ -1608,6 +1621,9 @@ function removeTokenFromPersonnage(personnage, token){
    lignes du catalogue. Recherche/comparaison EXACTE et SENSIBLE À LA
    CASSE (contrairement à removeTokenFromPersonnage ci-dessus, utilisé
    ailleurs dans un but différent et volontairement insensible à la casse).
+   Plusieurs lignes peuvent être cochées pour une correction groupée
+   (fusion de variantes/coquilles en un seul mot-clé, ou suppression
+   groupée) en une seule opération.
    --------------------------------------------------------------- */
 function personnageTokens(personnage){
   return (personnage||"").split(",").map(s=>s.trim()).filter(Boolean);
@@ -1621,7 +1637,19 @@ function personnageKeywordStats(){
   });
   return [...map.entries()].sort((a,b)=> a[0].localeCompare(b[0], "fr"));
 }
+let personnageSelection = new Set();
+function updatePersonnageBulkBar(){
+  const bar = document.getElementById("ptBulkBar");
+  const count = document.getElementById("ptBulkCount");
+  const n = personnageSelection.size;
+  if(n===0){ bar.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  count.textContent = `${n} personnage${n>1?"s":""} sélectionné${n>1?"s":""}`;
+}
 function renderPersonnagesTable(){
+  personnageSelection = new Set();
+  document.getElementById("ptSelectAll").checked = false;
+  updatePersonnageBulkBar();
   const stats = personnageKeywordStats();
   const table = document.getElementById("personnageTable");
   const tbody = document.getElementById("personnageTableBody");
@@ -1636,6 +1664,17 @@ function renderPersonnagesTable(){
   empty.classList.add("hidden");
   stats.forEach(([tok, count])=>{
     const tr = document.createElement("tr");
+
+    const tdCheck = document.createElement("td");
+    const check = document.createElement("input");
+    check.type = "checkbox"; check.className = "pt-row-check"; check.dataset.tok = tok;
+    check.addEventListener("change", ()=>{
+      if(check.checked) personnageSelection.add(tok); else personnageSelection.delete(tok);
+      document.getElementById("ptSelectAll").checked = personnageSelection.size===stats.length;
+      updatePersonnageBulkBar();
+    });
+    tdCheck.appendChild(check);
+    tr.appendChild(tdCheck);
 
     const tdName = document.createElement("td");
     tdName.textContent = tok;
@@ -1661,45 +1700,80 @@ function renderPersonnagesTable(){
     tbody.appendChild(tr);
   });
 }
+document.getElementById("ptSelectAll").addEventListener("change", (e)=>{
+  const checked = e.target.checked;
+  document.querySelectorAll(".pt-row-check").forEach(cb=>{
+    cb.checked = checked;
+    if(checked) personnageSelection.add(cb.dataset.tok); else personnageSelection.delete(cb.dataset.tok);
+  });
+  updatePersonnageBulkBar();
+});
+document.getElementById("ptBulkEdit").addEventListener("click", ()=>{
+  if(personnageSelection.size===0) return;
+  const list = [...personnageSelection];
+  const val = prompt(
+    list.length>1
+      ? `Regrouper ces ${list.length} personnages (${list.join(", ")}) sous le nom :`
+      : `Remplacer le personnage « ${list[0]} » par :`,
+    list.length===1 ? list[0] : ""
+  );
+  if(val===null) return; // annulé
+  const newTok = val.trim();
+  if(!newTok){ toast("Le nouveau mot-clé ne peut pas être vide."); return; }
+  renamePersonnageKeywordsEverywhere(list, newTok);
+});
+document.getElementById("ptBulkDelete").addEventListener("click", ()=>{
+  if(personnageSelection.size===0) return;
+  const list = [...personnageSelection];
+  if(!confirm(`Supprimer ${list.length} personnage${list.length>1?"s":""} (${list.join(", ")}) de toutes les images du catalogue ?`)) return;
+  deletePersonnageKeywordsEverywhere(list);
+});
 function promptEditPersonnageKeyword(oldTok){
   const val = prompt(`Remplacer le personnage « ${oldTok} » par :`, oldTok);
   if(val===null) return; // annulé
   const newTok = val.trim();
   if(!newTok){ toast("Le nouveau mot-clé ne peut pas être vide."); return; }
   if(newTok === oldTok) return;
-  renamePersonnageKeywordEverywhere(oldTok, newTok);
+  renamePersonnageKeywordsEverywhere([oldTok], newTok);
 }
 function promptDeletePersonnageKeyword(tok){
   if(!confirm(`Supprimer le personnage « ${tok} » de toutes les images du catalogue ?`)) return;
-  deletePersonnageKeywordEverywhere(tok);
+  deletePersonnageKeywordsEverywhere([tok]);
 }
-async function renamePersonnageKeywordEverywhere(oldTok, newTok){
+/* oldToks : un ou plusieurs mots-clés EXACTS (sensibles à la casse) à
+   fusionner/renommer en une seule nouvelle valeur newTok, en une seule
+   passe sur le catalogue — c'est ce qui permet la correction groupée. */
+async function renamePersonnageKeywordsEverywhere(oldToks, newTok){
+  const oldSet = new Set(oldToks);
   let touched = 0;
   for(const p of State.photos){
     const tokens = personnageTokens(p.personnage);
-    if(!tokens.includes(oldTok)) continue; // correspondance exacte, sensible à la casse
+    if(!tokens.some(t => oldSet.has(t))) continue; // correspondance exacte, sensible à la casse
     const seen = new Set();
     p.personnage = tokens
-      .map(t => t===oldTok ? newTok : t)
-      .filter(t => seen.has(t) ? false : (seen.add(t), true)) // évite un doublon si newTok existait déjà
+      .map(t => oldSet.has(t) ? newTok : t)
+      .filter(t => seen.has(t) ? false : (seen.add(t), true)) // évite les doublons (plusieurs anciens mots ou newTok déjà présent)
       .join(", ");
     p.titre = buildTitre(p.lieu, p.personnage);
     await idbPut("photos", p);
     touched++;
   }
-  finishPersonnageBulkEdit(`« ${oldTok} » renommé en « ${newTok} » dans ${touched} image${touched>1?"s":""}.`);
+  const label = oldToks.length>1 ? `${oldToks.length} personnages (${oldToks.join(", ")})` : `« ${oldToks[0]} »`;
+  finishPersonnageBulkEdit(`${label} regroupé(s) en « ${newTok} » sur ${touched} image${touched>1?"s":""}.`);
 }
-async function deletePersonnageKeywordEverywhere(tok){
+async function deletePersonnageKeywordsEverywhere(toks){
+  const tokSet = new Set(toks);
   let touched = 0;
   for(const p of State.photos){
     const tokens = personnageTokens(p.personnage);
-    if(!tokens.includes(tok)) continue; // correspondance exacte, sensible à la casse
-    p.personnage = tokens.filter(t => t!==tok).join(", ");
+    if(!tokens.some(t => tokSet.has(t))) continue; // correspondance exacte, sensible à la casse
+    p.personnage = tokens.filter(t => !tokSet.has(t)).join(", ");
     p.titre = buildTitre(p.lieu, p.personnage);
     await idbPut("photos", p);
     touched++;
   }
-  finishPersonnageBulkEdit(`« ${tok} » supprimé de ${touched} image${touched>1?"s":""}.`);
+  const label = toks.length>1 ? `${toks.length} personnages (${toks.join(", ")})` : `« ${toks[0]} »`;
+  finishPersonnageBulkEdit(`${label} supprimé(s) de ${touched} image${touched>1?"s":""}.`);
 }
 function finishPersonnageBulkEdit(message){
   populateFilterOptions();
