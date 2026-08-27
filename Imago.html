@@ -1403,6 +1403,7 @@ folderInput.addEventListener("change", async ()=>{
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
   let added = 0, reused = 0;
   const failedFiles = [];
+  let firstErrorDetail = "";
   for(const file of files){
     if(State.photos.find(p=>p.fileName===file.name)) continue; // doublon dans la sélection elle-même
     try{
@@ -1466,16 +1467,28 @@ folderInput.addEventListener("change", async ()=>{
         };
         added++;
       }
-      await idbPut("photos", rec);
+      // La photo est ajoutée à l'affichage (mémoire) même si sa sauvegarde
+      // persistante échoue : sur certains navigateurs/WebViews Android, le
+      // stockage IndexedDB est restreint ou indisponible (navigation privée,
+      // quota…) — mieux vaut afficher la photo pour la session en cours que
+      // de la perdre entièrement à cause d'une erreur de stockage.
       State.photos.push(rec);
+      try{
+        await idbPut("photos", rec);
+      }catch(storageErr){
+        console.warn(`Sauvegarde persistante impossible pour "${file.name}" (affichée pour cette session uniquement).`, storageErr);
+        if(!firstErrorDetail) firstErrorDetail = `Stockage : ${(storageErr && storageErr.message) || String(storageErr)}`;
+      }
     }catch(err){
       console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
       failedFiles.push(file.name);
+      if(!firstErrorDetail) firstErrorDetail = `${(err && (err.name||err.code)) || "Erreur"} : ${(err && err.message) || String(err)}`;
     }
   }
 
   const failNote = failedFiles.length
-    ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) (ex. photo cloud non téléchargée sur l'appareil) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}`
+    ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) (ex. photo cloud non téléchargée sur l'appareil) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
+      (firstErrorDetail ? ` — détail : ${firstErrorDetail}` : "")
     : "";
   document.getElementById("folderStatus").textContent = (catalogCandidates.length
     ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
@@ -1487,8 +1500,8 @@ folderInput.addEventListener("change", async ()=>{
   openGallery();
   toast(
     `${added} nouvelle(s) image(s) importée(s), ${reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
-    (failedFiles.length ? ` ${failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s).` : ""),
-    failedFiles.length ? 9000 : undefined
+    (failedFiles.length ? ` ${failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${firstErrorDetail}` : ""),
+    failedFiles.length ? 12000 : undefined
   );
   autoBuildCsv();
 });
