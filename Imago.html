@@ -1112,21 +1112,51 @@ function renderGallery(){
   document.getElementById("galleryCount").textContent = list.length
     ? `${list.length} image${list.length>1?"s":""}`
     : "";
+  grid.innerHTML = "";
   if(list.length===0){
-    grid.innerHTML = "";
     empty.classList.remove("hidden");
     return;
   }
   empty.classList.add("hidden");
-  grid.innerHTML = list.map(p=>`
-    <div class="gallery-tile" data-id="${p.id}" title="${escapeHtml(p.fileName||"")}">
-      ${p.favori ? '<span class="gallery-fav">★</span>' : ""}
-      ${p.dataUrl
-        ? `<img src="${p.dataUrl}" alt="${escapeHtml(p.fileName||"")}" loading="lazy">`
-        : `<div class="viewer-missing" style="padding:10px; font-size:12px;">📷</div>`}
-      <div class="gallery-date">${p.dateAchat ? fmtDateFr(p.dateAchat) : (p.fileName||"")}</div>
-    </div>
-  `).join("");
+  // Construction via noeuds DOM (et non via une concaténation de chaînes
+  // HTML) : avec plusieurs centaines de photos, mettre bout à bout toutes
+  // les dataUrl (base64) dans une seule chaîne dépasse la longueur de
+  // chaîne maximale du moteur JS ("RangeError: Invalid string length").
+  // Chaque <img> reçoit ici son src individuellement, et le chargement
+  // "lazy" évite de décoder d'un coup les images hors écran.
+  const frag = document.createDocumentFragment();
+  list.forEach(p=>{
+    const tile = document.createElement("div");
+    tile.className = "gallery-tile";
+    tile.dataset.id = p.id;
+    tile.title = p.fileName || "";
+    if(p.favori){
+      const fav = document.createElement("span");
+      fav.className = "gallery-fav";
+      fav.textContent = "★";
+      tile.appendChild(fav);
+    }
+    if(p.dataUrl){
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.alt = p.fileName || "";
+      img.src = p.dataUrl;
+      tile.appendChild(img);
+    } else {
+      const missing = document.createElement("div");
+      missing.className = "viewer-missing";
+      missing.style.padding = "10px";
+      missing.style.fontSize = "12px";
+      missing.textContent = "📷";
+      tile.appendChild(missing);
+    }
+    const dateEl = document.createElement("div");
+    dateEl.className = "gallery-date";
+    dateEl.textContent = p.dateAchat ? fmtDateFr(p.dateAchat) : (p.fileName||"");
+    tile.appendChild(dateEl);
+    frag.appendChild(tile);
+  });
+  grid.appendChild(frag);
 }
 document.getElementById("galleryGrid").addEventListener("click", (e)=>{
   const tile = e.target.closest(".gallery-tile");
