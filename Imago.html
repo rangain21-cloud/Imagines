@@ -1069,7 +1069,12 @@ function activePhotos(){
   return State.photos.filter(p=>{
     if(p.corbeille) return false;
     const f = State.filters;
-    if(f.personnage && p.personnage !== f.personnage) return false;
+    // Un même personnage peut apparaître combiné avec d'autres sur une image
+    // (champ "Jean, Marie") : on veut retrouver TOUTES ces images dès que le
+    // personnage choisi figure parmi les mots-clés de la ligne, pas seulement
+    // celles où il est seul — d'où une recherche par mot-clé exact plutôt
+    // qu'une égalité stricte de tout le champ.
+    if(f.personnage && !personnageTokens(p.personnage).includes(f.personnage)) return false;
     if(f.lieu && p.lieu !== f.lieu) return false;
     if(f.support && p.support !== f.support) return false;
     if(f.etiquette){
@@ -1247,8 +1252,19 @@ function updateToolbarState(){
 function uniqueValues(field){
   return [...new Set(State.photos.filter(p=>!p.corbeille).map(p=>p[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
 }
+/* Liste par Personnage (bandeau Recherches) : un personnage par ligne, et
+   non le contenu brut du champ (qui peut cumuler plusieurs personnages
+   séparés par des virgules) — s'appuie sur les mêmes mots-clés exacts,
+   sensibles à la casse, que la modale Personnages. */
+function uniquePersonnageTokens(){
+  const set = new Set();
+  State.photos.filter(p=>!p.corbeille).forEach(p=>{
+    personnageTokens(p.personnage).forEach(tok=>set.add(tok));
+  });
+  return [...set].sort((a,b)=>a.localeCompare(b, "fr"));
+}
 function populateFilterOptions(){
-  fillSelect("fPersonnage", uniqueValues("personnage"), State.filters.personnage);
+  fillSelect("fPersonnage", uniquePersonnageTokens(), State.filters.personnage);
   fillSelect("fLieu", uniqueValues("lieu"), State.filters.lieu);
   fillSelect("fSupport", uniqueValues("support"), State.filters.support);
 }
