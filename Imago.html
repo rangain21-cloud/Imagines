@@ -1486,9 +1486,13 @@ folderInput.addEventListener("change", async ()=>{
     }
   }
 
+  const allFailed = failedFiles.length>0 && failedFiles.length===files.length;
+  const androidHint = allFailed
+    ? " Aucune des photos sélectionnées n'a pu être lue : sur Android, essayez de choisir le dossier via l'app « Fichiers »/« Mes fichiers » plutôt que via Google Photos/Galerie — cette dernière ne donne parfois qu'un accès virtuel aux photos, sans en livrer le contenu réel au navigateur."
+    : "";
   const failNote = failedFiles.length
-    ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) (ex. photo cloud non téléchargée sur l'appareil) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
-      (firstErrorDetail ? ` — détail : ${firstErrorDetail}` : "")
+    ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
+      (firstErrorDetail ? ` — détail : ${firstErrorDetail}` : "") + androidHint
     : "";
   document.getElementById("folderStatus").textContent = (catalogCandidates.length
     ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
@@ -1500,7 +1504,7 @@ folderInput.addEventListener("change", async ()=>{
   openGallery();
   toast(
     `${added} nouvelle(s) image(s) importée(s), ${reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
-    (failedFiles.length ? ` ${failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${firstErrorDetail}` : ""),
+    (failedFiles.length ? ` ${failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${allFailed ? "Essayez via l'app « Fichiers » plutôt que Google Photos." : firstErrorDetail}` : ""),
     failedFiles.length ? 12000 : undefined
   );
   autoBuildCsv();
@@ -1537,13 +1541,52 @@ async function reverseGeocode(lat, lon){
   return label || (data.display_name ? data.display_name.split(",")[0] : "");
 }
 
-function readFileAsDataURL(file){
+/* Lecture d'un fichier en data URL, avec robustesse renforcée pour Android :
+   - certains sélecteurs de dossier Android (notamment via Google Photos,
+     par opposition à l'app "Fichiers"/"Mes fichiers") rendent des fichiers
+     "visibles" (nom, taille) mais dont le contenu réel n'est plus accessible
+     au navigateur : la lecture échoue alors avec un simple ProgressEvent,
+     sans message exploitable.
+   - on tente d'abord file.arrayBuffer() (API Promise plus fiable que l'ancien
+     FileReader événementiel sur certains navigateurs Android), puis on
+     retente une fois via FileReader après une courte pause si besoin (utile
+     en cas d'échec transitoire de permission). */
+function arrayBufferToDataUrl(buf, mimeType){
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for(let i=0;i<bytes.length;i+=CHUNK){
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i+CHUNK));
+  }
+  return `data:${mimeType||"application/octet-stream"};base64,${btoa(binary)}`;
+}
+function readFileViaFileReader(file){
   return new Promise((resolve, reject)=>{
     const r = new FileReader();
     r.onload = ()=> resolve(r.result);
-    r.onerror = reject;
+    r.onerror = ()=> reject(new Error("FileReader: lecture impossible (fichier peut-être inaccessible depuis ce dossier)"));
     r.readAsDataURL(file);
   });
+}
+function delay(ms){ return new Promise(res=>setTimeout(res, ms)); }
+async function readFileAsDataURL(file){
+  if(!file.size){
+    throw new Error("Fichier vide ou inaccessible (0 octet) — probablement un contenu non réellement présent sur l'appareil pour ce dossier.");
+  }
+  // 1) file.arrayBuffer() : API Promise directe, souvent plus fiable que
+  //    FileReader sur les navigateurs Android récents.
+  try{
+    const buf = await file.arrayBuffer();
+    if(buf.byteLength) return arrayBufferToDataUrl(buf, file.type);
+  }catch(e){ /* on retente via FileReader ci-dessous */ }
+  // 2) FileReader classique, avec une seconde tentative après une courte
+  //    pause si la première échoue (permission transitoire).
+  try{
+    return await readFileViaFileReader(file);
+  }catch(e1){
+    await delay(150);
+    return await readFileViaFileReader(file);
+  }
 }
 function getImageDimensions(dataUrl){
   return new Promise((resolve)=>{
