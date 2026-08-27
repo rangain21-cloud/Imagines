@@ -1402,73 +1402,94 @@ folderInput.addEventListener("change", async ()=>{
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
   let added = 0, reused = 0;
+  const failedFiles = [];
   for(const file of files){
     if(State.photos.find(p=>p.fileName===file.name)) continue; // doublon dans la sélection elle-même
-    const dataUrl = await readFileAsDataURL(file);
-    const dims = await getImageDimensions(dataUrl);
-    const exif = await readBasicExif(file);
-    const existingRow = csvRowByFileName.get(file.name);
+    try{
+      // Sur Android, un fichier "vu" dans le sélecteur de dossier peut ne pas
+      // être réellement lisible (ex. photo Google Photos non téléchargée sur
+      // l'appareil, permission révoquée entre-temps…) : FileReader échoue
+      // alors avec une exception. On l'isole ici par fichier pour ne jamais
+      // interrompre le traitement des 26 autres à cause d'une seule image
+      // en défaut — sans ce try/catch, une erreur au 1er fichier annulait
+      // silencieusement tout l'import et laissait le 1er écran vide.
+      const dataUrl = await readFileAsDataURL(file);
+      const dims = await getImageDimensions(dataUrl);
+      const exif = await readBasicExif(file);
+      const existingRow = csvRowByFileName.get(file.name);
 
-    let rec;
-    if(existingRow){
-      // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
-      rec = {
-        id: uid("ph"), fileName: file.name, dataUrl,
-        titre: existingRow.titre || "",
-        dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
-        personnage: existingRow.personnage || "",
-        lieu: existingRow.lieu || "",
-        lieuCandidate: "",
-        support: existingRow.support || "numérique",
-        etiquette: existingRow.etiquette || "",
-        auteur: existingRow.auteur || "Philippe",
-        favori: existingRow.favori === "true",
-        corbeille: existingRow.corbeille === "true",
-        rotation: Number(existingRow.rotation)||0,
-        albums: existingRow.albums ? existingRow.albums.split("|").filter(Boolean) : [],
-        sharedWith: [],
-        filterKey: existingRow.filterKey || null,
-        filterCss: existingRow.filterKey ? (FILTER_PRESETS.find(f=>f.key===existingRow.filterKey)||{}).css || "" : "",
-        optique: existingRow.optique || exifCameraName(exif),
-        poids: existingRow.poids ? Number(existingRow.poids) : Math.round(file.size/1024),
-        map: existingRow.map || mapUrl(exif, existingRow.lieu || ""),
-        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
-        gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
-        gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null
-      };
-      if(!rec.titre) rec.titre = buildTitre(rec.lieu, rec.personnage);
-      reused++;
-    } else {
-      // Image absente du catalogue : nouvelle entrée, métadonnées proposées
-      // depuis le nom de fichier (à vérifier/compléter par l'utilisateur).
-      const meta = parseFileNameMeta(file.name);
-      const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
-      const lieu = "";
-      const personnage = meta.personnage;
-      rec = {
-        id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl, dateAchat,
-        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
-        favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
-        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
-        optique: exifCameraName(exif), poids: Math.round(file.size/1024),
-        gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
-        gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
-        map: mapUrl(exif, lieu)
-      };
-      added++;
+      let rec;
+      if(existingRow){
+        // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
+        rec = {
+          id: uid("ph"), fileName: file.name, dataUrl,
+          titre: existingRow.titre || "",
+          dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
+          personnage: existingRow.personnage || "",
+          lieu: existingRow.lieu || "",
+          lieuCandidate: "",
+          support: existingRow.support || "numérique",
+          etiquette: existingRow.etiquette || "",
+          auteur: existingRow.auteur || "Philippe",
+          favori: existingRow.favori === "true",
+          corbeille: existingRow.corbeille === "true",
+          rotation: Number(existingRow.rotation)||0,
+          albums: existingRow.albums ? existingRow.albums.split("|").filter(Boolean) : [],
+          sharedWith: [],
+          filterKey: existingRow.filterKey || null,
+          filterCss: existingRow.filterKey ? (FILTER_PRESETS.find(f=>f.key===existingRow.filterKey)||{}).css || "" : "",
+          optique: existingRow.optique || exifCameraName(exif),
+          poids: existingRow.poids ? Number(existingRow.poids) : Math.round(file.size/1024),
+          map: existingRow.map || mapUrl(exif, existingRow.lieu || ""),
+          sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+          gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
+          gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null
+        };
+        if(!rec.titre) rec.titre = buildTitre(rec.lieu, rec.personnage);
+        reused++;
+      } else {
+        // Image absente du catalogue : nouvelle entrée, métadonnées proposées
+        // depuis le nom de fichier (à vérifier/compléter par l'utilisateur).
+        const meta = parseFileNameMeta(file.name);
+        const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
+        const lieu = "";
+        const personnage = meta.personnage;
+        rec = {
+          id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl, dateAchat,
+          personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
+          favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
+          sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+          optique: exifCameraName(exif), poids: Math.round(file.size/1024),
+          gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
+          gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
+          map: mapUrl(exif, lieu)
+        };
+        added++;
+      }
+      await idbPut("photos", rec);
+      State.photos.push(rec);
+    }catch(err){
+      console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
+      failedFiles.push(file.name);
     }
-    await idbPut("photos", rec);
-    State.photos.push(rec);
   }
 
-  document.getElementById("folderStatus").textContent = catalogCandidates.length
+  const failNote = failedFiles.length
+    ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) (ex. photo cloud non téléchargée sur l'appareil) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}`
+    : "";
+  document.getElementById("folderStatus").textContent = (catalogCandidates.length
     ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
-    : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`;
+    : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`
+  ) + failNote;
 
   populateFilterOptions();
   renderGrid();
   openGallery();
-  toast(`${added} nouvelle(s) image(s) importée(s), ${reused} déjà cataloguée(s) réutilisée(s) sans modification.`);
+  toast(
+    `${added} nouvelle(s) image(s) importée(s), ${reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
+    (failedFiles.length ? ` ${failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s).` : ""),
+    failedFiles.length ? 9000 : undefined
+  );
   autoBuildCsv();
 });
 
