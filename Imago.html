@@ -488,6 +488,11 @@ button{font-family:inherit;}
   color:#1a1208; display:flex; align-items:center; justify-content:center;
   font-family:var(--font-display); font-size:15px; flex-shrink:0;
 }
+.info-auteur-input{
+  width:100%; border:none; border-bottom:1px solid var(--line); background:none;
+  color:var(--ink); font:inherit; font-size:14px; padding:2px 2px 4px;
+}
+.info-auteur-input:focus{border-bottom-color:var(--copper);}
 .info-divider{border-top:1px solid var(--line); margin:6px 0 14px;}
 .info-row{display:flex; gap:14px; padding:9px 0; align-items:flex-start;}
 .info-ic{width:20px; text-align:center; font-size:15px; color:var(--ink-dim); flex-shrink:0; margin-top:2px;}
@@ -595,7 +600,6 @@ button{font-family:inherit;}
   <div class="pave">
     <h3>Photothèque locale</h3>
     <button class="btn copper" id="btnPickFolder" style="width:100%; margin-bottom:8px;">📁 Choisir un dossier d'images…</button>
-    <button class="btn" id="btnPickFiles" style="width:100%; margin-bottom:8px;">🖼️ Sélectionner des images (si le dossier échoue)…</button>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
   </div>
 
@@ -683,8 +687,7 @@ button{font-family:inherit;}
     <div class="modal-body">
       <input class="combo-input" type="text" size="46" role="combobox"
              aria-owns=":1" aria-controls=":1" aria-description="Aucun destinataire sélectionné" autofocus
-             placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo" list="shareEmailList" autocomplete="off">
-      <datalist id="shareEmailList"></datalist>
+             placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo">
       <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
       <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
     </div>
@@ -1464,28 +1467,22 @@ async function importOneFile(file, csvRowByFileName, stats){
   }catch(err){
     console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
     stats.failedFiles.push(file.name);
-    const detail = (err && err.message) || String(err);
-    if(!stats.failedDetails) stats.failedDetails = [];
-    if(stats.failedDetails.length < 3) stats.failedDetails.push(`"${file.name}" — ${detail}`);
-    if(!stats.firstErrorDetail) stats.firstErrorDetail = detail;
+    if(!stats.firstErrorDetail) stats.firstErrorDetail = `${(err && (err.name||err.code)) || "Erreur"} : ${(err && err.message) || String(err)}`;
   }
 }
 
 /* Met à jour le message de statut (et, en fin d'import, le toast récap).
    `stillLoading` indique qu'il reste des photos à traiter en arrière-plan. */
 function reportImportProgress(folderName, catalogCandidates, stats, stillLoading){
-  const {added, reused, failedFiles, failedDetails} = stats;
+  const {added, reused, failedFiles, firstErrorDetail} = stats;
   const processed = added + reused;
   const allFailed = failedFiles.length>0 && processed===0;
   const androidHint = allFailed
     ? " Aucune des photos sélectionnées n'a pu être lue : sur Android, essayez de choisir le dossier via l'app « Fichiers »/« Mes fichiers » plutôt que via Google Photos/Galerie — cette dernière ne donne parfois qu'un accès virtuel aux photos, sans en livrer le contenu réel au navigateur."
     : "";
-  const detailNote = (failedDetails && failedDetails.length)
-    ? ` — détail : ${failedDetails.join(" ; ")}${failedFiles.length>failedDetails.length ? " ; …" : ""}`
-    : "";
   const failNote = failedFiles.length
     ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
-      detailNote + androidHint
+      (firstErrorDetail ? ` — détail : ${firstErrorDetail}` : "") + androidHint
     : "";
   const loadingNote = stillLoading ? " Le reste du dossier continue de se charger en arrière-plan…" : "";
   document.getElementById("folderStatus").textContent = (catalogCandidates.length
@@ -1528,12 +1525,12 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
   step();
 }
 
-async function handleFilesSelected(fileList, folderNameOverride){
+folderInput.addEventListener("change", async ()=>{
   const myImportToken = ++importToken;
-  const allFiles = [...fileList];
+  const allFiles = [...folderInput.files];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
-  const folderName = folderNameOverride || (files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier");
+  const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier";
   State.folderName = folderName;
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
 
@@ -1584,7 +1581,7 @@ async function handleFilesSelected(fileList, folderNameOverride){
   // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
-  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"" };
+  const stats = { added:0, reused:0, failedFiles:[], firstErrorDetail:"" };
   for(const file of priorityFiles){
     if(myImportToken !== importToken) return;
     await importOneFile(file, csvRowByFileName, stats);
@@ -1609,24 +1606,7 @@ async function handleFilesSelected(fileList, folderNameOverride){
     toast(`${priorityFiles.length} photo(s) récente(s) affichée(s) — chargement des ${restFiles.length} autre(s) en arrière-plan…`);
     importRestInBackground(restFiles, csvRowByFileName, stats, myImportToken, folderName, catalogCandidates);
   }
-}
-folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.files));
-
-/* Solution de repli pour Android : certains dossiers (notamment les médias
-   WhatsApp, sous stockage cloisonné "scoped storage") renvoient une erreur
-   NotReadableError via le sélecteur de DOSSIER (<input webkitdirectory>),
-   même si les fichiers sont listés correctement — Chrome n'obtient alors
-   qu'un accès virtuel, pas le contenu réel. Le sélecteur d'IMAGES classique
-   (galerie/fichiers système, sans mode dossier) utilise un mécanisme
-   d'autorisation différent (par fichier) qui fonctionne dans ce cas. */
-const filePickerInput = document.createElement("input");
-filePickerInput.type = "file";
-filePickerInput.accept = "image/*";
-filePickerInput.multiple = true;
-filePickerInput.className = "hidden";
-document.body.appendChild(filePickerInput);
-document.getElementById("btnPickFiles").addEventListener("click", ()=> filePickerInput.click());
-filePickerInput.addEventListener("change", ()=> handleFilesSelected(filePickerInput.files, "Sélection manuelle"));
+});
 
 function exifCameraName(exif){
   if(!exif) return "";
@@ -1678,93 +1658,33 @@ function arrayBufferToDataUrl(buf, mimeType){
   }
   return `data:${mimeType||"application/octet-stream"};base64,${btoa(binary)}`;
 }
-function delay(ms){ return new Promise(res=>setTimeout(res, ms)); }
-
-/* Certains fichiers "fantômes" (accès virtuel Google Photos) ne déclenchent
-   ni onload ni onerror : la lecture reste bloquée indéfiniment. On ajoute
-   donc un délai maximal par tentative, qui rejette explicitement avec un
-   message distinct d'une vraie erreur de lecture. */
-const READ_TIMEOUT_MS = 12000;
-const READ_MAX_ATTEMPTS = 4; // nombre de tentatives via FileReader, après l'essai arrayBuffer()
-function withTimeout(promise, ms, label){
-  return new Promise((resolve, reject)=>{
-    let done = false;
-    const t = setTimeout(()=>{
-      if(done) return;
-      done = true;
-      reject(new Error(`${label} : aucune réponse après ${Math.round(ms/1000)}s (ni succès ni erreur) — le fichier ne répond pas, signe typique d'un accès virtuel (ex. Google Photos) sans contenu réellement rapatrié sur l'appareil.`));
-    }, ms);
-    promise.then(
-      v=>{ if(done) return; done = true; clearTimeout(t); resolve(v); },
-      e=>{ if(done) return; done = true; clearTimeout(t); reject(e); }
-    );
-  });
-}
-
 function readFileViaFileReader(file){
   return new Promise((resolve, reject)=>{
     const r = new FileReader();
-    r.onload = ()=>{
-      const result = r.result;
-      const len = result && result.length ? result.length : 0;
-      if(!result || len < 30){
-        reject(new Error(`FileReader : lecture "terminée" mais résultat vide ou anormalement court (${len} caractère(s) reçus, ${file.size} octet(s) annoncés) — fichier probablement sans contenu réel accessible.`));
-        return;
-      }
-      resolve(result);
-    };
-    r.onerror = ()=>{
-      const err = r.error;
-      const name = (err && err.name) || "erreur inconnue";
-      const msg = (err && err.message) ? " — " + err.message : "";
-      const code = err && err.code!=null ? err.code : "?";
-      reject(new Error(`FileReader : ${name}${msg} (code ${code})`));
-    };
-    r.onabort = ()=> reject(new Error("FileReader : lecture interrompue (abort) avant la fin"));
-    try{
-      r.readAsDataURL(file);
-    }catch(syncErr){
-      reject(new Error(`FileReader : exception immédiate au lancement de la lecture — ${(syncErr && syncErr.message) || String(syncErr)}`));
-    }
+    r.onload = ()=> resolve(r.result);
+    r.onerror = ()=> reject(new Error("FileReader: lecture impossible (fichier peut-être inaccessible depuis ce dossier)"));
+    r.readAsDataURL(file);
   });
 }
-
+function delay(ms){ return new Promise(res=>setTimeout(res, ms)); }
 async function readFileAsDataURL(file){
-  const log = []; // trace de chaque tentative, pour un message final précis
-
   if(!file.size){
-    throw new Error(`Fichier annoncé à 0 octet par l'API File — aucun contenu à lire (nom : "${file.name}"). Probablement un contenu non réellement présent sur l'appareil pour ce dossier (accès virtuel type Google Photos).`);
+    throw new Error("Fichier vide ou inaccessible (0 octet) — probablement un contenu non réellement présent sur l'appareil pour ce dossier.");
   }
-
   // 1) file.arrayBuffer() : API Promise directe, souvent plus fiable que
-  //    FileReader sur les navigateurs Android récents. On compare la taille
-  //    réellement lue à la taille annoncée par l'API File.
+  //    FileReader sur les navigateurs Android récents.
   try{
-    const buf = await withTimeout(file.arrayBuffer(), READ_TIMEOUT_MS, "arrayBuffer()");
-    if(buf.byteLength > 0){
-      if(buf.byteLength !== file.size){
-        console.warn(`"${file.name}" : arrayBuffer() a lu ${buf.byteLength} o alors que ${file.size} o étaient annoncés — résultat conservé.`);
-      }
-      return arrayBufferToDataUrl(buf, file.type);
-    }
-    log.push(`arrayBuffer() : 0 octet réellement lu (${file.size} o annoncé(s))`);
-  }catch(e){
-    log.push(`arrayBuffer() : ${(e && e.message) || String(e)}`);
+    const buf = await file.arrayBuffer();
+    if(buf.byteLength) return arrayBufferToDataUrl(buf, file.type);
+  }catch(e){ /* on retente via FileReader ci-dessous */ }
+  // 2) FileReader classique, avec une seconde tentative après une courte
+  //    pause si la première échoue (permission transitoire).
+  try{
+    return await readFileViaFileReader(file);
+  }catch(e1){
+    await delay(150);
+    return await readFileViaFileReader(file);
   }
-
-  // 2) FileReader, plusieurs tentatives avec délai croissant entre chacune
-  //    (utile en cas d'échec transitoire de permission), chacune bornée par
-  //    un timeout pour ne jamais bloquer l'import sur un fichier fantôme.
-  for(let attempt=1; attempt<=READ_MAX_ATTEMPTS; attempt++){
-    try{
-      return await withTimeout(readFileViaFileReader(file), READ_TIMEOUT_MS, `FileReader (tentative ${attempt}/${READ_MAX_ATTEMPTS})`);
-    }catch(e){
-      log.push(`FileReader tentative ${attempt}/${READ_MAX_ATTEMPTS} : ${(e && e.message) || String(e)}`);
-      if(attempt < READ_MAX_ATTEMPTS) await delay(250 * attempt); // 250ms, 500ms, 750ms…
-    }
-  }
-
-  throw new Error(`Lecture impossible pour "${file.name}" (${file.size} o annoncé(s)) après ${1+READ_MAX_ATTEMPTS} tentative(s) — ${log.join(" | ")}`);
 }
 function getImageDimensions(dataUrl){
   return new Promise((resolve)=>{
@@ -2346,45 +2266,6 @@ document.querySelectorAll(".modal-overlay").forEach(ov=>{
 /* ---------------------------------------------------------------
    10. Boutons de la barre supérieure
    --------------------------------------------------------------- */
-/* Historique des adresses e-mail utilisées pour le partage Drive, conservé
-   entre les sessions (localStorage) et proposé via un <datalist> attaché au
-   champ de saisie — l'utilisateur retrouve ainsi ses destinataires habituels
-   sans avoir à les retaper. */
-const RECENT_SHARE_EMAILS_KEY = "imago_recent_share_emails";
-const RECENT_SHARE_EMAILS_MAX = 30;
-function loadRecentShareEmails(){
-  try{
-    const raw = localStorage.getItem(RECENT_SHARE_EMAILS_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
-  }catch(e){
-    console.warn("Historique des e-mails de partage illisible, réinitialisation.", e);
-    return [];
-  }
-}
-function saveRecentShareEmails(list){
-  try{
-    localStorage.setItem(RECENT_SHARE_EMAILS_KEY, JSON.stringify(list.slice(0, RECENT_SHARE_EMAILS_MAX)));
-  }catch(e){
-    console.warn("Impossible d'enregistrer l'historique des e-mails de partage.", e);
-  }
-}
-function renderShareEmailDatalist(){
-  const dl = document.getElementById("shareEmailList");
-  if(!dl) return;
-  const emails = loadRecentShareEmails();
-  dl.innerHTML = emails.map(e=> `<option value="${e.replace(/"/g,"&quot;")}"></option>`).join("");
-}
-function rememberShareEmails(emails){
-  if(!emails || !emails.length) return;
-  const existing = loadRecentShareEmails();
-  // les adresses les plus récemment utilisées remontent en tête de liste
-  const merged = [...emails, ...existing.filter(e=> !emails.includes(e))];
-  saveRecentShareEmails(merged);
-  renderShareEmailDatalist();
-}
-renderShareEmailDatalist();
-
 document.getElementById("btnShare").addEventListener("click", ()=>{
   if(!getSelected()) return;
   document.getElementById("shareChips").innerHTML = "";
@@ -2451,7 +2332,6 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
     }
     p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
     await idbPut("photos", p);
-    rememberShareEmails(emails);
     renderGrid();
     closeModal("modalShare");
     toast(
@@ -2839,15 +2719,35 @@ function renderInfoModal(p){
   titleInput.onchange = async ()=>{ p.titre = titleInput.value.trim(); await idbPut("photos", p); renderGrid(); autoBuildCsv(); };
 
   const contacts = document.getElementById("infoContacts");
-  if(p.auteur){
-    contacts.innerHTML = `
-      <div class="info-contact">
-        <div class="info-avatar">${escapeHtml(p.auteur.trim().charAt(0).toUpperCase()||"?")}</div>
-        <div><div class="main-line">${escapeHtml(p.auteur)}</div><div class="sub-line">Auteur</div></div>
-      </div>`;
-  } else {
-    contacts.innerHTML = `<p class="drive-note">Aucun auteur renseigné (voir « Modifier » pour en ajouter un).</p>`;
-  }
+  populateAuteurDatalist();
+  contacts.innerHTML = `
+    <div class="info-contact">
+      <div class="info-avatar" id="infoAuteurAvatar">${escapeHtml((p.auteur||"").trim().charAt(0).toUpperCase()||"?")}</div>
+      <div style="flex:1;">
+        <input type="text" class="info-auteur-input" id="infoAuteur" list="auteurList" placeholder="Ajouter un auteur">
+        <div class="sub-line">Auteur</div>
+      </div>
+    </div>`;
+  const auteurInput = document.getElementById("infoAuteur");
+  auteurInput.value = p.auteur || "";
+  auteurInput.onchange = async ()=>{
+    const name = auteurInput.value.trim();
+    if(name === (p.auteur||"")) return;
+    p.auteur = name;
+    // Si c'est un nom inédit, on l'enregistre aussi comme auteur référencé,
+    // pour qu'il réapparaisse dans la liste déroulante par la suite.
+    if(name && !State.auteurs.some(a=>a.name.toLowerCase()===name.toLowerCase())){
+      const rec = {id: uid("au"), name, note:""};
+      await idbPut("auteurs", rec);
+      State.auteurs.push(rec);
+      populateAuteurDatalist();
+    }
+    await idbPut("photos", p);
+    document.getElementById("infoAuteurAvatar").textContent = name.charAt(0).toUpperCase() || "?";
+    renderGrid();
+    autoBuildCsv();
+    toast(name ? "Auteur mis à jour." : "Auteur retiré.");
+  };
 
   const rows = document.getElementById("infoRows");
   const exifLines = fmtExif(p.exif);
