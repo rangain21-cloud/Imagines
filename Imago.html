@@ -339,6 +339,25 @@ button{font-family:inherit;}
   position:absolute; top:6px; right:6px; color:var(--copper); font-size:14px;
   text-shadow:0 1px 4px rgba(0,0,0,.7);
 }
+/* ---------- sélection multiple (galerie) ---------- */
+.gallery-tile .gallery-select-mark{
+  position:absolute; top:6px; left:6px; z-index:2;
+  width:22px; height:22px; border-radius:50%;
+  background:rgba(16,27,22,.72); border:1.5px solid var(--print-cream);
+  display:none; align-items:center; justify-content:center;
+  font-size:13px; color:transparent;
+}
+.gallery-screen.select-mode .gallery-tile .gallery-select-mark{display:flex;}
+.gallery-tile.selected{border-color:var(--copper); box-shadow:0 0 0 2px var(--copper) inset;}
+.gallery-tile.selected::after{
+  content:""; position:absolute; inset:0; background:rgba(199,125,59,.22); pointer-events:none;
+}
+.gallery-tile.selected .gallery-select-mark{
+  background:var(--copper); border-color:var(--copper); color:#171008;
+}
+.gallery-screen.select-mode .gallery-tile img{opacity:.92;}
+.gallery-head-actions{display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;}
+.gallery-select-count{font-size:12px; color:var(--ink-dim);}
 .gallery-tile .gallery-date{
   position:absolute; left:0; right:0; bottom:0;
   padding:4px 6px; font-size:10.5px; color:var(--print-cream);
@@ -557,6 +576,11 @@ button{font-family:inherit;}
   <div class="gallery-head">
     <h1>l'heuristique — où l'<em>Art</em> de trouver, de découvrir</h1>
     <span class="gallery-count" id="galleryCount"></span>
+    <div class="gallery-head-actions">
+      <span class="gallery-select-count hidden" id="gallerySelectCount"></span>
+      <button class="btn hidden" id="btnGalleryShareSelection" title="Envoyer les images sélectionnées dans Drive" disabled>⇪ Partager</button>
+      <button class="btn" id="btnGallerySelectToggle" title="Sélectionner plusieurs images">☑ Sélectionner</button>
+    </div>
   </div>
   <div class="gallery-scroll" id="galleryScroll">
     <div class="gallery-grid" id="galleryGrid"></div>
@@ -1011,7 +1035,9 @@ const State = {
   slideshowTimer: null,
   dirty: false, // true si le CSV a changé depuis la dernière sauvegarde (Drive ou export local)
   catalogFileName: null, // ex: "Catalogue-0001.csv" — attribué à l'ouverture du dossier local
-  folderName: null // nom du dossier choisi via « Choisir un dossier d'images… », sert à nommer Catalogue-xxxx.csv
+  folderName: null, // nom du dossier choisi via « Choisir un dossier d'images… », sert à nommer Catalogue-xxxx.csv
+  gallerySelectMode: false, // true : la galerie est en mode sélection multiple (pour le partage groupé)
+  gallerySelection: new Set() // ids des photos cochées dans la galerie en mode sélection
 };
 
 function uid(prefix="id"){ return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
@@ -1181,6 +1207,11 @@ function buildGalleryTile(p){
   tile.className = "gallery-tile";
   tile.dataset.id = p.id;
   tile.title = p.fileName || "";
+  if(State.gallerySelection.has(p.id)) tile.classList.add("selected");
+  const mark = document.createElement("span");
+  mark.className = "gallery-select-mark";
+  mark.textContent = "✓";
+  tile.appendChild(mark);
   if(p.favori){
     const fav = document.createElement("span");
     fav.className = "gallery-fav";
@@ -1260,10 +1291,52 @@ document.getElementById("galleryGrid").addEventListener("click", (e)=>{
   const id = tile.dataset.id;
   const p = State.photos.find(ph=>ph.id===id);
   if(!p) return;
+  if(State.gallerySelectMode){
+    toggleGallerySelection(id, tile);
+    return;
+  }
   State.selectedId = p.id;
   State.viewIndex = 0; // recalculé dans renderGrid() selon la liste filtrée active
   closeGallery();
   renderGrid();
+});
+function toggleGallerySelection(id, tile){
+  if(State.gallerySelection.has(id)){
+    State.gallerySelection.delete(id);
+    tile.classList.remove("selected");
+  } else {
+    State.gallerySelection.add(id);
+    tile.classList.add("selected");
+  }
+  updateGallerySelectionUI();
+}
+function updateGallerySelectionUI(){
+  const n = State.gallerySelection.size;
+  const countEl = document.getElementById("gallerySelectCount");
+  const shareBtn = document.getElementById("btnGalleryShareSelection");
+  countEl.textContent = n ? `${n} sélectionnée${n>1?"s":""}` : "";
+  countEl.classList.toggle("hidden", !State.gallerySelectMode || n===0);
+  shareBtn.disabled = n===0;
+  shareBtn.classList.toggle("hidden", !State.gallerySelectMode);
+}
+function setGallerySelectMode(on){
+  State.gallerySelectMode = on;
+  if(!on){ State.gallerySelection.clear(); }
+  document.getElementById("galleryScreen").classList.toggle("select-mode", on);
+  document.getElementById("btnGallerySelectToggle").textContent = on ? "✕ Annuler" : "☑ Sélectionner";
+  // recalcule les coches visibles (au cas où la sélection vient d'être vidée)
+  document.querySelectorAll("#galleryGrid .gallery-tile.selected").forEach(t=>{
+    if(!State.gallerySelection.has(t.dataset.id)) t.classList.remove("selected");
+  });
+  updateGallerySelectionUI();
+}
+document.getElementById("btnGallerySelectToggle").addEventListener("click", ()=>{
+  setGallerySelectMode(!State.gallerySelectMode);
+});
+document.getElementById("btnGalleryShareSelection").addEventListener("click", ()=>{
+  const photos = State.photos.filter(p=> State.gallerySelection.has(p.id));
+  if(photos.length===0) return;
+  openShareModal(photos);
 });
 function openGallery(){
   renderGallery();
@@ -1271,6 +1344,7 @@ function openGallery(){
 }
 function closeGallery(){
   document.getElementById("galleryScreen").classList.add("hidden");
+  setGallerySelectMode(false);
 }
 document.getElementById("galleryToggle").addEventListener("click", openGallery);
 document.getElementById("btnBackToGallery").addEventListener("click", openGallery);
@@ -2385,11 +2459,24 @@ function rememberShareEmails(emails){
 }
 renderShareEmailDatalist();
 
-document.getElementById("btnShare").addEventListener("click", ()=>{
-  if(!getSelected()) return;
+/* shareTargets : liste des photos concernées par l'envoi Drive en cours —
+   une seule (bouton Partager de la barre du haut) ou plusieurs (sélection
+   multiple depuis la galerie). */
+let shareTargets = [];
+function openShareModal(photos){
+  if(!photos || photos.length===0) return;
+  shareTargets = photos;
   document.getElementById("shareChips").innerHTML = "";
   document.getElementById("shareCombo").value = "";
+  const n = photos.length;
+  document.querySelector("#modalShare .modal-head h2").textContent =
+    n>1 ? `Envoyer ${n} images dans Google Drive` : "Envoyer dans Google Drive";
   openModal("modalShare");
+}
+document.getElementById("btnShare").addEventListener("click", ()=>{
+  const p = getSelected();
+  if(!p) return;
+  openShareModal([p]);
 });
 function addShareChip(rawValue){
   const value = (rawValue||"").trim();
@@ -2416,7 +2503,8 @@ document.getElementById("shareCombo").addEventListener("blur", (e)=>{
   }
 });
 document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
-  const p = getSelected(); if(!p) return;
+  const targets = shareTargets;
+  if(!targets || targets.length===0) return;
   // Valide aussi ce qui reste tapé dans le champ (sans Entrée pressée) avant d'envoyer.
   const comboEl = document.getElementById("shareCombo");
   if(comboEl.value.trim()){
@@ -2441,29 +2529,43 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
   }
   const btn = document.getElementById("btnConfirmShare");
   const originalLabel = btn.textContent;
-  btn.textContent = "Envoi…"; btn.disabled = true;
-  try{
-    const uploaded = await ensurePhotoUploadedToDrive(p);
-    p.driveFileId = uploaded.id;
-    p.driveWebViewLink = uploaded.webViewLink || "";
-    for(const email of emails){
-      await shareDriveFileWithEmail(uploaded.id, email);
+  btn.disabled = true;
+  // Chaque image est envoyée l'une après l'autre dans le dossier Drive
+  // IMAGINES : ensurePhotoUploadedToDrive() fixe explicitement metadata.name
+  // = p.fileName, donc le fichier Drive garde le nom d'origine de l'image
+  // (et non un identifiant généré) — voir la fonction plus bas.
+  const failures = [];
+  for(let i=0;i<targets.length;i++){
+    const p = targets[i];
+    btn.textContent = targets.length>1 ? `Envoi… (${i+1}/${targets.length})` : "Envoi…";
+    try{
+      const uploaded = await ensurePhotoUploadedToDrive(p);
+      p.driveFileId = uploaded.id;
+      p.driveWebViewLink = uploaded.webViewLink || "";
+      for(const email of emails){
+        await shareDriveFileWithEmail(uploaded.id, email);
+      }
+      p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
+      await idbPut("photos", p);
+    }catch(err){
+      console.error("Échec du partage Drive pour " + (p.fileName||p.id) + " :", err);
+      failures.push(p.fileName || p.id);
     }
-    p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
-    await idbPut("photos", p);
-    rememberShareEmails(emails);
-    renderGrid();
-    closeModal("modalShare");
-    toast(
-      `Image envoyée et partagée sur Drive avec ${emails.join(", ")}.` +
-      (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "")
-    );
-  }catch(err){
-    console.error("Échec du partage Drive :", err);
-    toast("Échec de l'envoi : " + err.message);
-  }finally{
-    btn.textContent = originalLabel; btn.disabled = false;
   }
+  rememberShareEmails(emails);
+  renderGrid();
+  if(document.getElementById("galleryScreen").classList.contains("select-mode")){
+    setGallerySelectMode(false);
+  }
+  closeModal("modalShare");
+  const okCount = targets.length - failures.length;
+  const plural = okCount>1 ? "s" : "";
+  toast(
+    (okCount>0 ? `${okCount} image${plural} envoyée${plural} et partagée${plural} sur Drive avec ${emails.join(", ")}.` : "Aucun envoi n'a abouti.") +
+    (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "") +
+    (failures.length ? ` Échec pour : ${failures.join(", ")}.` : "")
+  );
+  btn.textContent = originalLabel; btn.disabled = false;
 });
 
 /* -- Suggestions de retouche (préréglages CSS filter, façon Google Photos) -- */
