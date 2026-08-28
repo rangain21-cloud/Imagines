@@ -494,17 +494,6 @@ button{font-family:inherit;}
 }
 .info-auteur-input:focus{border-bottom-color:var(--copper);}
 .info-divider{border-top:1px solid var(--line); margin:6px 0 14px;}
-.share-photo-picker{
-  display:grid; grid-template-columns:repeat(auto-fill, minmax(74px, 1fr)); gap:8px;
-  max-height:260px; overflow-y:auto; padding:2px; border:1px solid var(--line); border-radius:6px;
-}
-.share-photo-item{position:relative; cursor:pointer; border-radius:4px; overflow:hidden; aspect-ratio:1/1; background:#000;}
-.share-photo-item img{width:100%; height:100%; object-fit:cover; display:block; opacity:.62; transition:opacity .12s;}
-.share-photo-item.selected img{opacity:1;}
-.share-photo-item.selected{outline:2px solid var(--copper);}
-.share-photo-item input[type="checkbox"]{
-  position:absolute; top:4px; left:4px; width:16px; height:16px; margin:0; accent-color:var(--copper);
-}
 .info-row{display:flex; gap:14px; padding:9px 0; align-items:flex-start;}
 .info-ic{width:20px; text-align:center; font-size:15px; color:var(--ink-dim); flex-shrink:0; margin-top:2px;}
 .info-content{flex:1; font-size:13.5px; line-height:1.5;}
@@ -693,17 +682,14 @@ button{font-family:inherit;}
 
 <!-- ============== MODAL: PARTAGER ============== -->
 <div class="modal-overlay" id="modalShare">
-  <div class="modal wide">
+  <div class="modal">
     <div class="modal-head"><h2>Envoyer dans Google Drive</h2><button class="modal-close" data-close="modalShare">×</button></div>
     <div class="modal-body">
-      <p class="drive-note" style="margin:0 0 8px;">Images à envoyer</p>
-      <div id="sharePhotoPicker" class="share-photo-picker"></div>
-      <p class="drive-note" id="shareSelCount" style="margin:6px 0 14px;"></p>
       <input class="combo-input" type="text" size="46" role="combobox"
              aria-owns=":1" aria-controls=":1" aria-description="Aucun destinataire sélectionné" autofocus
-             placeholder="Saisissez une adresse e-mail, Entrée pour valider" id="shareCombo">
+             placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo">
       <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
-      <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi). Chaque image sélectionnée sera partagée avec chacun des destinataires.</p>
+      <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalShare">Annuler</button>
@@ -2284,38 +2270,8 @@ document.getElementById("btnShare").addEventListener("click", ()=>{
   if(!getSelected()) return;
   document.getElementById("shareChips").innerHTML = "";
   document.getElementById("shareCombo").value = "";
-  renderSharePhotoPicker(State.selectedId);
   openModal("modalShare");
 });
-function renderSharePhotoPicker(preselectId){
-  const picker = document.getElementById("sharePhotoPicker");
-  const list = State.photos.filter(p=>!p.corbeille);
-  picker.innerHTML = list.map(p=>`
-    <label class="share-photo-item${p.id===preselectId ? " selected" : ""}" data-id="${p.id}">
-      <input type="checkbox" ${p.id===preselectId ? "checked" : ""}>
-      <img src="${p.dataUrl||""}" alt="" loading="lazy">
-    </label>`).join("");
-  picker.querySelectorAll(".share-photo-item").forEach(item=>{
-    const check = item.querySelector("input[type=checkbox]");
-    const sync = ()=>{ item.classList.toggle("selected", check.checked); updateShareSelCount(); };
-    item.addEventListener("click", (e)=>{
-      if(e.target!==check){ check.checked = !check.checked; }
-      sync();
-    });
-    check.addEventListener("click", e=> e.stopPropagation());
-  });
-  updateShareSelCount();
-}
-function getSelectedSharePhotos(){
-  return [...document.querySelectorAll(".share-photo-item.selected")]
-    .map(el=>State.photos.find(p=>p.id===el.dataset.id))
-    .filter(Boolean);
-}
-function updateShareSelCount(){
-  const n = document.querySelectorAll(".share-photo-item.selected").length;
-  document.getElementById("shareSelCount").textContent =
-    n===0 ? "Aucune image sélectionnée." : n===1 ? "1 image sélectionnée." : `${n} images sélectionnées.`;
-}
 function addShareChip(rawValue){
   const value = (rawValue||"").trim();
   if(!value) return;
@@ -2341,11 +2297,7 @@ document.getElementById("shareCombo").addEventListener("blur", (e)=>{
   }
 });
 document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
-  const photos = getSelectedSharePhotos();
-  if(photos.length===0){
-    toast("Sélectionnez au moins une image à envoyer.");
-    return;
-  }
+  const p = getSelected(); if(!p) return;
   // Valide aussi ce qui reste tapé dans le champ (sans Entrée pressée) avant d'envoyer.
   const comboEl = document.getElementById("shareCombo");
   if(comboEl.value.trim()){
@@ -2370,35 +2322,28 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
   }
   const btn = document.getElementById("btnConfirmShare");
   const originalLabel = btn.textContent;
-  btn.disabled = true;
-  let okCount = 0;
-  const errors = [];
-  for(let i=0; i<photos.length; i++){
-    const p = photos[i];
-    btn.textContent = `Envoi ${i+1}/${photos.length}…`;
-    try{
-      const uploaded = await ensurePhotoUploadedToDrive(p);
-      p.driveFileId = uploaded.id;
-      p.driveWebViewLink = uploaded.webViewLink || "";
-      for(const email of emails){
-        await shareDriveFileWithEmail(uploaded.id, email);
-      }
-      p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
-      await idbPut("photos", p);
-      okCount++;
-    }catch(err){
-      console.error(`Échec du partage Drive pour ${p.fileName} :`, err);
-      errors.push(`${p.fileName} : ${err.message}`);
+  btn.textContent = "Envoi…"; btn.disabled = true;
+  try{
+    const uploaded = await ensurePhotoUploadedToDrive(p);
+    p.driveFileId = uploaded.id;
+    p.driveWebViewLink = uploaded.webViewLink || "";
+    for(const email of emails){
+      await shareDriveFileWithEmail(uploaded.id, email);
     }
+    p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
+    await idbPut("photos", p);
+    renderGrid();
+    closeModal("modalShare");
+    toast(
+      `Image envoyée et partagée sur Drive avec ${emails.join(", ")}.` +
+      (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "")
+    );
+  }catch(err){
+    console.error("Échec du partage Drive :", err);
+    toast("Échec de l'envoi : " + err.message);
+  }finally{
+    btn.textContent = originalLabel; btn.disabled = false;
   }
-  renderGrid();
-  btn.textContent = originalLabel; btn.disabled = false;
-  if(okCount>0) closeModal("modalShare");
-  const parts = [];
-  if(okCount>0) parts.push(`${okCount} image${okCount>1?"s":""} envoyée${okCount>1?"s":""} et partagée${okCount>1?"s":""} avec ${emails.join(", ")}.`);
-  if(rejected.length) parts.push(`Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")}.`);
-  if(errors.length) parts.push(`Échec sur ${errors.length} image${errors.length>1?"s":""} : ${errors.join(" · ")}`);
-  toast(parts.join(" "));
 });
 
 /* -- Suggestions de retouche (préréglages CSS filter, façon Google Photos) -- */
