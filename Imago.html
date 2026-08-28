@@ -3300,17 +3300,6 @@ function buildCsv(){
 let currentCsv = "";
 function autoBuildCsv(){ currentCsv = buildCsv(); markCsvDirty(); return currentCsv; }
 
-/* Construit un CSV à 2 colonnes (fileName + le champ demandé) à partir de
-   State.photos, pour les exports annexes lieu.csv / map.csv : chaque ligne
-   du catalogue principal donne une ligne ici, "fileName" servant de clé de
-   correspondance entre les 3 fichiers exportés. */
-function buildFieldCsv(field){
-  const rows = ["fileName;" + field];
-  State.photos.forEach(p=>{
-    rows.push(csvEscape(p.fileName) + ";" + csvEscape(p[field]));
-  });
-  return rows.join("\n");
-}
 function downloadCsvFile(csvText, fileName){
   const blob = new Blob(["\uFEFF"+csvText], {type:"text/csv;charset=utf-8"});
   const a = document.createElement("a");
@@ -3324,12 +3313,11 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
   const csv = autoBuildCsv();
   downloadCsvFile(csv, State.catalogFileName);
-  // Règle : le champ "info-Lieu-Text" (p.lieu) de chaque ligne est en plus
-  // reporté dans lieu.csv, et le champ "info-map" (p.map) dans map.csv.
-  downloadCsvFile(buildFieldCsv("lieu"), "lieu.csv");
-  downloadCsvFile(buildFieldCsv("map"), "map.csv");
+  // Règle : les rubriques "lieu" et "map" de chaque ligne du catalogue
+  // suffisent à elles seules à matérialiser de nouveaux lieux / maps —
+  // plus besoin de fichiers annexes lieu.csv / map.csv.
   markCsvClean();
-  toast(`« ${State.catalogFileName} », « lieu.csv » et « map.csv » exportés — déposez-les dans le dossier de vos images pour qu'ils soient retrouvés automatiquement au prochain import.`);
+  toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.`);
 });
 
 document.getElementById("btnImportCsv").addEventListener("click", ()=> document.getElementById("csvFileInput").click());
