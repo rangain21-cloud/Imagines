@@ -1892,9 +1892,9 @@ function ensureHeic2anyLoaded(){
   });
   return heic2anyLoadPromise;
 }
-async function convertHeicToJpegDataUrl(file){
+async function heicBlobToJpegDataUrl(blob){
   await ensureHeic2anyLoaded();
-  const out = await window.heic2any({blob:file, toType:"image/jpeg", quality:0.88});
+  const out = await window.heic2any({blob, toType:"image/jpeg", quality:0.88});
   const outBlob = Array.isArray(out) ? out[0] : out; // heic2any peut renvoyer un tableau (rafales/HEIC multi-images) : on ne garde que la 1ère
   return await new Promise((resolve, reject)=>{
     const r = new FileReader();
@@ -1902,6 +1902,25 @@ async function convertHeicToJpegDataUrl(file){
     r.onerror = ()=> reject(r.error || new Error("Lecture du JPEG converti impossible"));
     r.readAsDataURL(outBlob);
   });
+}
+async function convertHeicToJpegDataUrl(file){ return heicBlobToJpegDataUrl(file); }
+/* Variante à partir d'un dataUrl déjà en mémoire (photo chargée lors d'une
+   session précédente) — utilisée par le filet de sécurité au moment de
+   l'envoi Drive, voir ensurePhotoUploadedToDrive(). */
+async function convertHeicDataUrlToJpeg(dataUrl){
+  const blob = await (await fetch(dataUrl)).blob();
+  return heicBlobToJpegDataUrl(blob);
+}
+function dataUrlMimeType(dataUrl){
+  const m = (dataUrl||"").match(/^data:([^;]+);base64,/);
+  return m ? m[1] : "";
+}
+/* Une photo "a encore besoin" d'être convertie si son nom indique un format
+   HEIC/HEIF mais que son contenu réel (le dataUrl en mémoire) n'est pas déjà
+   un JPEG/PNG lisible — cas d'une conversion à l'import qui aurait échoué
+   faute de connexion internet à ce moment-là. */
+function stillNeedsHeicConversion(p){
+  return /\.hei[cf]$/i.test(p.fileName||"") && !/^image\/(jpe?g|png)$/i.test(dataUrlMimeType(p.dataUrl));
 }
 /* Enveloppe readFileAsDataURL : lit le fichier normalement, puis convertit
    le résultat en JPEG affichable s'il s'agit d'un HEIC/HEIF. En cas d'échec
@@ -3838,6 +3857,21 @@ async function ensureImaginesFolder(){
    sous-dossier de partage groupé (voir createShareBatchFolder) plutôt
    que directement à la racine d'IMAGINES.
    ----------------------------------------------------------------- */
+/* Nom du fichier déposé sur DRIVE (peut différer du nom local p.fileName,
+   voir stillNeedsHeicConversion ci-dessus) : si le contenu réellement envoyé
+   est un JPEG converti depuis un HEIC/HEIF, on corrige l'extension pour
+   qu'elle corresponde au contenu réel — un fichier ".heic" qui contiendrait
+   en fait un JPEG s'ouvrirait mal (ou pas du tout) dans certains lecteurs.
+   Le nom LOCAL (p.fileName, dans le catalogue) n'est volontairement PAS
+   modifié : il doit rester identique au fichier réel de votre dossier
+   d'images pour être retrouvé au prochain import. */
+function driveUploadFileName(p, mime){
+  const isHeicName = /\.hei[cf]$/i.test(p.fileName||"");
+  if(isHeicName && /^image\/jpe?g$/i.test(mime||"")){
+    return p.fileName.replace(/\.hei[cf]$/i, ".jpg");
+  }
+  return p.fileName || "image.jpg";
+}
 async function ensurePhotoUploadedToDrive(p, parentFolderId){
   if(p.driveFileId){
     // L'image a déjà été envoyée sur Drive lors d'un partage précédent : on
@@ -3857,13 +3891,24 @@ async function ensurePhotoUploadedToDrive(p, parentFolderId){
       p.driveWebViewLink = "";
     }
   }
+  // Filet de sécurité HEIC/HEIF : l'envoi vers Drive nécessite de toute façon
+  // une connexion internet, c'est donc le moment idéal pour rattraper une
+  // conversion qui aurait échoué à l'import (ex. import fait hors-ligne).
+  if(stillNeedsHeicConversion(p)){
+    try{
+      p.dataUrl = await convertHeicDataUrlToJpeg(p.dataUrl);
+      await idbPut("photos", p); // conversion acquise définitivement, plus jamais à refaire pour cette photo
+    }catch(err){
+      throw new Error(`Conversion HEIC → JPEG impossible avant l'envoi sur Drive de "${p.fileName}" (${(err&&err.message)||String(err)}) — vérifiez votre connexion internet puis réessayez.`);
+    }
+  }
   const match = (p.dataUrl||"").match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!match) throw new Error("Image introuvable en mémoire.");
   const mime = match[1] || "image/jpeg";
   const base64Data = match[2];
   const folderId = parentFolderId || await ensureImaginesFolder();
   const boundary = "imago_img_boundary_" + Date.now();
-  const metadata = {name: p.fileName || "image.jpg", parents: [folderId]};
+  const metadata = {name: driveUploadFileName(p, mime), parents: [folderId]};
   const body =
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
     `--${boundary}\r\nContent-Type: ${mime}\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64Data}\r\n--${boundary}--`;
