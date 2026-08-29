@@ -312,7 +312,7 @@ button{font-family:inherit;}
 .gallery-head h1 em{color:var(--copper-hi); font-style:normal;}
 .gallery-count{font-size:12px; color:var(--ink-dim);}
 .gallery-scroll{
-  flex:1; overflow-y:scroll; padding:22px 26px 60px;
+  flex:1; min-height:0; overflow-y:scroll; padding:22px 26px 60px;
 }
 /* ascenseur vertical mis en valeur, dans la palette de l'app */
 .gallery-scroll::-webkit-scrollbar{width:12px;}
@@ -2355,6 +2355,23 @@ function goToImage(step){
 }
 document.getElementById("navPrev").addEventListener("click", ()=> goToImage(-1));
 document.getElementById("navNext").addEventListener("click", ()=> goToImage(1));
+
+// Navigation clavier (flèches gauche/droite) dans le visualiseur principal
+// ("Main (90%)") — uniquement quand l'écran d'accueil (planche-contact) et le
+// diaporama/loupe sont fermés, la saisie ne se fait pas dans un champ texte,
+// et aucune modale n'est ouverte (sinon les flèches doivent rester réservées
+// au déplacement du curseur dans le champ actif).
+document.addEventListener("keydown", (e)=>{
+  if(e.key!=="ArrowRight" && e.key!=="ArrowLeft") return;
+  if(!document.getElementById("galleryScreen").classList.contains("hidden")) return; // écran d'accueil affiché : pas de navigation image par image
+  if(slideshowEl.classList.contains("show")) return; // diaporama/loupe : déjà géré par leur propre écouteur clavier
+  if(document.querySelector(".modal-overlay.show")) return; // une modale est ouverte
+  const tag = document.activeElement && document.activeElement.tagName;
+  if(tag==="INPUT" || tag==="TEXTAREA" || tag==="SELECT") return; // laisse les flèches déplacer le curseur dans le champ
+  if(!getSelected()) return;
+  e.preventDefault();
+  goToImage(e.key==="ArrowRight" ? 1 : -1);
+});
 
 // Balayage tactile (swipe) pour naviguer entre les images — mode Android/mobile.
 // Désactivé quand l'image est zoomée : on laisse alors l'ascenseur tactile natif
