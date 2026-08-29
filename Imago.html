@@ -329,6 +329,14 @@ button{font-family:inherit;}
   position:relative; aspect-ratio:1/1; border-radius:4px; overflow:hidden;
   background:var(--bg-panel-2); border:1px solid var(--line);
   cursor:pointer;
+  /* Défilement fluide à la molette même avec un grand nombre de vignettes :
+     le navigateur saute le calcul de mise en page/rendu des vignettes hors
+     écran au lieu de les recalculer à chaque frame de scroll. La taille
+     "intrinsèque" ci-dessous n'a pas besoin d'être exacte (elle sert de
+     place réservée avant que la vignette n'entre dans le viewport) — elle
+     évite juste un à-coup visible de la barre de défilement. */
+  content-visibility:auto;
+  contain-intrinsic-size:220px 220px;
 }
 .gallery-tile:hover{border-color:var(--copper); box-shadow:0 6px 16px rgba(0,0,0,.5);}
 .gallery-tile img{
@@ -2365,7 +2373,9 @@ document.addEventListener("keydown", (e)=>{
   if(e.key!=="ArrowRight" && e.key!=="ArrowLeft") return;
   if(!document.getElementById("galleryScreen").classList.contains("hidden")) return; // écran d'accueil affiché : pas de navigation image par image
   if(slideshowEl.classList.contains("show")) return; // diaporama/loupe : déjà géré par leur propre écouteur clavier
-  if(document.querySelector(".modal-overlay.show")) return; // une modale est ouverte
+  const infoIsDockedPanel = window.matchMedia("(min-width: 761px)").matches; // sur PC, le panneau Infos est ancré à droite (non bloquant) ; sur mobile il redevient une vraie modale plein écran
+  const blockingModal = document.querySelector(infoIsDockedPanel ? ".modal-overlay.show:not(#modalInfo)" : ".modal-overlay.show");
+  if(blockingModal) return;
   const tag = document.activeElement && document.activeElement.tagName;
   if(tag==="INPUT" || tag==="TEXTAREA" || tag==="SELECT") return; // laisse les flèches déplacer le curseur dans le champ
   if(!getSelected()) return;
