@@ -2277,9 +2277,115 @@ document.getElementById("btnPersonnages").addEventListener("click", ()=>{
 /* Lecteur EXIF minimal (JPEG uniquement) — Make, Model, FNumber,
    ExposureTime, FocalLength, ISO, et coordonnées GPS (lat/lon décimales,
    façon Google Photos : le lieu vient du fichier, pas de son nom). */
+/* Lit un bloc EXIF/TIFF (GPS, marque, modèle, focale…) à partir de l'octet
+   `tiffStart` dans `view` — logique commune à tous les formats une fois
+   localisé le début du bloc TIFF, qui suit toujours la même structure
+   (JPEG comme HEIC). */
+function readExifFromTiffStart(view, tiffStart){
+  const little = view.getUint16(tiffStart) === 0x4949;
+  const get16 = (o)=> view.getUint16(o, little);
+  const get32 = (o)=> view.getUint32(o, little);
+  const firstIFD = tiffStart + get32(tiffStart+4);
+  const exif = {};
+  let exifPointer = null, gpsPointer = null;
+
+  function readRationalAt(valOffset){
+    const ptr = tiffStart + get32(valOffset);
+    return get32(ptr) / (get32(ptr+4)||1);
+  }
+  function readGPSCoord(valOffset){
+    // 3 RATIONAL consécutifs = degrés, minutes, secondes
+    const ptr = tiffStart + get32(valOffset);
+    const deg = get32(ptr) / (get32(ptr+4)||1);
+    const min = get32(ptr+8) / (get32(ptr+12)||1);
+    const sec = get32(ptr+16) / (get32(ptr+20)||1);
+    return deg + min/60 + sec/3600;
+  }
+
+  function readMainIFD(ifdOffset){
+    const n = get16(ifdOffset);
+    for(let i=0;i<n;i++){
+      const entry = ifdOffset + 2 + i*12;
+      const tag = get16(entry);
+      const type = get16(entry+2);
+      const count = get32(entry+4);
+      const valOffset = entry+8;
+      if(tag===0x010F && type===2) exif.make = readAscii(view, tiffStart+get32(valOffset), count);
+      if(tag===0x0110 && type===2) exif.model = readAscii(view, tiffStart+get32(valOffset), count);
+      if(tag===0x8769) exifPointer = tiffStart + get32(valOffset);
+      if(tag===0x8825) gpsPointer = tiffStart + get32(valOffset);
+    }
+  }
+  function readExifSubIFD(ifdOffset){
+    const n = get16(ifdOffset);
+    for(let i=0;i<n;i++){
+      const entry = ifdOffset + 2 + i*12;
+      const tag = get16(entry);
+      const type = get16(entry+2);
+      const valOffset = entry+8;
+      if(tag===0x829D) exif.fNumber = readRationalAt(valOffset);
+      if(tag===0x829A) exif.exposureTime = readRationalAt(valOffset);
+      if(tag===0x920A) exif.focalLength = readRationalAt(valOffset);
+      if(tag===0x8827) exif.iso = type===3 ? get16(valOffset) : get32(valOffset);
+    }
+  }
+  function readGpsIFD(ifdOffset){
+    const n = get16(ifdOffset);
+    let latRef=null, lonRef=null, lat=null, lon=null;
+    for(let i=0;i<n;i++){
+      const entry = ifdOffset + 2 + i*12;
+      const tag = get16(entry);
+      const valOffset = entry+8;
+      if(tag===0x0001) latRef = String.fromCharCode(view.getUint8(valOffset));
+      if(tag===0x0002) lat = readGPSCoord(valOffset);
+      if(tag===0x0003) lonRef = String.fromCharCode(view.getUint8(valOffset));
+      if(tag===0x0004) lon = readGPSCoord(valOffset);
+    }
+    if(lat!=null && lon!=null){
+      exif.gpsLat = latRef==="S" ? -lat : lat;
+      exif.gpsLon = lonRef==="W" ? -lon : lon;
+    }
+  }
+
+  readMainIFD(firstIFD);
+  if(exifPointer) readExifSubIFD(exifPointer);
+  if(gpsPointer) readGpsIFD(gpsPointer);
+  return Object.keys(exif).length ? exif : null;
+}
+/* Localise, dans un fichier HEIC/HEIF, le bloc TIFF/Exif embarqué — sans
+   décoder toute la structure de boîtes ISOBMFF (nettement plus complexe
+   qu'un JPEG), on recherche directement la signature ASCII "Exif\0\0" dans
+   les octets du fichier : le bloc TIFF qui la suit immédiatement se lit
+   ensuite exactement comme pour un JPEG. */
+function findTiffStartBySignature(view){
+  const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  for(let i=0;i<bytes.length-6;i++){
+    if(bytes[i]===0x45 && bytes[i+1]===0x78 && bytes[i+2]===0x69 && bytes[i+3]===0x66 && bytes[i+4]===0x00 && bytes[i+5]===0x00){
+      return i+6;
+    }
+  }
+  return null;
+}
 async function readBasicExif(file){
   try{
-    if(!/\.jpe?g$/i.test(file.name)) return null;
+    const isJpeg = /\.jpe?g$/i.test(file.name);
+    const isHeic = /\.hei[cf]$/i.test(file.name);
+    if(!isJpeg && !isHeic) return null; // formats non gérés ici (pas de lecture GPS/Exif tentée)
+
+    if(isHeic){
+      // Les conteneurs HEIC/HEIF (photos par défaut de nombreux iPhone et
+      // Android récents) embarquent bien un bloc Exif standard, mais dans une
+      // structure de boîtes totalement différente du JPEG — sans cette prise
+      // en charge dédiée, aucune coordonnée GPS n'en était jamais extraite,
+      // même quand le fichier en contient (d'où des photos non localisables
+      // dans l'app alors que Google Photos, lui, les localise très bien).
+      const buf = await file.slice(0, 2*1024*1024).arrayBuffer(); // 2 Mo : largement suffisant pour atteindre le bloc Exif (placé en tête par la plupart des appareils)
+      const view = new DataView(buf);
+      const tiffStart = findTiffStartBySignature(view);
+      if(tiffStart==null) return null;
+      return readExifFromTiffStart(view, tiffStart);
+    }
+
     const buf = await file.slice(0, 262144).arrayBuffer();
     const view = new DataView(buf);
     if(view.getUint16(0) !== 0xFFD8) return null;
@@ -2289,76 +2395,7 @@ async function readBasicExif(file){
       if(marker === 0xFFE1){
         const size = view.getUint16(offset); const segStart = offset+2;
         if(view.getUint32(segStart) === 0x45786966){ // "Exif"
-          const tiffStart = segStart + 6;
-          const little = view.getUint16(tiffStart) === 0x4949;
-          const get16 = (o)=> view.getUint16(o, little);
-          const get32 = (o)=> view.getUint32(o, little);
-          const firstIFD = tiffStart + get32(tiffStart+4);
-          const exif = {};
-          let exifPointer = null, gpsPointer = null;
-
-          function readRationalAt(valOffset){
-            const ptr = tiffStart + get32(valOffset);
-            return get32(ptr) / (get32(ptr+4)||1);
-          }
-          function readGPSCoord(valOffset){
-            // 3 RATIONAL consécutifs = degrés, minutes, secondes
-            const ptr = tiffStart + get32(valOffset);
-            const deg = get32(ptr) / (get32(ptr+4)||1);
-            const min = get32(ptr+8) / (get32(ptr+12)||1);
-            const sec = get32(ptr+16) / (get32(ptr+20)||1);
-            return deg + min/60 + sec/3600;
-          }
-
-          function readMainIFD(ifdOffset){
-            const n = get16(ifdOffset);
-            for(let i=0;i<n;i++){
-              const entry = ifdOffset + 2 + i*12;
-              const tag = get16(entry);
-              const type = get16(entry+2);
-              const count = get32(entry+4);
-              const valOffset = entry+8;
-              if(tag===0x010F && type===2) exif.make = readAscii(view, tiffStart+get32(valOffset), count);
-              if(tag===0x0110 && type===2) exif.model = readAscii(view, tiffStart+get32(valOffset), count);
-              if(tag===0x8769) exifPointer = tiffStart + get32(valOffset);
-              if(tag===0x8825) gpsPointer = tiffStart + get32(valOffset);
-            }
-          }
-          function readExifSubIFD(ifdOffset){
-            const n = get16(ifdOffset);
-            for(let i=0;i<n;i++){
-              const entry = ifdOffset + 2 + i*12;
-              const tag = get16(entry);
-              const type = get16(entry+2);
-              const valOffset = entry+8;
-              if(tag===0x829D) exif.fNumber = readRationalAt(valOffset);
-              if(tag===0x829A) exif.exposureTime = readRationalAt(valOffset);
-              if(tag===0x920A) exif.focalLength = readRationalAt(valOffset);
-              if(tag===0x8827) exif.iso = type===3 ? get16(valOffset) : get32(valOffset);
-            }
-          }
-          function readGpsIFD(ifdOffset){
-            const n = get16(ifdOffset);
-            let latRef=null, lonRef=null, lat=null, lon=null;
-            for(let i=0;i<n;i++){
-              const entry = ifdOffset + 2 + i*12;
-              const tag = get16(entry);
-              const valOffset = entry+8;
-              if(tag===0x0001) latRef = String.fromCharCode(view.getUint8(valOffset));
-              if(tag===0x0002) lat = readGPSCoord(valOffset);
-              if(tag===0x0003) lonRef = String.fromCharCode(view.getUint8(valOffset));
-              if(tag===0x0004) lon = readGPSCoord(valOffset);
-            }
-            if(lat!=null && lon!=null){
-              exif.gpsLat = latRef==="S" ? -lat : lat;
-              exif.gpsLon = lonRef==="W" ? -lon : lon;
-            }
-          }
-
-          readMainIFD(firstIFD);
-          if(exifPointer) readExifSubIFD(exifPointer);
-          if(gpsPointer) readGpsIFD(gpsPointer);
-          return Object.keys(exif).length ? exif : null;
+          return readExifFromTiffStart(view, segStart + 6);
         }
       }
       if((marker & 0xFF00) !== 0xFF00) break;
