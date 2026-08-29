@@ -1480,7 +1480,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     // interrompre le traitement des autres à cause d'une seule image en
     // défaut — sans ce try/catch, une erreur au 1er fichier annulait
     // silencieusement tout l'import et laissait le 1er écran vide.
-    const dataUrl = await readFileAsDataURL(file);
+    const dataUrl = await readFileAsDataURLWithHeicSupport(file, stats);
     const dims = await getImageDimensions(dataUrl);
     const exif = await readBasicExif(file);
     const existingRow = csvRowByFileName.get(file.name);
@@ -1558,7 +1558,7 @@ async function importOneFile(file, csvRowByFileName, stats){
 /* Met à jour le message de statut (et, en fin d'import, le toast récap).
    `stillLoading` indique qu'il reste des photos à traiter en arrière-plan. */
 function reportImportProgress(folderName, catalogCandidates, stats, stillLoading){
-  const {added, reused, failedFiles, failedDetails} = stats;
+  const {added, reused, failedFiles, failedDetails, heicFailed} = stats;
   const processed = added + reused;
   const allFailed = failedFiles.length>0 && processed===0;
   const androidHint = allFailed
@@ -1571,11 +1571,14 @@ function reportImportProgress(folderName, catalogCandidates, stats, stillLoading
     ? ` ⚠ ${failedFiles.length} fichier(s) illisible(s) ignoré(s) : ${failedFiles.slice(0,5).join(", ")}${failedFiles.length>5?"…":""}` +
       detailNote + androidHint
     : "";
+  const heicNote = (heicFailed && heicFailed.length)
+    ? ` ⚠ ${heicFailed.length} photo(s) HEIC non converties (connexion internet requise) : ${heicFailed.slice(0,5).join(", ")}${heicFailed.length>5?"…":""} — elles sont importées mais resteront illisibles tant que la conversion n'aura pas réussi (réessayez plus tard avec Internet).`
+    : "";
   const loadingNote = stillLoading ? " Le reste du dossier continue de se charger en arrière-plan…" : "";
   document.getElementById("folderStatus").textContent = (catalogCandidates.length
     ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
     : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`
-  ) + failNote + loadingNote;
+  ) + failNote + heicNote + loadingNote;
 }
 
 /* Traite le reste du dossier (au-delà des IMPORT_PRIORITY_COUNT photos déjà
@@ -1668,7 +1671,7 @@ async function handleFilesSelected(fileList, folderNameOverride){
   // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
-  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"" };
+  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[] };
   for(const file of priorityFiles){
     if(myImportToken !== importToken) return;
     await importOneFile(file, csvRowByFileName, stats);
@@ -1857,6 +1860,70 @@ function getImageDimensions(dataUrl){
     img.onerror = ()=> resolve({width:0, height:0});
     img.src = dataUrl;
   });
+}
+
+/* -----------------------------------------------------------------
+   Photos HEIC / HEIF (format par défaut de très nombreux smartphones,
+   notamment iPhone mais aussi certains Android récents) : la quasi-totalité
+   des navigateurs Android (et beaucoup de navigateurs de bureau) ne savent
+   PAS décoder nativement ce format dans une balise <img> — le fichier se lit
+   bien (octets présents), mais son rendu échoue silencieusement et affiche
+   une vignette vide, exactement le symptôme observé. On convertit donc ces
+   images en JPEG dès l'import, via un petit décodeur chargé à la demande
+   (nécessite une connexion internet la 1ère fois qu'une photo HEIC est
+   rencontrée ; le fichier d'origine et son nom affiché restent inchangés,
+   seul le rendu visuel est converti). */
+function isHeicFile(file){
+  return /image\/hei[cf]/i.test(file.type||"") || /\.hei[cf]$/i.test(file.name||"");
+}
+let heic2anyLoadPromise = null;
+function ensureHeic2anyLoaded(){
+  if(window.heic2any) return Promise.resolve();
+  if(heic2anyLoadPromise) return heic2anyLoadPromise;
+  heic2anyLoadPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
+    s.onload = ()=> resolve();
+    s.onerror = ()=>{
+      heic2anyLoadPromise = null; // permet de réessayer plus tard (ex. connexion revenue)
+      reject(new Error("Impossible de charger le convertisseur HEIC (connexion internet requise la 1ère fois)."));
+    };
+    document.head.appendChild(s);
+  });
+  return heic2anyLoadPromise;
+}
+async function convertHeicToJpegDataUrl(file){
+  await ensureHeic2anyLoaded();
+  const out = await window.heic2any({blob:file, toType:"image/jpeg", quality:0.88});
+  const outBlob = Array.isArray(out) ? out[0] : out; // heic2any peut renvoyer un tableau (rafales/HEIC multi-images) : on ne garde que la 1ère
+  return await new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = ()=> reject(r.error || new Error("Lecture du JPEG converti impossible"));
+    r.readAsDataURL(outBlob);
+  });
+}
+/* Enveloppe readFileAsDataURL : lit le fichier normalement, puis convertit
+   le résultat en JPEG affichable s'il s'agit d'un HEIC/HEIF. En cas d'échec
+   de conversion (hors-ligne au 1er essai, etc.), renvoie quand même le
+   dataUrl HEIC brut plutôt que d'interrompre tout l'import — la photo sera
+   simplement encore illisible pour l'instant, avec un message explicite. */
+async function readFileAsDataURLWithHeicSupport(file, stats){
+  const raw = await readFileAsDataURL(file);
+  if(!isHeicFile(file)) return raw;
+  try{
+    return await convertHeicToJpegDataUrl(file);
+  }catch(heicErr){
+    console.warn(`Conversion HEIC impossible pour "${file.name}" — image non affichable pour l'instant.`, heicErr);
+    if(stats){
+      stats.heicFailed = stats.heicFailed || [];
+      stats.heicFailed.push(file.name);
+    }
+    if(stats && !stats.firstErrorDetail){
+      stats.firstErrorDetail = `"${file.name}" est au format HEIC et n'a pas pu être converti (${(heicErr&&heicErr.message)||heicErr}) — vérifiez votre connexion internet puis relancez l'import.`;
+    }
+    return raw;
+  }
 }
 
 /* -----------------------------------------------------------------
@@ -3423,7 +3490,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   const fileInput = document.getElementById("neFile");
   if(!fileInput.files[0]) return toast("Choisissez une image.");
   const file = fileInput.files[0];
-  const dataUrl = await readFileAsDataURL(file);
+  const dataUrl = await readFileAsDataURLWithHeicSupport(file);
   const dims = await getImageDimensions(dataUrl);
   const exif = await readBasicExif(file);
   const lieu = document.getElementById("neLieu").value.trim();
