@@ -3691,8 +3691,31 @@ async function driveApiFetch(url, opts={}){
    S'il en existe plusieurs (ex. doublons d'anciens essais), on choisit
    le plus ANCIEN, en général celui que vous avez créé à la main.
    ----------------------------------------------------------------- */
+/* Vérifie qu'un identifiant de dossier Drive mis en cache correspond encore
+   à un dossier réellement existant (et non supprimé) sur CE compte — sans
+   cette vérification, un identifiant obsolète (dossier supprimé entre-temps,
+   ou mémorisé lors d'une session/compte différent sur le même appareil)
+   provoque une erreur 404 "File not found" dès qu'on tente de l'utiliser
+   comme parent, par ex. lors d'un partage groupé. */
+async function driveFileStillExists(id){
+  try{
+    const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${id}?fields=id,trashed,mimeType`);
+    const data = await res.json();
+    return !!data.id && !data.trashed;
+  }catch(e){
+    return false;
+  }
+}
 async function ensureImaginesFolder(){
-  if(State.drive.folderId) return State.drive.folderId;
+  if(State.drive.folderId){
+    if(await driveFileStillExists(State.drive.folderId)) return State.drive.folderId;
+    // Identifiant mémorisé invalide (dossier supprimé, ou provenant d'une
+    // autre session/compte) : on l'oublie et on relance la recherche/création
+    // ci-dessous plutôt que de continuer à l'utiliser à l'aveugle.
+    console.warn("Dossier IMAGINES mémorisé introuvable (" + State.drive.folderId + "), nouvelle recherche…");
+    State.drive.folderId = "";
+    localStorage.removeItem("imago_drive_folder_id");
+  }
   const q = encodeURIComponent("name='IMAGINES' and mimeType='application/vnd.google-apps.folder' and trashed=false");
   const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,createdTime)&orderBy=createdTime&spaces=drive`);
   const listData = await listRes.json();
@@ -3727,8 +3750,18 @@ async function ensurePhotoUploadedToDrive(p, parentFolderId){
     // la rattache en plus au dossier de partage groupé demandé (sans la
     // retirer de son emplacement d'origine), pour qu'elle apparaisse bien
     // dans ce dossier au lieu d'être ré-uploadée en double.
-    if(parentFolderId) await addFileToFolder(p.driveFileId, parentFolderId);
-    return {id: p.driveFileId, webViewLink: p.driveWebViewLink || ""};
+    try{
+      if(parentFolderId) await addFileToFolder(p.driveFileId, parentFolderId);
+      return {id: p.driveFileId, webViewLink: p.driveWebViewLink || ""};
+    }catch(err){
+      // Référence mémorisée obsolète (fichier supprimé côté Drive entre deux
+      // partages) : on l'oublie et on ré-uploade l'image ci-dessous au lieu
+      // d'échouer avec une erreur 404.
+      if(!/404/.test(err.message)) throw err;
+      console.warn("Image déjà envoyée introuvable sur Drive (" + p.driveFileId + "), ré-envoi…");
+      p.driveFileId = null;
+      p.driveWebViewLink = "";
+    }
   }
   const match = (p.dataUrl||"").match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!match) throw new Error("Image introuvable en mémoire.");
@@ -3826,25 +3859,51 @@ document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
     if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
     const folderId = await ensureImaginesFolder();
     const csv = autoBuildCsv();
-    const boundary = "imago_boundary_" + Date.now();
-    const isUpdate = !!State.drive.fileId;
     // 'parents' n'est accepté qu'à la création : sur une mise à jour (PATCH), Drive
     // rejetterait ce champ, le fichier reste de toute façon déjà dans IMAGINES.
-    const metadata = isUpdate
-      ? {name: State.catalogFileName, mimeType:"text/csv"}
-      : {name: State.catalogFileName, mimeType:"text/csv", parents:[folderId]};
-    const body =
-      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-      `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
-    const url = isUpdate
-      ? `https://www.googleapis.com/upload/drive/v3/files/${State.drive.fileId}?uploadType=multipart`
-      : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
-    const res = await driveApiFetch(url, {
-      method: isUpdate ? "PATCH" : "POST",
-      headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
-      body
-    });
-    const data = await res.json();
+    const buildBody = (isUpdate)=>{
+      const boundary = "imago_boundary_" + Date.now();
+      const metadata = isUpdate
+        ? {name: State.catalogFileName, mimeType:"text/csv"}
+        : {name: State.catalogFileName, mimeType:"text/csv", parents:[folderId]};
+      const body =
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+        `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
+      return {boundary, body};
+    };
+    let isUpdate = !!State.drive.fileId;
+    let data;
+    try{
+      const {boundary, body} = buildBody(isUpdate);
+      const url = isUpdate
+        ? `https://www.googleapis.com/upload/drive/v3/files/${State.drive.fileId}?uploadType=multipart`
+        : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+      const res = await driveApiFetch(url, {
+        method: isUpdate ? "PATCH" : "POST",
+        headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
+        body
+      });
+      data = await res.json();
+    }catch(err){
+      // Identifiant de fichier mémorisé obsolète (catalogue supprimé côté
+      // Drive, ou mémorisé lors d'une autre session/compte) : plutôt que
+      // d'échouer, on oublie cette référence et on crée un nouveau fichier.
+      if(isUpdate && /404/.test(err.message)){
+        console.warn("Catalogue Drive mémorisé introuvable (" + State.drive.fileId + "), nouvelle création…");
+        State.drive.fileId = "";
+        localStorage.removeItem("imago_drive_file_id");
+        isUpdate = false;
+        const {boundary, body} = buildBody(false);
+        const res = await driveApiFetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`, {
+          method: "POST",
+          headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
+          body
+        });
+        data = await res.json();
+      } else {
+        throw err;
+      }
+    }
     if(data.id){
       State.drive.fileId = data.id;
       localStorage.setItem("imago_drive_file_id", data.id);
