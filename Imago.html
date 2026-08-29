@@ -710,6 +710,7 @@ button{font-family:inherit;}
              placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo" list="shareEmailList" autocomplete="off">
       <datalist id="shareEmailList"></datalist>
       <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
+      <p class="drive-note hidden" id="shareBatchNote" style="margin-top:10px;"></p>
       <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
     </div>
     <div class="modal-foot">
@@ -2471,6 +2472,13 @@ function openShareModal(photos){
   const n = photos.length;
   document.querySelector("#modalShare .modal-head h2").textContent =
     n>1 ? `Envoyer ${n} images dans Google Drive` : "Envoyer dans Google Drive";
+  const batchNote = document.getElementById("shareBatchNote");
+  if(n>1){
+    batchNote.textContent = `Les ${n} images seront regroupées dans un dossier Drive dédié (créé dans « IMAGINES ») puis partagées en une seule fois : chaque destinataire ne recevra qu'un seul e-mail Google, pas ${n}.`;
+    batchNote.classList.remove("hidden");
+  } else {
+    batchNote.classList.add("hidden");
+  }
   openModal("modalShare");
 }
 document.getElementById("btnShare").addEventListener("click", ()=>{
@@ -2530,15 +2538,43 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
   const btn = document.getElementById("btnConfirmShare");
   const originalLabel = btn.textContent;
   btn.disabled = true;
-  // Chaque image est envoyée l'une après l'autre dans le dossier Drive
-  // IMAGINES : ensurePhotoUploadedToDrive() fixe explicitement metadata.name
-  // = p.fileName, donc le fichier Drive garde le nom d'origine de l'image
-  // (et non un identifiant généré) — voir la fonction plus bas.
   const failures = [];
-  for(let i=0;i<targets.length;i++){
-    const p = targets[i];
-    btn.textContent = targets.length>1 ? `Envoi… (${i+1}/${targets.length})` : "Envoi…";
-    try{
+  try{
+    if(targets.length > 1){
+      // Partage groupé : toutes les images sont réunies dans UN dossier Drive
+      // dédié (créé dans IMAGINES), qui est ensuite partagé une seule fois
+      // par destinataire — un seul e-mail de notification Google, quel que
+      // soit le nombre d'images du lot (et non un e-mail par image).
+      btn.textContent = "Préparation du dossier de partage…";
+      const batch = await createShareBatchFolder();
+      for(let i=0;i<targets.length;i++){
+        const p = targets[i];
+        btn.textContent = `Envoi… (${i+1}/${targets.length})`;
+        try{
+          // ensurePhotoUploadedToDrive() fixe explicitement metadata.name =
+          // p.fileName : le fichier Drive garde le nom d'origine de l'image
+          // (et non un identifiant généré).
+          const uploaded = await ensurePhotoUploadedToDrive(p, batch.id);
+          p.driveFileId = uploaded.id;
+          p.driveWebViewLink = uploaded.webViewLink || "";
+          await idbPut("photos", p);
+        }catch(err){
+          console.error("Échec de l'envoi Drive pour " + (p.fileName||p.id) + " :", err);
+          failures.push(p.fileName || p.id);
+        }
+      }
+      btn.textContent = "Partage du dossier…";
+      for(const email of emails){
+        await shareDriveFileWithEmail(batch.id, email); // UNE SEULE notification par destinataire, pour le dossier entier
+      }
+      const okTargets = targets.filter(p=> !failures.includes(p.fileName || p.id));
+      okTargets.forEach(p=>{ p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])]; });
+      await Promise.all(okTargets.map(p=>idbPut("photos", p)));
+    } else {
+      // Partage d'une seule image (comportement historique) : un fichier,
+      // une notification.
+      const p = targets[0];
+      btn.textContent = "Envoi…";
       const uploaded = await ensurePhotoUploadedToDrive(p);
       p.driveFileId = uploaded.id;
       p.driveWebViewLink = uploaded.webViewLink || "";
@@ -2547,10 +2583,12 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
       }
       p.sharedWith = [...new Set([...(p.sharedWith||[]), ...emails])];
       await idbPut("photos", p);
-    }catch(err){
-      console.error("Échec du partage Drive pour " + (p.fileName||p.id) + " :", err);
-      failures.push(p.fileName || p.id);
     }
+  }catch(err){
+    console.error("Échec du partage Drive :", err);
+    toast("Échec de l'envoi : " + err.message);
+    btn.textContent = originalLabel; btn.disabled = false;
+    return;
   }
   rememberShareEmails(emails);
   renderGrid();
@@ -2561,7 +2599,11 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
   const okCount = targets.length - failures.length;
   const plural = okCount>1 ? "s" : "";
   toast(
-    (okCount>0 ? `${okCount} image${plural} envoyée${plural} et partagée${plural} sur Drive avec ${emails.join(", ")}.` : "Aucun envoi n'a abouti.") +
+    (okCount>0
+      ? (targets.length>1
+          ? `${okCount} image${plural} regroupée${plural} dans un dossier Drive et partagée${plural} avec ${emails.join(", ")} (1 seul e-mail par destinataire).`
+          : `Image envoyée et partagée sur Drive avec ${emails.join(", ")}.`)
+      : "Aucun envoi n'a abouti.") +
     (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "") +
     (failures.length ? ` Échec pour : ${failures.join(", ")}.` : "")
   );
@@ -3640,14 +3682,24 @@ async function ensureImaginesFolder(){
    p.driveFileId) puis création d'une permission Drive pour chaque
    adresse e-mail destinataire — c'est CE dernier appel qui déclenche
    l'e-mail « X a partagé un fichier avec vous » envoyé par Google.
+   Un parentFolderId optionnel permet de déposer le fichier dans un
+   sous-dossier de partage groupé (voir createShareBatchFolder) plutôt
+   que directement à la racine d'IMAGINES.
    ----------------------------------------------------------------- */
-async function ensurePhotoUploadedToDrive(p){
-  if(p.driveFileId) return {id: p.driveFileId, webViewLink: p.driveWebViewLink || ""};
+async function ensurePhotoUploadedToDrive(p, parentFolderId){
+  if(p.driveFileId){
+    // L'image a déjà été envoyée sur Drive lors d'un partage précédent : on
+    // la rattache en plus au dossier de partage groupé demandé (sans la
+    // retirer de son emplacement d'origine), pour qu'elle apparaisse bien
+    // dans ce dossier au lieu d'être ré-uploadée en double.
+    if(parentFolderId) await addFileToFolder(p.driveFileId, parentFolderId);
+    return {id: p.driveFileId, webViewLink: p.driveWebViewLink || ""};
+  }
   const match = (p.dataUrl||"").match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!match) throw new Error("Image introuvable en mémoire.");
   const mime = match[1] || "image/jpeg";
   const base64Data = match[2];
-  const folderId = await ensureImaginesFolder();
+  const folderId = parentFolderId || await ensureImaginesFolder();
   const boundary = "imago_img_boundary_" + Date.now();
   const metadata = {name: p.fileName || "image.jpg", parents: [folderId]};
   const body =
@@ -3660,6 +3712,33 @@ async function ensurePhotoUploadedToDrive(p){
   });
   const data = await res.json();
   return {id: data.id, webViewLink: data.webViewLink || ""};
+}
+/* Ajoute fileId à un dossier supplémentaire (addParents) sans toucher à ses
+   autres parents — utilisé pour rattacher une image déjà uploadée à un
+   dossier de partage groupé. */
+async function addFileToFolder(fileId, folderId){
+  await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?addParents=${folderId}&fields=id,parents`, {
+    method: "PATCH"
+  });
+}
+/* Crée, dans IMAGINES, un sous-dossier dédié à UN envoi groupé (plusieurs
+   images sélectionnées dans la galerie). Toutes les images du lot y sont
+   déposées, puis ce dossier — et non chaque image — est partagé : chaque
+   destinataire ne reçoit ainsi qu'UN SEUL e-mail Google, quel que soit le
+   nombre d'images du lot. */
+async function createShareBatchFolder(){
+  const parentId = await ensureImaginesFolder();
+  const stamp = new Date().toLocaleString("fr-FR", {
+    year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"
+  }).replace(/[^\d]+/g, "-").replace(/-+$/,"");
+  const name = `Partage ${stamp}`;
+  const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name, mimeType: "application/vnd.google-apps.folder", parents: [parentId]})
+  });
+  const data = await res.json();
+  return {id: data.id, name: data.name || name, webViewLink: data.webViewLink || ""};
 }
 async function shareDriveFileWithEmail(fileId, email){
   await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?sendNotificationEmail=true`, {
