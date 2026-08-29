@@ -779,11 +779,12 @@ button{font-family:inherit;}
       <!-- Panneau Détails -->
       <div class="edit-panel hidden" data-panel="details">
         <div class="field-row">
-          <label>Nom du fichier</label>
+          <label for="edFileName">Nom du fichier</label>
           <div style="display:flex; gap:8px;">
-            <input type="text" id="edFileName" disabled style="flex:1;">
+            <input type="text" id="edFileName" style="flex:1;">
             <button class="btn" id="edRecalcBtn" type="button" title="Relire la date/le lieu/le personnage depuis le nom du fichier">↻ Recalculer</button>
           </div>
+          <div class="sub-line" style="margin-top:5px;">Ce nom identifie l'image dans le dossier : après un renommage, utilisez « 💾 Enregistrer + télécharger » puis remplacez l'ancien fichier par celui téléchargé dans votre dossier d'images (sinon l'ancien nom sera retrouvé au prochain import).</div>
         </div>
         <div class="field-grid">
           <div class="field-row"><label for="edDate">Date cliché</label><input type="date" id="edDate"></div>
@@ -2469,6 +2470,9 @@ function openShareModal(photos){
   shareTargets = photos;
   document.getElementById("shareChips").innerHTML = "";
   document.getElementById("shareCombo").value = "";
+  const confirmBtn = document.getElementById("btnConfirmShare");
+  confirmBtn.disabled = false; // réinitialise le verrou anti double-clic à chaque nouvelle ouverture
+  confirmBtn.textContent = "Envoyer";
   const n = photos.length;
   document.querySelector("#modalShare .modal-head h2").textContent =
     n>1 ? `Envoyer ${n} images dans Google Drive` : "Envoyer dans Google Drive";
@@ -2511,6 +2515,12 @@ document.getElementById("shareCombo").addEventListener("blur", (e)=>{
   }
 });
 document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
+  const btn = document.getElementById("btnConfirmShare");
+  // Verrou anti double-envoi : un clic supplémentaire pendant qu'un envoi est
+  // déjà en cours ne doit RIEN redéclencher, sinon plusieurs dossiers de
+  // partage seraient créés en parallèle et le destinataire recevrait
+  // plusieurs e-mails Google au lieu d'un seul.
+  if(btn.disabled) return;
   const targets = shareTargets;
   if(!targets || targets.length===0) return;
   // Valide aussi ce qui reste tapé dans le champ (sans Entrée pressée) avant d'envoyer.
@@ -2529,13 +2539,15 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
     return;
   }
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  const emails = chips.filter(c=>emailRegex.test(c));
+  const emails = [...new Set(chips.filter(c=>emailRegex.test(c)).map(e=>e.toLowerCase()))]; // dédoublonnage (insensible à la casse) des adresses
   const rejected = chips.filter(c=>!emailRegex.test(c));
   if(emails.length===0){
     toast("Le partage réel via Drive ne fonctionne qu'avec une adresse e-mail complète (ex. nom@exemple.com) — un numéro ou un nom seul ne suffit pas.");
     return;
   }
-  const btn = document.getElementById("btnConfirmShare");
+  // Le verrou est posé ICI, en tout premier — avant le moindre "await" —
+  // pour qu'un second clic (même immédiat) soit systématiquement rejeté par
+  // le "if(btn.disabled) return;" ci-dessus.
   const originalLabel = btn.textContent;
   btn.disabled = true;
   const failures = [];
@@ -2851,7 +2863,8 @@ document.getElementById("edGeolocateBtn").addEventListener("click", async ()=>{
 });
 document.getElementById("edRecalcBtn").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
-  const meta = parseFileNameMeta(p.fileName);
+  const currentFileName = document.getElementById("edFileName").value.trim() || p.fileName;
+  const meta = parseFileNameMeta(currentFileName);
   const btn = document.getElementById("edRecalcBtn");
   const originalLabel = btn.textContent;
   btn.textContent = "…"; btn.disabled = true;
@@ -2891,6 +2904,28 @@ document.getElementById("edLieu").addEventListener("input", (e)=>{
 function applyEditFormToSelectedPhoto(){
   const p = getSelected(); if(!p || !editDraft) return null;
   const previousAutoTitre = buildTitre(p.lieu, p.personnage); // titre "auto" avant modification
+  // Nom du fichier : modifiable, avec garde-fous pour ne jamais aboutir à un
+  // nom vide ou en collision avec une autre image déjà cataloguée (ce nom
+  // sert de clé de correspondance avec les fichiers du dossier).
+  const newFileNameRaw = document.getElementById("edFileName").value.trim();
+  if(!newFileNameRaw){
+    toast("Le nom du fichier ne peut pas être vide — nom précédent conservé.");
+  } else if(newFileNameRaw !== p.fileName){
+    const collision = State.photos.find(other=> other!==p && other.fileName === newFileNameRaw);
+    if(collision){
+      toast(`« ${newFileNameRaw} » est déjà utilisé par une autre image du catalogue — nom précédent conservé.`);
+    } else {
+      // Conserve l'extension d'origine si l'utilisateur l'a omise en retapant le nom.
+      const origExt = (p.fileName||"").match(/\.[a-zA-Z0-9]{2,5}$/);
+      const hasExt = /\.[a-zA-Z0-9]{2,5}$/.test(newFileNameRaw);
+      p.fileName = (!hasExt && origExt) ? newFileNameRaw + origExt[0] : newFileNameRaw;
+      // Le fichier déjà envoyé sur Drive (le cas échéant) porte encore
+      // l'ancien nom : on oublie sa référence pour qu'un futur partage
+      // le ré-envoie sous le nouveau nom plutôt que de réutiliser l'ancien.
+      p.driveFileId = null;
+      p.driveWebViewLink = "";
+    }
+  }
   p.dateAchat = document.getElementById("edDate").value || p.dateAchat;
   p.support = document.getElementById("edSupport").value.trim();
   p.personnage = document.getElementById("edPersonnage").value.trim();
