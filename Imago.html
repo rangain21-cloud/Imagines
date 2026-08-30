@@ -2575,14 +2575,25 @@ function applyViewerZoom(){
   const p = getSelected();
   if(!p) return;
   const cw = viewerScroll.clientWidth, ch = viewerScroll.clientHeight;
-  const iw = p.width || cw, ih = p.height || ch;
-  const baseFit = Math.min((cw*0.94)/iw, (ch*0.94)/ih) || 1;
+  // Priorité aux dimensions RÉELLES du bitmap déjà chargé (viewerImg.naturalWidth/
+  // Height) plutôt qu'aux dimensions mémorisées en base (p.width/p.height) :
+  // ces dernières peuvent être obsolètes ou erronées pour certaines photos
+  // (ex. images HEIC converties), ce qui faisait apparaître le visualiseur
+  // bien plus petit que l'espace réellement disponible. Dès que l'image finit
+  // de charger, un second appel (voir écouteur "load" plus bas) corrige
+  // instantanément l'affichage avec les vraies dimensions.
+  const iw = viewerImg.naturalWidth || p.width || cw;
+  const ih = viewerImg.naturalHeight || p.height || ch;
+  const baseFit = Math.min((cw*0.97)/iw, (ch*0.97)/ih) || 1;
   const displayW = iw * baseFit * State.view.scale;
   viewerImg.style.width = Math.round(displayW) + "px";
   viewerImg.style.height = "auto";
   viewerImg.style.transform = `rotate(${p.rotation||0}deg)`;
   document.getElementById("zoomRange").value = Math.round(State.view.scale*100);
 }
+// Recalcule l'ajustement dès que le bitmap réel est disponible (naturalWidth/
+// Height ne sont fiables qu'une fois l'image effectivement décodée).
+viewerImg.addEventListener("load", ()=> applyViewerZoom());
 function setZoom(scale){
   State.view.scale = Math.min(3, Math.max(0.3, scale));
   applyViewerZoom();
