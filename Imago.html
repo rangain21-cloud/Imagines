@@ -627,7 +627,8 @@ button{font-family:inherit;}
   <div class="pave">
     <h3>Photothèque locale</h3>
     <button class="btn copper" id="btnPickFolder" style="width:100%; margin-bottom:8px;">📁 Choisir un dossier d'images…</button>
-    <button class="btn" id="btnPickFiles" style="width:100%; margin-bottom:8px;">🖼️ Sélectionner des images (si le dossier échoue)…</button>
+    <button class="btn" id="btnPickFiles" style="width:100%; margin-bottom:8px;" title="Sur Android, choisissez « Fichiers » (pas « Photos »/Galerie) dans la fenêtre qui s'ouvre, pour garder GPS et caméra">🖼️ Sélectionner des images (si le dossier échoue)…</button>
+    <p class="drive-note" style="margin-bottom:8px;">📌 Sur Android : dans la fenêtre qui s'ouvre, choisissez la source <b>« Fichiers »</b> (pas « Photos »/Galerie) pour conserver GPS et caméra — le sélecteur « Photos » système les retire toujours, quelle que soit l'application.</p>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
   </div>
 
@@ -1721,9 +1722,20 @@ folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.file
    qu'un accès virtuel, pas le contenu réel. Le sélecteur d'IMAGES classique
    (galerie/fichiers système, sans mode dossier) utilise un mécanisme
    d'autorisation différent (par fichier) qui fonctionne dans ce cas. */
+/* accept volontairement PAS limité à "image/*" seul : sur Android, Chrome
+   bascule AUTOMATIQUEMENT vers le « Sélecteur de photos » système dès que le
+   champ n'accepte QUE des images — or ce sélecteur système retire les
+   coordonnées GPS (et parfois plus) de chaque photo avant de la transmettre
+   à la page web, par protection de la vie privée imposée par Android lui-
+   même (aucun moyen de contourner ça en JavaScript). En ajoutant un type
+   générique à la liste, Android propose le choix complet des sources
+   (Photos, Fichiers, Drive…) au lieu d'imposer le Sélecteur de photos —
+   choisir "Fichiers" donne alors un accès non filtré au fichier réel. Le tri
+   par extension déjà fait dans handleFilesSelected() élimine ensuite tout
+   fichier non-image sélectionné par erreur via ce chooser plus permissif. */
 const filePickerInput = document.createElement("input");
 filePickerInput.type = "file";
-filePickerInput.accept = "image/*";
+filePickerInput.accept = "image/*,.heic,.heif,application/octet-stream";
 filePickerInput.multiple = true;
 filePickerInput.className = "hidden";
 document.body.appendChild(filePickerInput);
