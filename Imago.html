@@ -436,7 +436,7 @@ button{font-family:inherit;}
   #modalInfo.modal-overlay{
     display:none; background:transparent; padding:0;
     position:fixed; top:var(--topbar-h); right:0; bottom:0; left:auto;
-    width:380px; max-width:36vw;
+    width:320px; max-width:32vw; /* réduit (était 380px/36vw) pour laisser plus de place au viewer-stage */
     align-items:stretch; justify-content:stretch;
     z-index:120;
   }
@@ -446,9 +446,20 @@ button{font-family:inherit;}
     border-left:1px solid var(--line); box-shadow:-10px 0 28px rgba(0,0,0,.45);
     display:flex; flex-direction:column;
   }
-  #modalInfo .modal-body{ flex:1; overflow-y:auto; }
+  #modalInfo .modal-body{ flex:1; overflow-y:auto; padding:14px 16px; }
+  /* Compensation de la largeur réduite : textes légèrement resserrés tout en
+     restant lisibles (ne s'applique qu'au panneau Infos, pas aux autres
+     modales qui partagent ces mêmes classes). */
+  #modalInfo .modal-head{ padding:13px 16px; }
+  #modalInfo .modal-head h2{ font-size:16.5px; }
+  #modalInfo .info-row{ gap:10px; padding:7px 0; }
+  #modalInfo .info-ic{ width:17px; font-size:13px; }
+  #modalInfo .info-content{ font-size:12.5px; }
+  #modalInfo .info-content .sub-line{ font-size:10.5px; }
+  #modalInfo .info-pencil{ font-size:12.5px; }
+  #modalInfo .small-link{ font-size:11px; }
   .main.info-open .grid-toolbar,
-  .main.info-open .viewer-wrap{ margin-right: 380px; transition: margin-right .18s ease; }
+  .main.info-open .viewer-wrap{ margin-right: 320px; transition: margin-right .18s ease; }
 }
 
 .field-row{margin-bottom:14px;}
