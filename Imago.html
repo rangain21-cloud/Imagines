@@ -615,6 +615,7 @@ button{font-family:inherit;}
     <button class="drive-btn" id="btnDriveSave">
       <span id="lblDriveSave">Sauver sur Drive</span><span class="status">●</span>
     </button>
+    <button class="btn copper" id="btnPartnerAccess" style="width:100%; margin-top:8px;">🤝 Donner accès à un partenaire de confiance…</button>
     <p class="drive-note">
       La connexion Google Drive nécessite un identifiant client OAuth (Google Cloud Console, API Drive activée).
       <button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
@@ -724,6 +725,38 @@ button{font-family:inherit;}
     <div class="modal-foot">
       <button class="btn reset" data-close="modalShare">Annuler</button>
       <button class="btn copper" id="btnConfirmShare">Envoyer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: PARTENAIRE DE CONFIANCE (accès complet) ============== -->
+<div class="modal-overlay" id="modalPartnerAccess">
+  <div class="modal">
+    <div class="modal-head"><h2>Accès complet pour un partenaire</h2><button class="modal-close" data-close="modalPartnerAccess">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" style="margin-bottom:10px;">
+        Cette action partage le dossier Drive <b>IMAGINES</b> tout entier (le catalogue CSV + toutes les photos qu'il contient, actuelles et futures) avec la ou les adresses e-mail ci-dessous — contrairement au bouton « Partager » habituel, limité à des photos précises.
+      </p>
+      <input class="combo-input" type="text" size="46" role="combobox"
+             placeholder="Adresse e-mail du partenaire" autocomplete="off"
+             id="partnerCombo" list="shareEmailList">
+      <div id="partnerChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
+      <div class="field-row" style="margin-top:14px;">
+        <label for="partnerRole">Niveau d'accès accordé</label>
+        <select id="partnerRole">
+          <option value="reader" selected>Lecture seule — consulter le catalogue et les photos</option>
+          <option value="writer">Lecture et modification — peut aussi ajouter/modifier des fichiers</option>
+        </select>
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
+        <input type="checkbox" id="partnerUploadAll" checked>
+        <span>Envoyer aussi sur Drive les photos pas encore partagées (recommandé, sinon le partenaire ne verra que ce qui a déjà été envoyé via « Partager »)</span>
+      </label>
+      <p class="drive-note" style="margin-top:10px;">Le partenaire recevra <b>un seul e-mail</b> Google l'informant de l'accès au dossier — pas un e-mail par photo.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalPartnerAccess">Annuler</button>
+      <button class="btn copper" id="btnConfirmPartnerAccess">Donner l'accès</button>
     </div>
   </div>
 </div>
@@ -2681,10 +2714,10 @@ document.getElementById("btnShare").addEventListener("click", ()=>{
   if(!p) return;
   openShareModal([p]);
 });
-function addShareChip(rawValue){
+function addShareChip(rawValue, containerId){
   const value = (rawValue||"").trim();
   if(!value) return;
-  const chips = document.getElementById("shareChips");
+  const chips = document.getElementById(containerId || "shareChips");
   // évite les doublons si on clique deux fois
   if([...chips.children].some(c=>c.textContent.trim()===value)) return;
   const chip = document.createElement("span");
@@ -2694,14 +2727,14 @@ function addShareChip(rawValue){
 }
 document.getElementById("shareCombo").addEventListener("keydown", (e)=>{
   if(e.key==="Enter" && e.target.value.trim()){
-    addShareChip(e.target.value);
+    addShareChip(e.target.value, "shareChips");
     e.target.value = "";
   }
 });
 // Si l'utilisateur quitte le champ sans appuyer sur Entrée, on valide quand même sa saisie.
 document.getElementById("shareCombo").addEventListener("blur", (e)=>{
   if(e.target.value.trim()){
-    addShareChip(e.target.value);
+    addShareChip(e.target.value, "shareChips");
     e.target.value = "";
   }
 });
@@ -2717,7 +2750,7 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
   // Valide aussi ce qui reste tapé dans le champ (sans Entrée pressée) avant d'envoyer.
   const comboEl = document.getElementById("shareCombo");
   if(comboEl.value.trim()){
-    addShareChip(comboEl.value);
+    addShareChip(comboEl.value, "shareChips");
     comboEl.value = "";
   }
   const chips = [...document.getElementById("shareChips").children].map(c=>c.textContent.trim());
@@ -2811,6 +2844,106 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
     (failures.length ? ` Échec pour : ${failures.join(", ")}.` : "")
   );
   btn.textContent = originalLabel; btn.disabled = false;
+});
+
+/* -----------------------------------------------------------------
+   Accès complet pour un partenaire de confiance : partage le dossier
+   IMAGINES entier (catalogue CSV + toutes les photos, actuelles ET
+   futures) au lieu de photos une à une — le rôle Drive accordé sur le
+   dossier s'applique automatiquement à tout ce qu'il contient.
+   ----------------------------------------------------------------- */
+document.getElementById("btnPartnerAccess").addEventListener("click", ()=>{
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (menu ☰ → Connexion)."); return; }
+  document.getElementById("partnerChips").innerHTML = "";
+  document.getElementById("partnerCombo").value = "";
+  document.getElementById("partnerRole").value = "reader";
+  document.getElementById("partnerUploadAll").checked = true;
+  const confirmBtn = document.getElementById("btnConfirmPartnerAccess");
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = "Donner l'accès";
+  openModal("modalPartnerAccess");
+  toggleBurger(false); // le bouton est dans le menu ☰ : on le referme pour laisser la modale au premier plan
+});
+document.getElementById("partnerCombo").addEventListener("keydown", (e)=>{
+  if(e.key==="Enter" && e.target.value.trim()){
+    addShareChip(e.target.value, "partnerChips");
+    e.target.value = "";
+  }
+});
+document.getElementById("partnerCombo").addEventListener("blur", (e)=>{
+  if(e.target.value.trim()){
+    addShareChip(e.target.value, "partnerChips");
+    e.target.value = "";
+  }
+});
+document.getElementById("btnConfirmPartnerAccess").addEventListener("click", async ()=>{
+  const btn = document.getElementById("btnConfirmPartnerAccess");
+  if(btn.disabled) return; // verrou anti double-clic, même logique que pour le partage classique
+  const comboEl = document.getElementById("partnerCombo");
+  if(comboEl.value.trim()){
+    addShareChip(comboEl.value, "partnerChips");
+    comboEl.value = "";
+  }
+  const chips = [...document.getElementById("partnerChips").children].map(c=>c.textContent.trim());
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const emails = [...new Set(chips.filter(c=>emailRegex.test(c)).map(e=>e.toLowerCase()))];
+  const rejected = chips.filter(c=>!emailRegex.test(c));
+  if(emails.length===0){
+    toast("Ajoutez au moins une adresse e-mail complète (ex. nom@exemple.com).");
+    return;
+  }
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
+  const role = document.getElementById("partnerRole").value === "writer" ? "writer" : "reader";
+  const uploadAll = document.getElementById("partnerUploadAll").checked;
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  try{
+    // 1) Photos pas encore envoyées sur Drive : on les y met, pour que le
+    //    partenaire voie bien TOUTE la photothèque et pas seulement ce qui
+    //    a déjà été envoyé via le bouton "Partager" au coup par coup.
+    if(uploadAll){
+      const toUpload = State.photos.filter(p=>!p.driveFileId);
+      for(let i=0;i<toUpload.length;i++){
+        btn.textContent = `Envoi des photos… (${i+1}/${toUpload.length})`;
+        try{
+          const uploaded = await ensurePhotoUploadedToDrive(toUpload[i]);
+          toUpload[i].driveFileId = uploaded.id;
+          toUpload[i].driveWebViewLink = uploaded.webViewLink || "";
+          await idbPut("photos", toUpload[i]);
+        }catch(err){
+          console.warn(`Échec de l'envoi de "${toUpload[i].fileName}" avant partage partenaire :`, err);
+        }
+      }
+      renderGrid();
+    }
+    // 2) Catalogue à jour dans IMAGINES avant de donner accès au dossier.
+    btn.textContent = "Mise à jour du catalogue…";
+    await saveCsvToDrive();
+    setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
+    // 3) Partage du dossier IMAGINES lui-même (pas des fichiers un par un) :
+    //    UNE SEULE notification par destinataire, et l'accès couvre aussi
+    //    tout ce qui sera ajouté plus tard dans ce dossier.
+    btn.textContent = "Partage du dossier…";
+    const folderId = await ensureImaginesFolder();
+    for(const email of emails){
+      await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${folderId}/permissions?sendNotificationEmail=true`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({role, type:"user", emailAddress: email})
+      });
+    }
+    closeModal("modalPartnerAccess");
+    const roleLabel = role==="writer" ? "lecture et modification" : "lecture seule";
+    toast(
+      `Dossier IMAGINES (catalogue + photos) partagé en ${roleLabel} avec ${emails.join(", ")}.` +
+      (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "")
+    );
+  }catch(err){
+    console.error("Échec du partage partenaire :", err);
+    toast("Échec : " + err.message);
+  }finally{
+    btn.textContent = originalLabel; btn.disabled = false;
+  }
 });
 
 /* -- Suggestions de retouche (préréglages CSS filter, façon Google Photos) -- */
@@ -4061,63 +4194,71 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
   }catch(err){ toast(err.message); }
 });
 
-document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
-  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
+/* Sauvegarde le catalogue CSV courant dans IMAGINES (création ou mise à jour
+   du fichier), avec auto-réparation si l'identifiant mémorisé est obsolète —
+   factorisé pour être appelé aussi bien par le bouton "Sauver sur Drive" que
+   par l'octroi d'accès à un partenaire (qui doit s'assurer que le catalogue
+   est à jour sur Drive avant de partager le dossier). */
+async function saveCsvToDrive(){
+  if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
+  if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
+  const folderId = await ensureImaginesFolder();
+  const csv = autoBuildCsv();
+  // 'parents' n'est accepté qu'à la création : sur une mise à jour (PATCH), Drive
+  // rejetterait ce champ, le fichier reste de toute façon déjà dans IMAGINES.
+  const buildBody = (isUpdate)=>{
+    const boundary = "imago_boundary_" + Date.now();
+    const metadata = isUpdate
+      ? {name: State.catalogFileName, mimeType:"text/csv"}
+      : {name: State.catalogFileName, mimeType:"text/csv", parents:[folderId]};
+    const body =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
+    return {boundary, body};
+  };
+  let isUpdate = !!State.drive.fileId;
+  let data;
   try{
-    if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
-    const folderId = await ensureImaginesFolder();
-    const csv = autoBuildCsv();
-    // 'parents' n'est accepté qu'à la création : sur une mise à jour (PATCH), Drive
-    // rejetterait ce champ, le fichier reste de toute façon déjà dans IMAGINES.
-    const buildBody = (isUpdate)=>{
-      const boundary = "imago_boundary_" + Date.now();
-      const metadata = isUpdate
-        ? {name: State.catalogFileName, mimeType:"text/csv"}
-        : {name: State.catalogFileName, mimeType:"text/csv", parents:[folderId]};
-      const body =
-        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-        `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
-      return {boundary, body};
-    };
-    let isUpdate = !!State.drive.fileId;
-    let data;
-    try{
-      const {boundary, body} = buildBody(isUpdate);
-      const url = isUpdate
-        ? `https://www.googleapis.com/upload/drive/v3/files/${State.drive.fileId}?uploadType=multipart`
-        : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
-      const res = await driveApiFetch(url, {
-        method: isUpdate ? "PATCH" : "POST",
+    const {boundary, body} = buildBody(isUpdate);
+    const url = isUpdate
+      ? `https://www.googleapis.com/upload/drive/v3/files/${State.drive.fileId}?uploadType=multipart`
+      : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+    const res = await driveApiFetch(url, {
+      method: isUpdate ? "PATCH" : "POST",
+      headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
+      body
+    });
+    data = await res.json();
+  }catch(err){
+    // Identifiant de fichier mémorisé obsolète (catalogue supprimé côté
+    // Drive, ou mémorisé lors d'une autre session/compte) : plutôt que
+    // d'échouer, on oublie cette référence et on crée un nouveau fichier.
+    if(isUpdate && /404/.test(err.message)){
+      console.warn("Catalogue Drive mémorisé introuvable (" + State.drive.fileId + "), nouvelle création…");
+      State.drive.fileId = "";
+      localStorage.removeItem("imago_drive_file_id");
+      const {boundary, body} = buildBody(false);
+      const res = await driveApiFetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`, {
+        method: "POST",
         headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
         body
       });
       data = await res.json();
-    }catch(err){
-      // Identifiant de fichier mémorisé obsolète (catalogue supprimé côté
-      // Drive, ou mémorisé lors d'une autre session/compte) : plutôt que
-      // d'échouer, on oublie cette référence et on crée un nouveau fichier.
-      if(isUpdate && /404/.test(err.message)){
-        console.warn("Catalogue Drive mémorisé introuvable (" + State.drive.fileId + "), nouvelle création…");
-        State.drive.fileId = "";
-        localStorage.removeItem("imago_drive_file_id");
-        isUpdate = false;
-        const {boundary, body} = buildBody(false);
-        const res = await driveApiFetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`, {
-          method: "POST",
-          headers: {"Content-Type": `multipart/related; boundary=${boundary}`},
-          body
-        });
-        data = await res.json();
-      } else {
-        throw err;
-      }
+    } else {
+      throw err;
     }
-    if(data.id){
-      State.drive.fileId = data.id;
-      localStorage.setItem("imago_drive_file_id", data.id);
-    }
+  }
+  if(data.id){
+    State.drive.fileId = data.id;
+    localStorage.setItem("imago_drive_file_id", data.id);
+  }
+  markCsvClean();
+  return data;
+}
+document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
+  try{
+    await saveCsvToDrive();
     setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
-    markCsvClean();
     toast(`« ${State.catalogFileName} » sauvegardé dans le dossier IMAGINES.`);
   }catch(err){ toast(err.message); }
 });
