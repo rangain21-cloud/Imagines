@@ -1876,6 +1876,17 @@ function getImageDimensions(dataUrl){
 function isHeicFile(file){
   return /image\/hei[cf]/i.test(file.type||"") || /\.hei[cf]$/i.test(file.name||"");
 }
+/* Détection par le contenu réel du fichier (boîte ISOBMFF "ftyp"), en
+   complément d'isHeicFile() qui se fie au nom/type déclaré — un fichier
+   peut être un HEIC renommé en ".jpg" (export d'une appli tierce qui change
+   juste le nom sans ré-encoder), auquel cas isHeicFile() dirait "non" à tort
+   et l'image resterait illisible malgré la conversion prévue pour ce cas. */
+async function isActuallyHeicBytes(file){
+  try{
+    const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    return head.length>=8 && head[4]===0x66 && head[5]===0x74 && head[6]===0x79 && head[7]===0x70; // "ftyp"
+  }catch(e){ return false; }
+}
 let heic2anyLoadPromise = null;
 function ensureHeic2anyLoaded(){
   if(window.heic2any) return Promise.resolve();
@@ -1929,7 +1940,7 @@ function stillNeedsHeicConversion(p){
    simplement encore illisible pour l'instant, avec un message explicite. */
 async function readFileAsDataURLWithHeicSupport(file, stats){
   const raw = await readFileAsDataURL(file);
-  if(!isHeicFile(file)) return raw;
+  if(!isHeicFile(file) && !(await isActuallyHeicBytes(file))) return raw;
   try{
     return await convertHeicToJpegDataUrl(file);
   }catch(heicErr){
@@ -2368,11 +2379,18 @@ function findTiffStartBySignature(view){
 }
 async function readBasicExif(file){
   try{
-    const isJpeg = /\.jpe?g$/i.test(file.name);
-    const isHeic = /\.hei[cf]$/i.test(file.name);
-    if(!isJpeg && !isHeic) return null; // formats non gérés ici (pas de lecture GPS/Exif tentée)
+    // Détection du format par les OCTETS réels du fichier plutôt que par son
+    // extension : un fichier peut être renommé, ou dupliqué/exporté par une
+    // appli tierce qui change le nom sans changer le contenu (ex. un HEIC
+    // renommé en ".jpg" sans être réellement ré-encodé) — se fier à
+    // l'extension dans ce cas fait passer à côté du GPS/de la caméra alors
+    // même que Google Photos, lui, lit le contenu réel du fichier.
+    const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    const isJpegMagic = head.length>=2 && head[0]===0xFF && head[1]===0xD8;
+    const isHeicMagic = head.length>=8 && head[4]===0x66 && head[5]===0x74 && head[6]===0x79 && head[7]===0x70; // boîte ISOBMFF "ftyp" (HEIC/HEIF/AVIF…)
+    if(!isJpegMagic && !isHeicMagic) return null; // format non pris en charge ici (pas de lecture GPS/Exif tentée)
 
-    if(isHeic){
+    if(isHeicMagic){
       // Les conteneurs HEIC/HEIF (photos par défaut de nombreux iPhone et
       // Android récents) embarquent bien un bloc Exif standard, mais dans une
       // structure de boîtes totalement différente du JPEG — sans cette prise
@@ -3235,13 +3253,6 @@ function renderInfoModal(p){
     </div>
 
     <div class="info-row">
-      <div class="info-ic">☁</div>
-      <div class="info-content">
-        <div class="main-line">Une image est partageable via Gmail et Drive. <button class="small-link" id="infoLearnMore">En savoir plus</button></div>
-      </div>
-    </div>
-
-    <div class="info-row">
       <div class="info-ic">📍</div>
       <div class="info-content" style="flex:1;">
         <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
@@ -3280,8 +3291,6 @@ function renderInfoModal(p){
       renderInfoModal(p);
     });
   }
-  const learnMore = document.getElementById("infoLearnMore");
-  if(learnMore) learnMore.addEventListener("click", ()=> toast("Les images restent sur cet appareil par défaut. « Sauver sur Drive » ne synchronise que le catalogue (CSV). Pour envoyer une image précise sur Drive, utilisez « Partager »."));
 }
 
 function startInlineEdit(containerId, field, p){
