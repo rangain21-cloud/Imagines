@@ -1212,11 +1212,26 @@ function galleryPhotos(){
 const GALLERY_INITIAL_BATCH = 40;
 const GALLERY_BACKGROUND_BATCH = 40;
 let galleryRenderToken = 0; // incrémenté à chaque renderGallery() pour invalider un remplissage en arrière-plan devenu obsolète
+/* Ratio largeur/hauteur "d'affichage" d'une photo pour sa vignette dans la
+   planche-contact : reflète son orientation réelle (portrait/paysage) au
+   lieu d'un carré uniforme forcé. On tient compte de la rotation appliquée
+   (90°/270° inversent largeur et hauteur à l'écran), et on borne le ratio
+   pour qu'un panorama très étiré ne casse pas la grille (la vignette reste
+   alors recadrée en "cover" dans une case raisonnable). */
+function effectiveAspectRatio(p){
+  let w = p.width, h = p.height;
+  if(!w || !h) return 1;
+  const rot = ((p.rotation||0) % 180 + 180) % 180;
+  if(Math.abs(rot-90) < 1){ const t=w; w=h; h=t; } // rotation ~90°/270° : dimensions inversées à l'affichage
+  const MIN_RATIO = 0.5, MAX_RATIO = 2; // couvre les formats courants (portrait 9:16 = 0,56 ; paysage 16:9 = 1,78) sans les rogner ; seuls les vrais panoramas sont bornés
+  return Math.max(MIN_RATIO, Math.min(MAX_RATIO, w/h));
+}
 function buildGalleryTile(p){
   const tile = document.createElement("div");
   tile.className = "gallery-tile";
   tile.dataset.id = p.id;
   tile.title = p.fileName || "";
+  tile.style.aspectRatio = String(effectiveAspectRatio(p)); // respecte le mode portrait/paysage de la photo
   if(State.gallerySelection.has(p.id)) tile.classList.add("selected");
   const mark = document.createElement("span");
   mark.className = "gallery-select-mark";
