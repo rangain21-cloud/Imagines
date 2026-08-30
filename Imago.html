@@ -3409,6 +3409,14 @@ function renderInfoModal(p){
     </div>
 
     <div class="info-row">
+      <div class="info-ic">🗺</div>
+      <div class="info-content">
+        <div class="main-line">${p.map ? `<a href="${escapeHtml(p.map)}" target="_blank" rel="noopener" class="small-link">${escapeHtml(p.map)}</a>` : "Aucune carte renseignée"}</div>
+        <div class="sub-line">Map</div>
+      </div>
+    </div>
+
+    <div class="info-row">
       <div class="info-ic">📍</div>
       <div class="info-content" style="flex:1;">
         <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
