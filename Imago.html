@@ -242,6 +242,17 @@ button{font-family:inherit;}
   border-bottom:1px solid var(--line); padding-bottom:8px;
 }
 .search-field{margin-bottom:14px;}
+/* Sélecteur d'agencement (densité d'affichage PC uniquement, voir --ui-scale
+   appliqué sur <html> via JS) : masqué sur mobile, où l'app est déjà pensée
+   pour une seule taille d'écran. */
+.ui-scale-field{
+  display:none;
+  padding-bottom:14px; margin-bottom:14px;
+  border-bottom:1px dashed var(--line);
+}
+@media (min-width: 761px){
+  .ui-scale-field{ display:block; }
+}
 .search-field label{display:block; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-dim); margin-bottom:5px;}
 .search-field select, .search-field input{
   width:100%; padding:7px 8px; border-radius:var(--radius);
@@ -683,6 +694,16 @@ button{font-family:inherit;}
   <div class="sidebar-overlay" id="sidebarOverlay"></div>
   <aside class="sidebar" id="sidebar">
     <h3>Recherches</h3>
+
+    <div class="search-field ui-scale-field">
+      <label for="uiScaleSelect">Agencement de l'affichage</label>
+      <select id="uiScaleSelect">
+        <option value="compact">Compact — petit écran / laptop</option>
+        <option value="standard" selected>Standard — par défaut</option>
+        <option value="comfortable">Confortable — écran large</option>
+        <option value="xl">Grand écran — très large moniteur</option>
+      </select>
+    </div>
 
     <div class="search-field">
       <label for="fPersonnage">Liste par Personnage</label>
@@ -1470,6 +1491,30 @@ document.getElementById("btnResetFilters").addEventListener("click", ()=>{
 });
 
 /* ---------------------------------------------------------------
+   Agencement de l'affichage (PC) : ajuste le "zoom" global de l'app pour un
+   rendu cohérent (taille du texte, des vignettes, des boutons…) selon le
+   type d'écran — laptop compact, écran standard, ou grand moniteur. Utilise
+   la propriété CSS "zoom" (recalcule aussi correctement les éléments en
+   position fixed, contrairement à "transform: scale"), appliquée sur <html>
+   et mémorisée pour les prochaines visites.
+   --------------------------------------------------------------- */
+const UI_SCALE_FACTORS = {compact:0.85, standard:1, comfortable:1.15, xl:1.3};
+function applyUiScale(key){
+  const factor = UI_SCALE_FACTORS[key] || 1;
+  document.documentElement.style.zoom = factor;
+}
+(function initUiScale(){
+  const saved = localStorage.getItem("imago_ui_scale") || "standard";
+  const select = document.getElementById("uiScaleSelect");
+  select.value = UI_SCALE_FACTORS[saved] !== undefined ? saved : "standard";
+  applyUiScale(select.value);
+  select.addEventListener("change", ()=>{
+    localStorage.setItem("imago_ui_scale", select.value);
+    applyUiScale(select.value);
+  });
+})();
+
+/* ---------------------------------------------------------------
    6. Burger menu
    --------------------------------------------------------------- */
 const burgerPanel = document.getElementById("burgerPanel");
@@ -1555,7 +1600,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         filterCss: existingRow.filterKey ? (FILTER_PRESETS.find(f=>f.key===existingRow.filterKey)||{}).css || "" : "",
         optique: existingRow.optique || exifCameraName(exif),
         poids: existingRow.poids ? Number(existingRow.poids) : Math.round(file.size/1024),
-        map: existingRow.map || mapUrl(exif, existingRow.lieu || ""),
+        map: isValidMapUrl(existingRow.map) ? existingRow.map : mapUrl(exif, existingRow.lieu || ""),
         sizeBytes: file.size, width:dims.width, height:dims.height, exif,
         gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
         gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null
@@ -1777,6 +1822,16 @@ function exifCameraName(exif){
 }
 /* Priorité au GPS embarqué dans le fichier (comme Google Photos) — plus
    précis qu'une recherche texte sur le champ Lieu, qui peut être erroné. */
+/* Vérifie qu'une valeur "map" est bien une URL exploitable (http/https) et
+   non un texte brut (ex. un nom de lieu resté par erreur dans ce champ à la
+   suite d'une donnée corrompue ou héritée d'une session antérieure) — sans
+   ce garde-fou, un tel texte, une fois utilisé comme href, est interprété
+   par le navigateur comme un chemin RELATIF au site de l'application elle-
+   même, ce qui provoque un 404 sur le propre site de l'app plutôt que
+   d'ouvrir Google Maps. */
+function isValidMapUrl(v){
+  return typeof v === "string" && /^https?:\/\//i.test(v.trim());
+}
 function mapUrlFromLieu(lieu){
   if(!lieu) return "";
   return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(lieu);
@@ -3411,7 +3466,13 @@ function renderInfoModal(p){
     <div class="info-row">
       <div class="info-ic">🗺</div>
       <div class="info-content">
-        <div class="main-line">${p.map ? `<a href="${escapeHtml(p.map)}" target="_blank" rel="noopener" class="small-link">${escapeHtml(p.map)}</a>` : "Aucune carte renseignée"}</div>
+        ${(()=>{
+          if(isValidMapUrl(p.map)) return `<div class="main-line"><a href="${escapeHtml(p.map)}" target="_blank" rel="noopener" class="small-link">${escapeHtml(p.map)}</a></div>`;
+          const fallback = p.lieu ? mapUrlFromLieu(p.lieu) : "";
+          return fallback
+            ? `<div class="main-line"><a href="${escapeHtml(fallback)}" target="_blank" rel="noopener" class="small-link">${escapeHtml(fallback)}</a></div><div class="sub-line">Lien reconstruit depuis le lieu (valeur d'origine invalide)</div>`
+            : `<div class="main-line">Aucune carte renseignée</div>`;
+        })()}
         <div class="sub-line">Map</div>
       </div>
     </div>
@@ -3858,7 +3919,7 @@ async function mergeCsvIntoCatalog(text){
     rec.filterCss = rec.filterKey ? (FILTER_PRESETS.find(f=>f.key===rec.filterKey)||{}).css || "" : "";
     rec.optique = row.optique || rec.optique || "";
     rec.poids = row.poids ? Number(row.poids) : (rec.poids || 0);
-    rec.map = row.map || rec.map || mapUrlFromLieu(rec.lieu);
+    rec.map = isValidMapUrl(row.map) ? row.map : (isValidMapUrl(rec.map) ? rec.map : mapUrlFromLieu(rec.lieu));
     rec.titre = row.titre || rec.titre || buildTitre(rec.lieu, rec.personnage);
     await idbPut("photos", rec);
   }
