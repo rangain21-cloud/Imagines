@@ -730,6 +730,11 @@ button{font-family:inherit;}
     </div>
 
     <div class="search-field">
+      <label for="fAuteur">Liste par Auteur</label>
+      <select id="fAuteur"><option value="">— Tous —</option></select>
+    </div>
+
+    <div class="search-field">
       <label for="fPersonnage">Liste par Personnage</label>
       <select id="fPersonnage"><option value="">— Tous —</option></select>
     </div>
@@ -1112,7 +1117,7 @@ const State = {
   photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, corbeille, rotation, albums:[]}
   albums: [],         // {id, name}
   auteurs: [],         // {id, name, note}
-  filters: {personnage:"", lieu:"", support:"", etiquette:""},
+  filters: {auteur:"", personnage:"", lieu:"", support:"", etiquette:""},
   selectedId: null,
   viewIndex: 0,
   view: {scale:1},
@@ -1202,6 +1207,7 @@ function activePhotos(){
     // personnage choisi figure parmi les mots-clés de la ligne, pas seulement
     // celles où il est seul — d'où une recherche par mot-clé exact plutôt
     // qu'une égalité stricte de tout le champ.
+    if(f.auteur && p.auteur !== f.auteur) return false;
     if(f.personnage && !personnageTokens(p.personnage).includes(f.personnage)) return false;
     if(f.lieu && p.lieu !== f.lieu) return false;
     if(f.support && p.support !== f.support) return false;
@@ -1487,6 +1493,7 @@ function uniquePersonnageTokens(){
   return [...set].sort((a,b)=>a.localeCompare(b, "fr"));
 }
 function populateFilterOptions(){
+  fillSelect("fAuteur", uniqueValues("auteur"), State.filters.auteur);
   fillSelect("fPersonnage", uniquePersonnageTokens(), State.filters.personnage);
   fillSelect("fLieu", uniqueValues("lieu"), State.filters.lieu);
   fillSelect("fSupport", uniqueValues("support"), State.filters.support);
@@ -1501,12 +1508,14 @@ function populateAuteurDatalist(){
   dl.innerHTML = State.auteurs.map(a=>`<option value="${escapeHtml(a.name)}">`).join("");
 }
 
+document.getElementById("fAuteur").addEventListener("change", e=>{State.filters.auteur=e.target.value; renderGrid();});
 document.getElementById("fPersonnage").addEventListener("change", e=>{State.filters.personnage=e.target.value; renderGrid();});
 document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; renderGrid();});
 document.getElementById("fSupport").addEventListener("change", e=>{State.filters.support=e.target.value; renderGrid();});
 document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.etiquette=e.target.value; renderGrid();});
 document.getElementById("btnResetFilters").addEventListener("click", ()=>{
-  State.filters = {personnage:"", lieu:"", support:"", etiquette:""};
+  State.filters = {auteur:"", personnage:"", lieu:"", support:"", etiquette:""};
+  document.getElementById("fAuteur").value="";
   document.getElementById("fPersonnage").value="";
   document.getElementById("fLieu").value="";
   document.getElementById("fSupport").value="";
