@@ -32,6 +32,7 @@
   --font-ui:      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono:    'Courier New', Courier, monospace;
   --topbar-h:     56px;
+  --side-panel-w: 320px; /* largeur PARTAGÉE des 2 panneaux latéraux (Recherches + Infos) : les garder identiques évite qu'un des deux ne s'élargisse sans limite sur un grand écran au détriment de viewer-stage */
 }
 
 *{box-sizing:border-box;}
@@ -97,7 +98,7 @@ button{font-family:inherit;}
   display:flex;
 }
 .main{
-  width:90%;
+  flex:1; min-width:0; /* occupe tout l'espace restant après le panneau Recherches, quelle que soit la largeur d'écran (au lieu d'un simple 90% fixe) */
   height:100%;
   overflow:auto;
   position:relative;
@@ -105,11 +106,10 @@ button{font-family:inherit;}
   background:
     radial-gradient(ellipse at 20% -10%, #1a2c22 0%, transparent 60%),
     var(--bg-deep);
-  padding:18px 22px 14px; /* bas réduit (était 60px) : ce padding retirait de la place à viewer-stage sans raison, sa hauteur étant désormais calculée par flex, pas par une estimation fixe */
+  padding:18px 22px 14px;
 }
 .sidebar{
-  width:10%;
-  min-width:220px;
+  width:var(--side-panel-w); flex-shrink:0; /* même largeur que le panneau Infos, fixe (ne grandit plus avec l'écran) */
   height:100%;
   overflow-y:auto;
   background:var(--bg-panel);
@@ -444,7 +444,7 @@ button{font-family:inherit;}
   #modalInfo.modal-overlay{
     display:none; background:transparent; padding:0;
     position:fixed; top:var(--topbar-h); right:0; bottom:0; left:auto;
-    width:320px; max-width:32vw; /* réduit (était 380px/36vw) pour laisser plus de place au viewer-stage */
+    width:var(--side-panel-w); max-width:32vw; /* même largeur que le panneau Recherches */
     align-items:stretch; justify-content:stretch;
     z-index:120;
   }
@@ -467,7 +467,7 @@ button{font-family:inherit;}
   #modalInfo .info-pencil{ font-size:12.5px; }
   #modalInfo .small-link{ font-size:11px; }
   .main.info-open .grid-toolbar,
-  .main.info-open .viewer-wrap{ margin-right: 320px; transition: margin-right .18s ease; }
+  .main.info-open .viewer-wrap{ margin-right: var(--side-panel-w); transition: margin-right .18s ease; }
 }
 
 .field-row{margin-bottom:14px;}
