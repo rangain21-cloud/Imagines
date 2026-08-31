@@ -1212,14 +1212,31 @@ const IMPORT_DONE_QUIPS = [
   "🍾 Import terminé, santé !",
   "🚀 Paré au décollage !"
 ];
+const SHARE_DONE_QUIPS = [
+  "🎉 Mission accomplie !",
+  "🥳 C'est envoyé !",
+  "✨ Et hop, c'est parti !",
+  "📬 Livraison effectuée !",
+  "🎊 Ni vu ni connu, c'est fait !",
+  "🍾 Envoi terminé, santé !",
+  "🚀 En route vers Drive !"
+];
 /* Point d'entrée unique appelé aux DEUX endroits où un import se termine
    entièrement (voir handleFilesSelected et importRestInBackground) — ne
    déclenche la fanfare que si quelque chose a effectivement été chargé
    (pas de célébration si l'import a totalement échoué). */
 function celebrateImportComplete(stats, message, durationMs){
-  const somethingLoaded = (stats.added||0) + (stats.reused||0) > 0;
-  if(somethingLoaded){
-    const quip = IMPORT_DONE_QUIPS[Math.floor(Math.random()*IMPORT_DONE_QUIPS.length)];
+  celebrate((stats.added||0) + (stats.reused||0) > 0, message, durationMs);
+}
+/* Variante générique (même fanfare + même banque de messages espiègles),
+   utilisée aussi à la fin d'un partage Drive (upload + envoi des e-mails) :
+   ce sont souvent les opérations les plus longues de l'app, d'où l'intérêt
+   d'un signal clair et sympathique en fin d'attente. "success" détermine
+   si la fanfare est jouée (jamais en cas d'échec total). */
+function celebrate(success, message, durationMs, quips){
+  if(success){
+    const bank = quips || IMPORT_DONE_QUIPS;
+    const quip = bank[Math.floor(Math.random()*bank.length)];
     toast(`${quip} ${message}`, durationMs);
     playImportFanfare();
   } else {
@@ -1548,7 +1565,10 @@ function closeGallery(){
   setGallerySelectMode(false);
 }
 document.getElementById("galleryToggle").addEventListener("click", openGallery);
-document.getElementById("btnBackToGallery").addEventListener("click", openGallery);
+document.getElementById("btnBackToGallery").addEventListener("click", ()=>{
+  resetFilters(); // "Retour galerie" doit repartir d'une planche-contact non filtrée
+  openGallery();
+});
 
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -1605,13 +1625,16 @@ document.getElementById("fPersonnage").addEventListener("change", e=>{State.filt
 document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; renderGrid();});
 document.getElementById("fSupport").addEventListener("change", e=>{State.filters.support=e.target.value; renderGrid();});
 document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.etiquette=e.target.value; renderGrid();});
-document.getElementById("btnResetFilters").addEventListener("click", ()=>{
+function resetFilters(){
   State.filters = {auteur:"", personnage:"", lieu:"", support:"", etiquette:""};
   document.getElementById("fAuteur").value="";
   document.getElementById("fPersonnage").value="";
   document.getElementById("fLieu").value="";
   document.getElementById("fSupport").value="";
   document.getElementById("fEtiquette").value="";
+}
+document.getElementById("btnResetFilters").addEventListener("click", ()=>{
+  resetFilters();
   renderGrid();
 });
 
@@ -3027,14 +3050,17 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
   closeModal("modalShare");
   const okCount = targets.length - failures.length;
   const plural = okCount>1 ? "s" : "";
-  toast(
+  celebrate(
+    okCount>0,
     (okCount>0
       ? (targets.length>1
           ? `${okCount} image${plural} regroupée${plural} dans un dossier Drive et partagée${plural} avec ${emails.join(", ")} (1 seul e-mail par destinataire).`
           : `Image envoyée et partagée sur Drive avec ${emails.join(", ")}.`)
       : "Aucun envoi n'a abouti.") +
     (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "") +
-    (failures.length ? ` Échec pour : ${failures.join(", ")}.` : "")
+    (failures.length ? ` Échec pour : ${failures.join(", ")}.` : ""),
+    undefined,
+    SHARE_DONE_QUIPS
   );
   btn.textContent = originalLabel; btn.disabled = false;
 });
@@ -3127,9 +3153,12 @@ document.getElementById("btnConfirmPartnerAccess").addEventListener("click", asy
     }
     closeModal("modalPartnerAccess");
     const roleLabel = role==="writer" ? "lecture et modification" : "lecture seule";
-    toast(
+    celebrate(
+      true,
       `Dossier IMAGINES (catalogue + photos) partagé en ${roleLabel} avec ${emails.join(", ")}.` +
-      (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "")
+      (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : ""),
+      undefined,
+      SHARE_DONE_QUIPS
     );
   }catch(err){
     console.error("Échec du partage partenaire :", err);
