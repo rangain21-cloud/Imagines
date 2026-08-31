@@ -105,7 +105,7 @@ button{font-family:inherit;}
   background:
     radial-gradient(ellipse at 20% -10%, #1a2c22 0%, transparent 60%),
     var(--bg-deep);
-  padding:18px 22px 60px;
+  padding:18px 22px 14px; /* bas réduit (était 60px) : ce padding retirait de la place à viewer-stage sans raison, sa hauteur étant désormais calculée par flex, pas par une estimation fixe */
 }
 .sidebar{
   width:10%;
