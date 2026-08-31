@@ -101,6 +101,7 @@ button{font-family:inherit;}
   height:100%;
   overflow:auto;
   position:relative;
+  display:flex; flex-direction:column;
   background:
     radial-gradient(ellipse at 20% -10%, #1a2c22 0%, transparent 60%),
     var(--bg-deep);
@@ -129,6 +130,7 @@ button{font-family:inherit;}
 .grid-toolbar{
   position:sticky; top:0; z-index:21;
   display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  flex-shrink:0;
   background:#152119cc; backdrop-filter:blur(4px);
   padding:10px 4px; margin-bottom:10px;
   border-bottom:1px solid var(--line);
@@ -154,7 +156,13 @@ button{font-family:inherit;}
     linear-gradient(var(--line) 1px, transparent 1px) 0 0/28px 28px,
     linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0/28px 28px,
     #0d1712;
-  height:calc(100vh - var(--topbar-h) - 96px);
+  /* Occupe TOUT l'espace vertical restant sous la barre d'outils (.grid-toolbar),
+     au lieu d'une hauteur fixe approximative (calc(100vh - X)) qui laissait un
+     bandeau vide en bas sur certains écrans (grands moniteurs, fenêtres hautes…).
+     .main est un flex-column ; min-height:0 est nécessaire pour qu'un enfant
+     flexible puisse réellement se contenter de l'espace dispo plutôt que de
+     s'étirer au-delà (même piège que .gallery-scroll, déjà rencontré). */
+  flex:1;
   min-height:360px;
   overflow:hidden;
   transition: margin-right .18s ease;
