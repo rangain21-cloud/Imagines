@@ -1259,6 +1259,37 @@ async function clearPhotosStore(){
 /* ---------------------------------------------------------------
    4. Grille photo : rendu, tri, filtres
    --------------------------------------------------------------- */
+/* Tri "naturel" du nom de fichier, robuste et prévisible : découpe en
+   segments numériques (comparés comme des nombres, pas caractère par
+   caractère — "img2" < "img10") et segments texte (comparés simplement,
+   insensible à la casse/aux accents). Volontairement PAS basé sur
+   localeCompare(..., {numeric:true}) : la collation ICU par défaut peut
+   traiter certains signes (parenthèses, espaces, ponctuation) comme quasi
+   invisibles, ce qui provoquait des tris totalement contre-intuitifs (un
+   fichier qui devrait être en fin de liste se retrouvant en tête). */
+function naturalCompare(a, b){
+  const tokenize = (s)=>{
+    const out = [];
+    String(s||"").replace(/(\d+)|(\D+)/g, (_, digits, rest)=>{
+      out.push(digits!==undefined ? {n:parseInt(digits,10)} : {t:(rest||"").toLowerCase()});
+      return "";
+    });
+    return out;
+  };
+  const ax = tokenize(a), bx = tokenize(b);
+  const len = Math.min(ax.length, bx.length);
+  for(let i=0;i<len;i++){
+    const av = ax[i], bv = bx[i];
+    if(av.n!==undefined && bv.n!==undefined){
+      if(av.n !== bv.n) return av.n - bv.n;
+    } else {
+      const as = av.n!==undefined ? String(av.n) : av.t;
+      const bs = bv.n!==undefined ? String(bv.n) : bv.t;
+      if(as !== bs) return as < bs ? -1 : 1;
+    }
+  }
+  return ax.length - bx.length;
+}
 function activePhotos(){
   return State.photos.filter(p=>{
     if(p.corbeille) return false;
@@ -1277,7 +1308,7 @@ function activePhotos(){
       if(!(p.etiquette||"").toLowerCase().includes(kw)) return false;
     }
     return true;
-  }).sort((a,b)=> (a.fileName||"").localeCompare(b.fileName||"", "fr", {numeric:true, sensitivity:"base"}));
+  }).sort((a,b)=> naturalCompare(a.fileName, b.fileName));
 }
 
 function renderGrid(){
