@@ -1166,6 +1166,67 @@ function toast(msg, durationMs){
   toastTimer = setTimeout(()=> el.classList.remove("show"), duration);
 }
 
+/* -----------------------------------------------------------------
+   Petite fanfare de fin de chargement (ergonomie) : un mini arpège
+   "ta-da !" synthétisé en direct via Web Audio (aucun fichier son à
+   charger, fonctionne hors-ligne) + un message espiègle aléatoire,
+   pour signaler clairement à l'utilisateur que TOUT le dossier est
+   chargé (y compris le reste traité en arrière-plan) et qu'il peut
+   commencer à travailler.
+   ----------------------------------------------------------------- */
+let sharedAudioCtx = null;
+function ensureAudioCtx(){
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if(!Ctx) return null;
+  if(!sharedAudioCtx) sharedAudioCtx = new Ctx();
+  if(sharedAudioCtx.state === "suspended") sharedAudioCtx.resume().catch(()=>{});
+  return sharedAudioCtx;
+}
+function playImportFanfare(){
+  try{
+    const ctx = ensureAudioCtx();
+    if(!ctx) return;
+    const now = ctx.currentTime;
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // Do5, Mi5, Sol5, Do6 : petit arpège "ta-da !"
+    notes.forEach((freq, i)=>{
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      const t0 = now + i*0.09;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.18, t0+0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0+0.35);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0+0.4);
+    });
+  }catch(e){ /* audio non disponible (autoplay bloqué, navigateur sans Web Audio…) : on ignore silencieusement */ }
+}
+const IMPORT_DONE_QUIPS = [
+  "🎉 C'est prêt !",
+  "🥳 Terminé, en piste !",
+  "✨ Et voilà, à vous de jouer !",
+  "📸 Chargement bouclé, place au tri !",
+  "🎊 Toutes les photos sont arrivées !",
+  "🍾 Import terminé, santé !",
+  "🚀 Paré au décollage !"
+];
+/* Point d'entrée unique appelé aux DEUX endroits où un import se termine
+   entièrement (voir handleFilesSelected et importRestInBackground) — ne
+   déclenche la fanfare que si quelque chose a effectivement été chargé
+   (pas de célébration si l'import a totalement échoué). */
+function celebrateImportComplete(stats, message, durationMs){
+  const somethingLoaded = (stats.added||0) + (stats.reused||0) > 0;
+  if(somethingLoaded){
+    const quip = IMPORT_DONE_QUIPS[Math.floor(Math.random()*IMPORT_DONE_QUIPS.length)];
+    toast(`${quip} ${message}`, durationMs);
+    playImportFanfare();
+  } else {
+    toast(message, durationMs);
+  }
+}
+
 /* ---------------------------------------------------------------
    3. Chargement initial — session TOUJOURS vierge : aucune image ni
    catalogue n'est restauré d'une session précédente. Seuls les
@@ -1730,7 +1791,8 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
       if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
       else setTimeout(step, 0);
     } else {
-      toast(
+      celebrateImportComplete(
+        stats,
         `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
         (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : ""),
         stats.failedFiles.length ? 12000 : undefined
@@ -1812,7 +1874,8 @@ async function handleFilesSelected(fileList, folderNameOverride){
   openGallery();
   reportImportProgress(folderName, catalogCandidates, stats, restFiles.length>0);
   if(restFiles.length===0){
-    toast(
+    celebrateImportComplete(
+      stats,
       `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
       (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : ""),
       stats.failedFiles.length ? 12000 : undefined
