@@ -109,7 +109,7 @@ button{font-family:inherit;}
   padding:18px 22px 14px;
 }
 .sidebar{
-  width:var(--side-panel-w); flex-shrink:0; /* même largeur que le panneau Infos, fixe (ne grandit plus avec l'écran) */
+  width:var(--side-panel-w); max-width:32vw; flex-shrink:0; /* même largeur ET même plafond que le panneau Infos, fixe (ne grandit plus avec l'écran) */
   height:100%;
   overflow-y:auto;
   background:var(--bg-panel);
@@ -466,8 +466,13 @@ button{font-family:inherit;}
   #modalInfo .info-content .sub-line{ font-size:10.5px; }
   #modalInfo .info-pencil{ font-size:12.5px; }
   #modalInfo .small-link{ font-size:11px; }
-  .main.info-open .grid-toolbar,
-  .main.info-open .viewer-wrap{ margin-right: var(--side-panel-w); transition: margin-right .18s ease; }
+  /* Pas de margin-right supplémentaire ici : .sidebar (Recherches) occupe déjà
+     en permanence --side-panel-w dans le flex de .app-body, et le panneau
+     Infos (fixed, ancré à droite) recouvre EXACTEMENT ce même espace, à la
+     même largeur — .main n'a donc pas besoin d'être rétréci une seconde
+     fois quand Infos s'ouvre (contrairement à avant, quand les 2 panneaux
+     n'avaient pas la même largeur). Ajouter cette marge en plus provoquait
+     une double réduction de largeur et un décalage visible de viewer-stage. */
 }
 
 .field-row{margin-bottom:14px;}
