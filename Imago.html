@@ -581,11 +581,51 @@ button{font-family:inherit;}
 /* ---------- diaporama (fullscreen) ---------- */
 .slideshow{
   position:fixed; inset:0; background:#000; z-index:2000;
-  display:none; align-items:center; justify-content:center;
+  display:none; flex-direction:row;
 }
 .slideshow.show{display:flex;}
-.slideshow img{max-width:92vw; max-height:92vh; object-fit:contain; transition:opacity .35s ease;}
-.slideshow-hint{position:absolute; bottom:18px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em;}
+.slideshow-stage{
+  flex:1; min-width:0;
+  display:flex; align-items:center; justify-content:center;
+  position:relative;
+}
+.slideshow img{max-width:97%; max-height:97%; object-fit:contain; transition:opacity .35s ease;}
+.slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em;}
+
+/* ---------- bande de miniatures du diaporama (choix rapide + plage) ---------- */
+.slideshow-rail{
+  width:132px; flex-shrink:0; height:100%;
+  overflow-y:auto; overflow-x:hidden;
+  background:rgba(10,10,10,.82);
+  border-right:1px solid rgba(255,255,255,.08);
+  padding:10px 8px; display:flex; flex-direction:column; gap:7px;
+}
+.slideshow-rail-head{
+  color:#cfcfcf; font-size:11px; line-height:1.4; padding:0 2px 6px;
+  border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:2px;
+}
+.slideshow-rail-clear{
+  background:none; border:1px solid rgba(255,255,255,.3); color:#e8dcc2;
+  font-size:11px; padding:3px 8px; border-radius:3px; cursor:pointer; margin-top:5px;
+}
+.slideshow-rail-clear:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
+#slideshowRailTiles{display:flex; flex-direction:column; gap:7px;}
+.slideshow-rail-tile{
+  position:relative; flex-shrink:0; aspect-ratio:1/1; border-radius:3px; overflow:hidden;
+  border:2px solid transparent; cursor:pointer; background:#111;
+}
+.slideshow-rail-tile img{
+  position:static; max-width:none; max-height:none; width:100%; height:100%;
+  object-fit:cover; display:block; transition:none;
+}
+.slideshow-rail-tile:hover{border-color:rgba(255,255,255,.4);}
+.slideshow-rail-tile.current{border-color:var(--copper-hi); box-shadow:0 0 0 1px var(--copper-hi);}
+.slideshow-rail-tile.in-range{background:rgba(199,125,59,.35);}
+.slideshow-rail-tile.in-range img{opacity:.85;}
+.slideshow-rail-tile .rail-idx{
+  position:absolute; bottom:2px; right:3px; font-size:9px; color:#fff;
+  text-shadow:0 1px 2px rgba(0,0,0,.9);
+}
 
 /* toast */
 .toast{
@@ -1048,8 +1088,19 @@ button{font-family:inherit;}
 
 <!-- ============== DIAPORAMA ============== -->
 <div class="slideshow" id="slideshow">
-  <img id="slideshowImg" src="" alt="">
-  <div class="slideshow-hint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
+  <div class="slideshow-rail" id="slideshowRail">
+    <div class="slideshow-rail-head">
+      Cliquez : aller à la photo<br>
+      Maj+clic : choisir une plage
+      <div id="slideshowRangeInfo"></div>
+      <button class="slideshow-rail-clear hidden" id="slideshowRangeClear">✕ Effacer la plage</button>
+    </div>
+    <div id="slideshowRailTiles"></div>
+  </div>
+  <div class="slideshow-stage">
+    <img id="slideshowImg" src="" alt="">
+    <div class="slideshow-hint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1136,6 +1187,7 @@ const State = {
   slideshowList: [],
   slideshowIndex: 0,
   slideshowTimer: null,
+  slideshowRange: null, // {start, end} : plage d'indices (dans slideshowList) sur laquelle confiner la lecture — voir bande de miniatures du diaporama
   dirty: false, // true si le CSV a changé depuis la dernière sauvegarde (Drive ou export local)
   catalogFileName: null, // ex: "Catalogue-0001.csv" — attribué à l'ouverture du dossier local
   folderName: null, // nom du dossier choisi via « Choisir un dossier d'images… », sert à nommer Catalogue-xxxx.csv
@@ -3765,7 +3817,9 @@ document.getElementById("btnZoomToggle").addEventListener("click", ()=>{ if(getS
    --------------------------------------------------------------- */
 const slideshowEl = document.getElementById("slideshow");
 const slideshowImg = document.getElementById("slideshowImg");
+const slideshowRailTiles = document.getElementById("slideshowRailTiles");
 let loupeZoom = 1, loupeX=0, loupeY=0, loupeDrag=false, loupeStart={x:0,y:0}, loupeOrigin={x:0,y:0};
+let railLastClickIndex = null; // pour Maj+clic (2e borne de la plage)
 
 function applyLoupeTransform(){
   slideshowImg.style.transform = `translate(${loupeX}px, ${loupeY}px) scale(${loupeZoom})`;
@@ -3774,6 +3828,9 @@ function openLoupe(id){
   State.slideshowMode = "loupe";
   State.slideshowList = activePhotos();
   State.slideshowIndex = State.slideshowList.findIndex(p=>p.id===id);
+  State.slideshowRange = null;
+  railLastClickIndex = null;
+  buildSlideshowRail();
   showSlideshowFrame();
   loupeZoom=1; loupeX=0; loupeY=0; applyLoupeTransform();
   slideshowEl.classList.add("show");
@@ -3782,6 +3839,9 @@ function openDiaporama(id){
   State.slideshowMode = "diaporama";
   State.slideshowList = activePhotos();
   State.slideshowIndex = Math.max(0, State.slideshowList.findIndex(p=>p.id===id));
+  State.slideshowRange = null;
+  railLastClickIndex = null;
+  buildSlideshowRail();
   showSlideshowFrame();
   slideshowEl.classList.add("show");
   clearInterval(State.slideshowTimer);
@@ -3793,10 +3853,20 @@ function showSlideshowFrame(){
   slideshowImg.src = p.dataUrl;
   slideshowImg.style.transform = `rotate(${p.rotation||0}deg)`;
   slideshowImg.style.filter = p.filterCss || "none";
+  updateSlideshowRailHighlight();
 }
 function stepSlideshow(dir){
   if(State.slideshowList.length===0) return;
-  State.slideshowIndex = (State.slideshowIndex + dir + State.slideshowList.length) % State.slideshowList.length;
+  const range = State.slideshowRange;
+  if(range){
+    // La lecture (auto ou flèches) reste confinée à la plage choisie dans la bande de miniatures.
+    const span = range.end - range.start + 1;
+    let rel = State.slideshowIndex - range.start;
+    rel = ((rel + dir) % span + span) % span;
+    State.slideshowIndex = range.start + rel;
+  } else {
+    State.slideshowIndex = (State.slideshowIndex + dir + State.slideshowList.length) % State.slideshowList.length;
+  }
   showSlideshowFrame();
 }
 function closeSlideshow(){
@@ -3804,6 +3874,72 @@ function closeSlideshow(){
   clearInterval(State.slideshowTimer);
   State.slideshowTimer = null;
 }
+/* -----------------------------------------------------------------
+   Bande de miniatures du diaporama : construite une fois à l'ouverture
+   (à partir de State.slideshowList), permet de cliquer pour aller
+   directement à une photo, ou Maj+clic pour délimiter une PLAGE sur
+   laquelle la lecture (auto comme manuelle) reste ensuite confinée.
+   ----------------------------------------------------------------- */
+function buildSlideshowRail(){
+  const list = State.slideshowList;
+  const frag = document.createDocumentFragment();
+  list.forEach((p, idx)=>{
+    const tile = document.createElement("div");
+    tile.className = "slideshow-rail-tile";
+    tile.dataset.index = idx;
+    const img = document.createElement("img");
+    img.src = p.dataUrl;
+    img.loading = "lazy";
+    img.alt = "";
+    tile.appendChild(img);
+    const idxLabel = document.createElement("span");
+    idxLabel.className = "rail-idx";
+    idxLabel.textContent = idx+1;
+    tile.appendChild(idxLabel);
+    frag.appendChild(tile);
+  });
+  slideshowRailTiles.innerHTML = "";
+  slideshowRailTiles.appendChild(frag);
+  updateSlideshowRailHighlight();
+}
+function updateSlideshowRailHighlight(){
+  const range = State.slideshowRange;
+  [...slideshowRailTiles.children].forEach((tile, idx)=>{
+    tile.classList.toggle("current", idx === State.slideshowIndex);
+    tile.classList.toggle("in-range", !!range && idx>=range.start && idx<=range.end);
+  });
+  const current = slideshowRailTiles.children[State.slideshowIndex];
+  if(current) current.scrollIntoView({block:"nearest"});
+  const info = document.getElementById("slideshowRangeInfo");
+  const clearBtn = document.getElementById("slideshowRangeClear");
+  if(range){
+    info.textContent = `Plage : ${range.start+1} à ${range.end+1} (${range.end-range.start+1} photos)`;
+    clearBtn.classList.remove("hidden");
+  } else {
+    info.textContent = "";
+    clearBtn.classList.add("hidden");
+  }
+}
+slideshowRailTiles.addEventListener("click", (e)=>{
+  const tile = e.target.closest(".slideshow-rail-tile");
+  if(!tile) return;
+  const idx = Number(tile.dataset.index);
+  if(e.shiftKey && railLastClickIndex!=null){
+    State.slideshowRange = {start: Math.min(railLastClickIndex, idx), end: Math.max(railLastClickIndex, idx)};
+    if(State.slideshowIndex < State.slideshowRange.start || State.slideshowIndex > State.slideshowRange.end){
+      State.slideshowIndex = State.slideshowRange.start;
+    }
+  } else {
+    State.slideshowIndex = idx;
+    railLastClickIndex = idx;
+  }
+  showSlideshowFrame();
+});
+document.getElementById("slideshowRangeClear").addEventListener("click", ()=>{
+  State.slideshowRange = null;
+  railLastClickIndex = null;
+  updateSlideshowRailHighlight();
+});
 document.addEventListener("keydown", (e)=>{
   if(!slideshowEl.classList.contains("show")) return;
   if(e.key==="Escape") closeSlideshow();
