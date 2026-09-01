@@ -587,12 +587,25 @@ button{font-family:inherit;}
 .slideshow-stage{
   flex:1; min-width:0;
   display:flex; align-items:center; justify-content:center;
-  position:relative; overflow:hidden; /* nécessaire au mode "Équilibré"/"Plein écran" : l'image peut dépasser la scène et doit être rognée proprement */
+  position:relative; overflow:hidden; /* l'image peut dépasser la scène en mode "Équilibré"/"Plein écran" et doit être rognée proprement */
 }
-.slideshow img{max-width:97%; max-height:97%; object-fit:contain; transition:opacity .35s ease;}
-/* Le dimensionnement précis (Ajusté / Équilibré / Plein écran) est calculé en
-   JS (voir applySlideshowImageSizing) : object-fit/max-width ci-dessus ne
-   servent que de filet de sécurité avant le tout premier calcul. */
+/* Dimensionnement (largeur/hauteur) entièrement piloté en JS, voir
+   applySlideshowImageSizing — volontairement AUCUN max-width/max-height ici :
+   ces propriétés annuleraient silencieusement l'agrandissement calculé pour
+   les niveaux "Équilibré"/"Plein écran". Les 2 <img> superposées (A/B)
+   permettent un fondu enchaîné sans flash ni image manquante pendant la
+   transition, façon Google Photos. */
+.slide-img{
+  position:absolute; top:50%; left:50%;
+  transform: translate(-50%,-50%) scale(1.035) rotate(var(--rot, 0deg));
+  opacity:0;
+  display:block;
+  transition: opacity .55s ease, transform .55s ease;
+}
+.slide-img.active{
+  opacity:1; z-index:2;
+  transform: translate(-50%,-50%) scale(1) rotate(var(--rot, 0deg));
+}
 .slideshow-fill-toggle{
   position:absolute; top:14px; right:14px; z-index:5;
   background:rgba(20,20,20,.7); border:1px solid rgba(255,255,255,.25); color:#e8dcc2;
@@ -600,9 +613,9 @@ button{font-family:inherit;}
   backdrop-filter:blur(3px);
 }
 .slideshow-fill-toggle:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
-.slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em;}
+.slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em; z-index:5;}
 
-/* ---------- bande de miniatures du diaporama (choix rapide + plage) ---------- */
+/* ---------- bande de miniatures du diaporama (choix rapide) ---------- */
 .slideshow-rail{
   width:132px; flex-shrink:0; height:100%;
   overflow-y:auto; overflow-x:hidden;
@@ -614,11 +627,6 @@ button{font-family:inherit;}
   color:#cfcfcf; font-size:11px; line-height:1.4; padding:0 2px 6px;
   border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:2px;
 }
-.slideshow-rail-clear{
-  background:none; border:1px solid rgba(255,255,255,.3); color:#e8dcc2;
-  font-size:11px; padding:3px 8px; border-radius:3px; cursor:pointer; margin-top:5px;
-}
-.slideshow-rail-clear:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
 #slideshowRailTiles{display:flex; flex-direction:column; gap:7px;}
 .slideshow-rail-tile{
   position:relative; flex-shrink:0; aspect-ratio:1/1; border-radius:3px; overflow:hidden;
@@ -630,8 +638,6 @@ button{font-family:inherit;}
 }
 .slideshow-rail-tile:hover{border-color:rgba(255,255,255,.4);}
 .slideshow-rail-tile.current{border-color:var(--copper-hi); box-shadow:0 0 0 1px var(--copper-hi);}
-.slideshow-rail-tile.in-range{background:rgba(199,125,59,.35);}
-.slideshow-rail-tile.in-range img{opacity:.85;}
 .slideshow-rail-tile .rail-idx{
   position:absolute; bottom:2px; right:3px; font-size:9px; color:#fff;
   text-shadow:0 1px 2px rgba(0,0,0,.9);
@@ -1099,17 +1105,13 @@ button{font-family:inherit;}
 <!-- ============== DIAPORAMA ============== -->
 <div class="slideshow" id="slideshow">
   <div class="slideshow-rail" id="slideshowRail">
-    <div class="slideshow-rail-head">
-      Cliquez : aller à la photo<br>
-      Maj+clic : choisir une plage
-      <div id="slideshowRangeInfo"></div>
-      <button class="slideshow-rail-clear hidden" id="slideshowRangeClear">✕ Effacer la plage</button>
-    </div>
+    <div class="slideshow-rail-head">Cliquez pour aller à une photo</div>
     <div id="slideshowRailTiles"></div>
   </div>
   <div class="slideshow-stage">
-    <img id="slideshowImg" src="" alt="">
-    <button class="slideshow-fill-toggle" id="slideshowFillToggle" title="Basculer entre image entière (bandes noires possibles) et plein écran (léger recadrage)">⛶ Ajusté</button>
+    <img id="slideshowImgA" class="slide-img" src="" alt="">
+    <img id="slideshowImgB" class="slide-img" src="" alt="">
+    <button class="slideshow-fill-toggle" id="slideshowFillToggle" title="Basculer entre image entière (bandes noires possibles), équilibré et plein écran (léger recadrage)">⛶ Ajusté</button>
     <div class="slideshow-hint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
   </div>
 </div>
@@ -1198,7 +1200,6 @@ const State = {
   slideshowList: [],
   slideshowIndex: 0,
   slideshowTimer: null,
-  slideshowRange: null, // {start, end} : plage d'indices (dans slideshowList) sur laquelle confiner la lecture — voir bande de miniatures du diaporama
   dirty: false, // true si le CSV a changé depuis la dernière sauvegarde (Drive ou export local)
   catalogFileName: null, // ex: "Catalogue-0001.csv" — attribué à l'ouverture du dossier local
   folderName: null, // nom du dossier choisi via « Choisir un dossier d'images… », sert à nommer Catalogue-xxxx.csv
@@ -3827,22 +3828,33 @@ document.getElementById("btnZoomToggle").addEventListener("click", ()=>{ if(getS
    11. Loupe / Diaporama (plein écran)
    --------------------------------------------------------------- */
 const slideshowEl = document.getElementById("slideshow");
-const slideshowImg = document.getElementById("slideshowImg");
+const slideshowImgA = document.getElementById("slideshowImgA");
+const slideshowImgB = document.getElementById("slideshowImgB");
 const slideshowRailTiles = document.getElementById("slideshowRailTiles");
+const slideshowStageEl = document.querySelector(".slideshow-stage");
 let loupeZoom = 1, loupeX=0, loupeY=0, loupeDrag=false, loupeStart={x:0,y:0}, loupeOrigin={x:0,y:0};
-let railLastClickIndex = null; // pour Maj+clic (2e borne de la plage)
+let activeSlideKey = "A"; // image actuellement visible, pour le fondu enchaîné (l'autre reçoit la prochaine photo en arrière-plan)
+function getActiveSlideImg(){ return activeSlideKey==="A" ? slideshowImgA : slideshowImgB; }
+function getInactiveSlideImg(){ return activeSlideKey==="A" ? slideshowImgB : slideshowImgA; }
 
 function applyLoupeTransform(){
-  slideshowImg.style.transform = `translate(${loupeX}px, ${loupeY}px) scale(${loupeZoom})`;
+  const img = getActiveSlideImg();
+  img.style.transform = `translate(-50%,-50%) rotate(${img.dataset.rot||0}deg) translate(${loupeX}px, ${loupeY}px) scale(${loupeZoom})`;
+}
+function resetSlideTransforms(){
+  // Efface tout transform inline laissé par la Loupe (pan/zoom manuel) —
+  // sinon il reste collé sur l'élément <img> et casse le fondu enchaîné du
+  // Diaporama, qui s'appuie sur le transform défini par les classes CSS.
+  slideshowImgA.style.transform = "";
+  slideshowImgB.style.transform = "";
 }
 function openLoupe(id){
   State.slideshowMode = "loupe";
   State.slideshowList = activePhotos();
   State.slideshowIndex = State.slideshowList.findIndex(p=>p.id===id);
-  State.slideshowRange = null;
-  railLastClickIndex = null;
+  resetSlideTransforms();
   buildSlideshowRail();
-  showSlideshowFrame();
+  showSlideshowFrame(true);
   loupeZoom=1; loupeX=0; loupeY=0; applyLoupeTransform();
   slideshowEl.classList.add("show");
 }
@@ -3850,47 +3862,52 @@ function openDiaporama(id){
   State.slideshowMode = "diaporama";
   State.slideshowList = activePhotos();
   State.slideshowIndex = Math.max(0, State.slideshowList.findIndex(p=>p.id===id));
-  State.slideshowRange = null;
-  railLastClickIndex = null;
+  resetSlideTransforms();
   buildSlideshowRail();
-  showSlideshowFrame();
+  showSlideshowFrame(true);
   slideshowEl.classList.add("show");
   clearInterval(State.slideshowTimer);
-  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 3200);
+  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 4200);
 }
-function showSlideshowFrame(){
+/* Affiche la photo courante avec un fondu enchaîné doux (façon Google
+   Photos) : la prochaine image est chargée sur le "tampon" actuellement
+   invisible, puis les deux basculent en même temps (l'ancienne s'efface,
+   la nouvelle apparaît) — jamais de flash ni d'image manquante pendant la
+   transition. instant=true (1er affichage à l'ouverture) fait juste
+   apparaître la photo en fondu depuis le noir, sans image sortante. */
+function showSlideshowFrame(instant){
   const p = State.slideshowList[State.slideshowIndex];
   if(!p) return closeSlideshow();
-  slideshowImg.src = p.dataUrl;
-  slideshowImg.style.transform = `rotate(${p.rotation||0}deg)`;
-  slideshowImg.style.filter = p.filterCss || "none";
+  const incoming = instant ? getActiveSlideImg() : getInactiveSlideImg();
+  const outgoing = instant ? null : getActiveSlideImg();
+  incoming.dataset.rot = p.rotation||0;
+  incoming.style.setProperty("--rot", (p.rotation||0)+"deg");
+  incoming.style.filter = p.filterCss || "none";
+  incoming.onload = ()=>{
+    applySlideshowImageSizing(incoming);
+    incoming.classList.add("active");
+    if(outgoing) outgoing.classList.remove("active");
+    activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
+  };
+  incoming.src = p.dataUrl;
   updateSlideshowRailHighlight();
 }
 function stepSlideshow(dir){
   if(State.slideshowList.length===0) return;
-  const range = State.slideshowRange;
-  if(range){
-    // La lecture (auto ou flèches) reste confinée à la plage choisie dans la bande de miniatures.
-    const span = range.end - range.start + 1;
-    let rel = State.slideshowIndex - range.start;
-    rel = ((rel + dir) % span + span) % span;
-    State.slideshowIndex = range.start + rel;
-  } else {
-    State.slideshowIndex = (State.slideshowIndex + dir + State.slideshowList.length) % State.slideshowList.length;
-  }
+  State.slideshowIndex = (State.slideshowIndex + dir + State.slideshowList.length) % State.slideshowList.length;
   showSlideshowFrame();
 }
 function closeSlideshow(){
   slideshowEl.classList.remove("show");
   clearInterval(State.slideshowTimer);
   State.slideshowTimer = null;
+  slideshowImgA.classList.remove("active");
+  slideshowImgB.classList.remove("active");
+  resetSlideTransforms();
 }
-/* -----------------------------------------------------------------
-   Bande de miniatures du diaporama : construite une fois à l'ouverture
-   (à partir de State.slideshowList), permet de cliquer pour aller
-   directement à une photo, ou Maj+clic pour délimiter une PLAGE sur
-   laquelle la lecture (auto comme manuelle) reste ensuite confinée.
-   ----------------------------------------------------------------- */
+/* Bande de miniatures du diaporama : construite une fois à l'ouverture (à
+   partir de State.slideshowList), permet de cliquer pour aller directement
+   à une photo. */
 function buildSlideshowRail(){
   const list = State.slideshowList;
   const frag = document.createDocumentFragment();
@@ -3911,47 +3928,29 @@ function buildSlideshowRail(){
   });
   slideshowRailTiles.innerHTML = "";
   slideshowRailTiles.appendChild(frag);
-  updateSlideshowRailHighlight();
+  updateSlideshowRailHighlight(true);
 }
-function updateSlideshowRailHighlight(){
-  const range = State.slideshowRange;
+/* autoScroll=false lors d'un clic manuel dans la bande : la vignette cliquée
+   est déjà visible par définition, inutile (et gênant) de faire défiler la
+   liste à ce moment-là — c'est CE défilement automatique systématique qui
+   rendait la sélection difficile ("attirance vers le bas"). On ne fait
+   défiler automatiquement que lors d'une navigation clavier/flèches ou de
+   la lecture automatique, pour garder la photo courante visible. */
+function updateSlideshowRailHighlight(autoScroll){
   [...slideshowRailTiles.children].forEach((tile, idx)=>{
     tile.classList.toggle("current", idx === State.slideshowIndex);
-    tile.classList.toggle("in-range", !!range && idx>=range.start && idx<=range.end);
   });
-  const current = slideshowRailTiles.children[State.slideshowIndex];
-  if(current) current.scrollIntoView({block:"nearest"});
-  const info = document.getElementById("slideshowRangeInfo");
-  const clearBtn = document.getElementById("slideshowRangeClear");
-  if(range){
-    info.textContent = `Plage : ${range.start+1} à ${range.end+1} (${range.end-range.start+1} photos)`;
-    clearBtn.classList.remove("hidden");
-  } else {
-    info.textContent = "";
-    clearBtn.classList.add("hidden");
+  if(autoScroll){
+    const current = slideshowRailTiles.children[State.slideshowIndex];
+    if(current) current.scrollIntoView({block:"nearest"});
   }
 }
 slideshowRailTiles.addEventListener("click", (e)=>{
   const tile = e.target.closest(".slideshow-rail-tile");
   if(!tile) return;
-  const idx = Number(tile.dataset.index);
-  if(e.shiftKey && railLastClickIndex!=null){
-    State.slideshowRange = {start: Math.min(railLastClickIndex, idx), end: Math.max(railLastClickIndex, idx)};
-    if(State.slideshowIndex < State.slideshowRange.start || State.slideshowIndex > State.slideshowRange.end){
-      State.slideshowIndex = State.slideshowRange.start;
-    }
-  } else {
-    State.slideshowIndex = idx;
-    railLastClickIndex = idx;
-  }
+  State.slideshowIndex = Number(tile.dataset.index);
   showSlideshowFrame();
 });
-document.getElementById("slideshowRangeClear").addEventListener("click", ()=>{
-  State.slideshowRange = null;
-  railLastClickIndex = null;
-  updateSlideshowRailHighlight();
-});
-const slideshowStageEl = document.querySelector(".slideshow-stage");
 /* Dimensionnement de la photo dans le diaporama, à 3 niveaux :
    - Ajusté      : équivaut à object-fit:contain (photo entière visible,
                    bandes noires possibles pour un portrait).
@@ -3971,30 +3970,36 @@ const SLIDESHOW_FILL_LEVELS = [
   {key:"fill",     label:"⛶ Plein écran", t:1}
 ];
 let slideshowFillLevelIndex = 0;
-function applySlideshowImageSizing(){
+function applySlideshowImageSizing(img){
+  img = img || getActiveSlideImg();
   const stageW = slideshowStageEl.clientWidth, stageH = slideshowStageEl.clientHeight;
-  const iw = slideshowImg.naturalWidth, ih = slideshowImg.naturalHeight;
+  const iw = img.naturalWidth, ih = img.naturalHeight;
   if(!iw || !ih || !stageW || !stageH) return;
   const containScale = Math.min(stageW/iw, stageH/ih);
   const coverScale = Math.max(stageW/iw, stageH/ih);
   const t = SLIDESHOW_FILL_LEVELS[slideshowFillLevelIndex].t;
   const scale = containScale + t*(coverScale - containScale);
-  slideshowImg.style.width = Math.round(iw*scale) + "px";
-  slideshowImg.style.height = Math.round(ih*scale) + "px";
+  img.style.width = Math.round(iw*scale) + "px";
+  img.style.height = Math.round(ih*scale) + "px";
 }
-slideshowImg.addEventListener("load", applySlideshowImageSizing);
-window.addEventListener("resize", ()=>{ if(slideshowEl.classList.contains("show")) applySlideshowImageSizing(); });
+window.addEventListener("resize", ()=>{
+  if(!slideshowEl.classList.contains("show")) return;
+  applySlideshowImageSizing(slideshowImgA);
+  applySlideshowImageSizing(slideshowImgB);
+});
 function applySlideshowFillMode(){
   const saved = parseInt(localStorage.getItem("imago_slideshow_fill_level"), 10);
   slideshowFillLevelIndex = (saved>=0 && saved<SLIDESHOW_FILL_LEVELS.length) ? saved : 0;
   document.getElementById("slideshowFillToggle").textContent = SLIDESHOW_FILL_LEVELS[slideshowFillLevelIndex].label;
-  applySlideshowImageSizing();
+  applySlideshowImageSizing(slideshowImgA);
+  applySlideshowImageSizing(slideshowImgB);
 }
 document.getElementById("slideshowFillToggle").addEventListener("click", ()=>{
   slideshowFillLevelIndex = (slideshowFillLevelIndex + 1) % SLIDESHOW_FILL_LEVELS.length;
   localStorage.setItem("imago_slideshow_fill_level", slideshowFillLevelIndex);
   document.getElementById("slideshowFillToggle").textContent = SLIDESHOW_FILL_LEVELS[slideshowFillLevelIndex].label;
-  applySlideshowImageSizing();
+  applySlideshowImageSizing(slideshowImgA);
+  applySlideshowImageSizing(slideshowImgB);
 });
 applySlideshowFillMode();
 document.addEventListener("keydown", (e)=>{
@@ -4002,6 +4007,7 @@ document.addEventListener("keydown", (e)=>{
   if(e.key==="Escape") closeSlideshow();
   if(e.key==="ArrowRight") stepSlideshow(1);
   if(e.key==="ArrowLeft") stepSlideshow(-1);
+  if(e.key==="ArrowRight" || e.key==="ArrowLeft") updateSlideshowRailHighlight(true);
 });
 // "Retour" Android -> historique
 window.addEventListener("popstate", ()=>{ if(slideshowEl.classList.contains("show")) closeSlideshow(); });
@@ -4013,11 +4019,13 @@ slideshowEl.addEventListener("wheel", (e)=>{
   loupeZoom = Math.min(5, Math.max(0.5, loupeZoom + (e.deltaY<0?0.15:-0.15)));
   applyLoupeTransform();
 }, {passive:false});
-slideshowImg.addEventListener("mousedown", (e)=>{
-  if(State.slideshowMode!=="loupe") return;
-  loupeDrag = true;
-  loupeStart = {x:e.clientX, y:e.clientY};
-  loupeOrigin = {x:loupeX, y:loupeY};
+[slideshowImgA, slideshowImgB].forEach(img=>{
+  img.addEventListener("mousedown", (e)=>{
+    if(State.slideshowMode!=="loupe") return;
+    loupeDrag = true;
+    loupeStart = {x:e.clientX, y:e.clientY};
+    loupeOrigin = {x:loupeX, y:loupeY};
+  });
 });
 window.addEventListener("mousemove", (e)=>{
   if(!loupeDrag) return;
