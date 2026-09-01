@@ -587,16 +587,12 @@ button{font-family:inherit;}
 .slideshow-stage{
   flex:1; min-width:0;
   display:flex; align-items:center; justify-content:center;
-  position:relative;
+  position:relative; overflow:hidden; /* nécessaire au mode "Équilibré"/"Plein écran" : l'image peut dépasser la scène et doit être rognée proprement */
 }
 .slideshow img{max-width:97%; max-height:97%; object-fit:contain; transition:opacity .35s ease;}
-/* Mode "rempli" : l'image couvre toute la scène (plus de bandes noires),
-   quitte à recadrer légèrement le haut/bas ou les côtés — jamais de
-   déformation (les proportions de l'image restent toujours respectées,
-   object-fit:cover ne fait que rogner, pas étirer). */
-.slideshow-stage.fill-mode img{
-  max-width:100%; max-height:100%; width:100%; height:100%; object-fit:cover;
-}
+/* Le dimensionnement précis (Ajusté / Équilibré / Plein écran) est calculé en
+   JS (voir applySlideshowImageSizing) : object-fit/max-width ci-dessus ne
+   servent que de filet de sécurité avant le tout premier calcul. */
 .slideshow-fill-toggle{
   position:absolute; top:14px; right:14px; z-index:5;
   background:rgba(20,20,20,.7); border:1px solid rgba(255,255,255,.25); color:#e8dcc2;
@@ -3955,20 +3951,50 @@ document.getElementById("slideshowRangeClear").addEventListener("click", ()=>{
   railLastClickIndex = null;
   updateSlideshowRailHighlight();
 });
-/* Bascule "image entière" (bandes noires possibles, aucun recadrage) /
-   "plein écran" (couvre toute la scène, léger recadrage haut/bas ou côtés
-   selon l'orientation — jamais de déformation). Mémorisé pour la prochaine
-   ouverture du diaporama. */
 const slideshowStageEl = document.querySelector(".slideshow-stage");
+/* Dimensionnement de la photo dans le diaporama, à 3 niveaux :
+   - Ajusté      : équivaut à object-fit:contain (photo entière visible,
+                   bandes noires possibles pour un portrait).
+   - Équilibré   : zoom intermédiaire — réduit nettement les bandes noires
+                   sans recadrer trop fort (calcul interpolé, pas une valeur
+                   CSS toute faite : object-fit n'a que contain/cover, rien
+                   entre les deux).
+   - Plein écran : équivaut à object-fit:cover (aucune bande noire, recadrage
+                   maximal). Jamais de déformation dans les 3 cas : seul le
+                   zoom change, les proportions de la photo sont toujours
+                   respectées.
+   Recalculé à chaque changement de photo, de niveau, ou de taille de
+   fenêtre. */
+const SLIDESHOW_FILL_LEVELS = [
+  {key:"fit",      label:"⛶ Ajusté",      t:0},
+  {key:"balanced", label:"⛶ Équilibré",   t:0.5},
+  {key:"fill",     label:"⛶ Plein écran", t:1}
+];
+let slideshowFillLevelIndex = 0;
+function applySlideshowImageSizing(){
+  const stageW = slideshowStageEl.clientWidth, stageH = slideshowStageEl.clientHeight;
+  const iw = slideshowImg.naturalWidth, ih = slideshowImg.naturalHeight;
+  if(!iw || !ih || !stageW || !stageH) return;
+  const containScale = Math.min(stageW/iw, stageH/ih);
+  const coverScale = Math.max(stageW/iw, stageH/ih);
+  const t = SLIDESHOW_FILL_LEVELS[slideshowFillLevelIndex].t;
+  const scale = containScale + t*(coverScale - containScale);
+  slideshowImg.style.width = Math.round(iw*scale) + "px";
+  slideshowImg.style.height = Math.round(ih*scale) + "px";
+}
+slideshowImg.addEventListener("load", applySlideshowImageSizing);
+window.addEventListener("resize", ()=>{ if(slideshowEl.classList.contains("show")) applySlideshowImageSizing(); });
 function applySlideshowFillMode(){
-  const on = localStorage.getItem("imago_slideshow_fill") === "1";
-  slideshowStageEl.classList.toggle("fill-mode", on);
-  document.getElementById("slideshowFillToggle").textContent = on ? "⛶ Plein écran" : "⛶ Ajusté";
+  const saved = parseInt(localStorage.getItem("imago_slideshow_fill_level"), 10);
+  slideshowFillLevelIndex = (saved>=0 && saved<SLIDESHOW_FILL_LEVELS.length) ? saved : 0;
+  document.getElementById("slideshowFillToggle").textContent = SLIDESHOW_FILL_LEVELS[slideshowFillLevelIndex].label;
+  applySlideshowImageSizing();
 }
 document.getElementById("slideshowFillToggle").addEventListener("click", ()=>{
-  const on = localStorage.getItem("imago_slideshow_fill") === "1";
-  localStorage.setItem("imago_slideshow_fill", on ? "0" : "1");
-  applySlideshowFillMode();
+  slideshowFillLevelIndex = (slideshowFillLevelIndex + 1) % SLIDESHOW_FILL_LEVELS.length;
+  localStorage.setItem("imago_slideshow_fill_level", slideshowFillLevelIndex);
+  document.getElementById("slideshowFillToggle").textContent = SLIDESHOW_FILL_LEVELS[slideshowFillLevelIndex].label;
+  applySlideshowImageSizing();
 });
 applySlideshowFillMode();
 document.addEventListener("keydown", (e)=>{
