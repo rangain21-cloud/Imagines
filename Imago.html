@@ -590,6 +590,20 @@ button{font-family:inherit;}
   position:relative;
 }
 .slideshow img{max-width:97%; max-height:97%; object-fit:contain; transition:opacity .35s ease;}
+/* Mode "rempli" : l'image couvre toute la scène (plus de bandes noires),
+   quitte à recadrer légèrement le haut/bas ou les côtés — jamais de
+   déformation (les proportions de l'image restent toujours respectées,
+   object-fit:cover ne fait que rogner, pas étirer). */
+.slideshow-stage.fill-mode img{
+  max-width:100%; max-height:100%; width:100%; height:100%; object-fit:cover;
+}
+.slideshow-fill-toggle{
+  position:absolute; top:14px; right:14px; z-index:5;
+  background:rgba(20,20,20,.7); border:1px solid rgba(255,255,255,.25); color:#e8dcc2;
+  font-size:12px; padding:6px 12px; border-radius:20px; cursor:pointer;
+  backdrop-filter:blur(3px);
+}
+.slideshow-fill-toggle:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
 .slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em;}
 
 /* ---------- bande de miniatures du diaporama (choix rapide + plage) ---------- */
@@ -1099,6 +1113,7 @@ button{font-family:inherit;}
   </div>
   <div class="slideshow-stage">
     <img id="slideshowImg" src="" alt="">
+    <button class="slideshow-fill-toggle" id="slideshowFillToggle" title="Basculer entre image entière (bandes noires possibles) et plein écran (léger recadrage)">⛶ Ajusté</button>
     <div class="slideshow-hint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
   </div>
 </div>
@@ -3940,6 +3955,22 @@ document.getElementById("slideshowRangeClear").addEventListener("click", ()=>{
   railLastClickIndex = null;
   updateSlideshowRailHighlight();
 });
+/* Bascule "image entière" (bandes noires possibles, aucun recadrage) /
+   "plein écran" (couvre toute la scène, léger recadrage haut/bas ou côtés
+   selon l'orientation — jamais de déformation). Mémorisé pour la prochaine
+   ouverture du diaporama. */
+const slideshowStageEl = document.querySelector(".slideshow-stage");
+function applySlideshowFillMode(){
+  const on = localStorage.getItem("imago_slideshow_fill") === "1";
+  slideshowStageEl.classList.toggle("fill-mode", on);
+  document.getElementById("slideshowFillToggle").textContent = on ? "⛶ Plein écran" : "⛶ Ajusté";
+}
+document.getElementById("slideshowFillToggle").addEventListener("click", ()=>{
+  const on = localStorage.getItem("imago_slideshow_fill") === "1";
+  localStorage.setItem("imago_slideshow_fill", on ? "0" : "1");
+  applySlideshowFillMode();
+});
+applySlideshowFillMode();
 document.addEventListener("keydown", (e)=>{
   if(!slideshowEl.classList.contains("show")) return;
   if(e.key==="Escape") closeSlideshow();
