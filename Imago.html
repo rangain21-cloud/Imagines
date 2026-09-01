@@ -606,6 +606,14 @@ button{font-family:inherit;}
   opacity:1; z-index:2;
   transform: translate(-50%,-50%) scale(1) rotate(var(--rot, 0deg));
 }
+/* Sortie : l'image qui s'efface s'élargit nettement plus (façon Google
+   Photos) que la légère approche de l'image entrante — donne une
+   impression de "traversée"/poussée vers l'avant plutôt qu'un simple
+   fondu statique. Classe retirée juste après la transition (voir JS) pour
+   que l'image reparte de l'état "entrant" (scale 1.035) la prochaine fois. */
+.slide-img.exiting{
+  transform: translate(-50%,-50%) scale(1.22) rotate(var(--rot, 0deg));
+}
 .slideshow-fill-toggle{
   position:absolute; top:14px; right:14px; z-index:5;
   background:rgba(20,20,20,.7); border:1px solid rgba(255,255,255,.25); color:#e8dcc2;
@@ -3885,8 +3893,13 @@ function showSlideshowFrame(instant){
   incoming.style.filter = p.filterCss || "none";
   incoming.onload = ()=>{
     applySlideshowImageSizing(incoming);
+    incoming.classList.remove("exiting");
     incoming.classList.add("active");
-    if(outgoing) outgoing.classList.remove("active");
+    if(outgoing){
+      outgoing.classList.remove("active");
+      outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
+      setTimeout(()=> outgoing.classList.remove("exiting"), 650); // nettoyage après la transition (.55s + marge), pour repartir de l'état "entrant" la prochaine fois
+    }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
   };
   incoming.src = p.dataUrl;
@@ -3901,8 +3914,8 @@ function closeSlideshow(){
   slideshowEl.classList.remove("show");
   clearInterval(State.slideshowTimer);
   State.slideshowTimer = null;
-  slideshowImgA.classList.remove("active");
-  slideshowImgB.classList.remove("active");
+  slideshowImgA.classList.remove("active", "exiting");
+  slideshowImgB.classList.remove("active", "exiting");
   resetSlideTransforms();
 }
 /* Bande de miniatures du diaporama : construite une fois à l'ouverture (à
