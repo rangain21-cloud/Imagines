@@ -376,6 +376,16 @@ button{font-family:inherit;}
 }
 .gallery-screen.select-mode .gallery-tile .gallery-select-mark{display:flex;}
 .gallery-tile.selected{border-color:var(--copper); box-shadow:0 0 0 2px var(--copper) inset;}
+/* Brève mise en évidence de la vignette qu'on retrouve au retour de
+   viewer-stage (voir scrollGalleryToTile) — pulsation qui s'estompe seule. */
+.gallery-tile.just-focused{
+  animation: gallery-focus-pulse 1.7s ease-out;
+}
+@keyframes gallery-focus-pulse{
+  0%   { box-shadow:0 0 0 4px var(--copper-hi); }
+  70%  { box-shadow:0 0 0 4px var(--copper-hi); }
+  100% { box-shadow:0 0 0 0 transparent; }
+}
 .gallery-tile.selected::after{
   content:""; position:absolute; inset:0; background:rgba(199,125,59,.22); pointer-events:none;
 }
@@ -1477,7 +1487,7 @@ function scheduleGalleryBackgroundFill(grid, rest, offset, token){
   if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
   else setTimeout(step, 0);
 }
-function renderGallery(){
+function renderGallery(focusId){
   const list = galleryPhotos();
   const grid = document.getElementById("galleryGrid");
   const empty = document.getElementById("galleryEmpty");
@@ -1494,14 +1504,33 @@ function renderGallery(){
   empty.classList.add("hidden");
   // 1) Les GALLERY_INITIAL_BATCH images les plus récentes sont affichées
   //    tout de suite, pour un premier écran instantané même avec un
-  //    catalogue de plusieurs centaines de photos.
-  const firstBatch = list.slice(0, GALLERY_INITIAL_BATCH);
+  //    catalogue de plusieurs centaines de photos — étendu si besoin pour
+  //    couvrir la photo à mettre en évidence (focusId), même si elle se
+  //    trouve plus loin dans le tri, afin de pouvoir y défiler sans
+  //    attendre le remplissage progressif en arrière-plan.
+  const focusIndex = focusId ? list.findIndex(p=>p.id===focusId) : -1;
+  const initialCount = focusIndex>=0 ? Math.max(GALLERY_INITIAL_BATCH, focusIndex+1) : GALLERY_INITIAL_BATCH;
+  const firstBatch = list.slice(0, initialCount);
   appendGalleryTiles(grid, firstBatch);
   // 2) Le reste est chargé en arrière-plan, par petits paquets, sans
   //    bloquer l'interface ; il s'arrête net si la galerie est redessinée
   //    avant la fin (nouveau dossier chargé, etc.).
-  const rest = list.slice(GALLERY_INITIAL_BATCH);
+  const rest = list.slice(initialCount);
   if(rest.length) scheduleGalleryBackgroundFill(grid, rest, 0, myToken);
+  if(focusIndex>=0) scrollGalleryToTile(focusId);
+}
+/* Centre la vignette d'une photo dans la planche-contact et la met
+   brièvement en surbrillance, pour que l'utilisateur la repère
+   immédiatement (typiquement : la photo qu'il vient de quitter dans
+   viewer-stage via "Retour galerie"). */
+function scrollGalleryToTile(id){
+  requestAnimationFrame(()=>{
+    const tile = document.querySelector(`#galleryGrid .gallery-tile[data-id="${CSS.escape(id)}"]`);
+    if(!tile) return;
+    tile.scrollIntoView({block:"center"});
+    tile.classList.add("just-focused");
+    setTimeout(()=> tile.classList.remove("just-focused"), 1700);
+  });
 }
 document.getElementById("galleryGrid").addEventListener("click", (e)=>{
   const tile = e.target.closest(".gallery-tile");
@@ -1556,8 +1585,8 @@ document.getElementById("btnGalleryShareSelection").addEventListener("click", ()
   if(photos.length===0) return;
   openShareModal(photos);
 });
-function openGallery(){
-  renderGallery();
+function openGallery(focusId){
+  renderGallery(focusId);
   document.getElementById("galleryScreen").classList.remove("hidden");
 }
 function closeGallery(){
@@ -1567,7 +1596,7 @@ function closeGallery(){
 document.getElementById("galleryToggle").addEventListener("click", openGallery);
 document.getElementById("btnBackToGallery").addEventListener("click", ()=>{
   resetFilters(); // "Retour galerie" doit repartir d'une planche-contact non filtrée
-  openGallery();
+  openGallery(State.selectedId); // centre et surligne la photo qu'on vient de quitter
 });
 
 function escapeHtml(s){
