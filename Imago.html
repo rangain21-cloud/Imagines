@@ -602,9 +602,10 @@ button{font-family:inherit;}
   display:block;
   /* Le fondu (opacité) est nettement RETARDÉ par rapport à l'agrandissement
      (transform) : l'agrandissement se termine vite (.45s), puis l'image
-     reste figée, opaque et sans bande noire pendant un plateau de .45s,
-     avant un long fondu croisé final de 2s vers la photo suivante. */
-  transition: opacity 2s ease .9s, transform .45s ease;
+     reste figée, opaque et sans bande noire pendant un plateau de .9s
+     (doublé), avant un long fondu croisé final de 2s vers la photo
+     suivante. */
+  transition: opacity 2s ease 1.35s, transform .45s ease;
 }
 .slide-img.active{
   opacity:1; z-index:2;
@@ -3884,7 +3885,7 @@ function openDiaporama(id){
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
   clearInterval(State.slideshowTimer);
-  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 5600); // laisse une pause confortable après la transition, désormais plus longue (≈2,9s)
+  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 6100); // laisse une pause confortable après la transition, désormais plus longue (≈3,35s)
 }
 /* Affiche la photo courante avec un fondu enchaîné doux (façon Google
    Photos) : la prochaine image est chargée sur le "tampon" actuellement
@@ -3926,7 +3927,7 @@ function showSlideshowFrame(instant){
       outgoing.style.setProperty("--exit-scale", computeExitScale(outgoing));
       outgoing.classList.remove("active");
       outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
-      setTimeout(()=> outgoing.classList.remove("exiting"), 3000); // nettoyage après la transition complète (agrandissement + plateau + fondu ≈2,9s), pour repartir de l'état "entrant" la prochaine fois
+      setTimeout(()=> outgoing.classList.remove("exiting"), 3500); // nettoyage après la transition complète (agrandissement + plateau + fondu ≈3,35s), pour repartir de l'état "entrant" la prochaine fois
     }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
   };
