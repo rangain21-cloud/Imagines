@@ -620,11 +620,11 @@ button{font-family:inherit;}
   opacity:0;
   display:block;
   /* Le fondu (opacité) est nettement RETARDÉ par rapport à l'agrandissement
-     (transform) : l'agrandissement se termine vite (.45s), puis l'image
-     reste figée, opaque et sans bande noire pendant un plateau de 5s (même
-     durée que l'affichage normal en petit cadre), avant un long fondu
-     croisé final de 2s vers la photo suivante. */
-  transition: opacity 2s ease 5.45s, transform .45s ease;
+     (transform) : l'agrandissement se termine vite (.45s, inclus dans le
+     plateau ci-dessous), puis l'image reste figée, opaque et sans bande
+     noire pendant un plateau de 3s, avant un fondu croisé final de 4s vers
+     la photo suivante — soit 7s au total par photo. */
+  transition: opacity 4s ease 3s, transform .45s ease;
 }
 .slide-img.active{
   opacity:1; z-index:2;
@@ -4016,7 +4016,7 @@ function openDiaporama(id){
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
   clearInterval(State.slideshowTimer);
-  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 12500); // laisse ~5s d'affichage normal après la transition, désormais bien plus longue (≈7,45s)
+  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 7000); // 7s par photo (plateau 3s + fondu 4s)
 }
 /* Affiche la photo courante avec un fondu enchaîné doux (façon Google
    Photos) : la prochaine image est chargée sur le "tampon" actuellement
@@ -4058,7 +4058,7 @@ function showSlideshowFrame(instant){
       outgoing.style.setProperty("--exit-scale", computeExitScale(outgoing));
       outgoing.classList.remove("active");
       outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
-      setTimeout(()=> outgoing.classList.remove("exiting"), 7600); // nettoyage après la transition complète (agrandissement + plateau 5s + fondu ≈7,45s), pour repartir de l'état "entrant" la prochaine fois
+      setTimeout(()=> outgoing.classList.remove("exiting"), 7300); // nettoyage après la transition complète (plateau 3s + fondu 4s = 7s), pour repartir de l'état "entrant" la prochaine fois
     }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
   };
