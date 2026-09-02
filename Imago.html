@@ -609,10 +609,16 @@ button{font-family:inherit;}
 /* Sortie : l'image qui s'efface s'élargit nettement plus (façon Google
    Photos) que la légère approche de l'image entrante — donne une
    impression de "traversée"/poussée vers l'avant plutôt qu'un simple
-   fondu statique. Classe retirée juste après la transition (voir JS) pour
-   que l'image reparte de l'état "entrant" (scale 1.035) la prochaine fois. */
+   fondu statique. Le fondu (opacité) est volontairement RETARDÉ par
+   rapport à l'agrandissement (transform) : sans ce décalage, l'image
+   devient déjà trop transparente au moment où l'agrandissement devient
+   perceptible, et l'effet passe inaperçu. Classe retirée juste après la
+   transition (voir JS) pour repartir de l'état "entrant" (scale 1.035) la
+   prochaine fois. */
 .slide-img.exiting{
   transform: translate(-50%,-50%) scale(1.22) rotate(var(--rot, 0deg));
+  transition: opacity .38s ease .17s, transform .55s ease;
+  z-index:1; /* reste visible sous l'image entrante, qui elle-même met un peu de temps à devenir opaque (fondu croisé) */
 }
 .slideshow-fill-toggle{
   position:absolute; top:14px; right:14px; z-index:5;
