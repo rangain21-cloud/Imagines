@@ -185,6 +185,12 @@ button{font-family:inherit;}
   user-select:none;
   -webkit-user-drag:none;
 }
+#viewerVideo{
+  display:block;
+  max-width:94vw; max-height:80vh;
+  box-shadow:0 12px 34px rgba(0,0,0,.5);
+  border-radius:2px;
+}
 .viewer-fav-mark{
   position:absolute; top:10px; right:10px; z-index:3;
   font-size:22px; color:var(--copper); text-shadow:0 2px 6px rgba(0,0,0,.6);
@@ -365,6 +371,19 @@ button{font-family:inherit;}
 .gallery-tile .gallery-fav{
   position:absolute; top:6px; right:6px; color:var(--copper); font-size:14px;
   text-shadow:0 1px 4px rgba(0,0,0,.7);
+}
+/* ---------- vignette vidéo (icône lecture + durée) ---------- */
+.gallery-video-play{
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  width:38px; height:38px; border-radius:50%;
+  background:rgba(16,27,22,.6); color:#fff; font-size:15px;
+  display:flex; align-items:center; justify-content:center;
+  text-shadow:0 1px 3px rgba(0,0,0,.6); pointer-events:none;
+}
+.gallery-video-duration{
+  position:absolute; bottom:6px; right:6px; z-index:2;
+  background:rgba(0,0,0,.65); color:#fff; font-size:10px;
+  padding:1px 5px; border-radius:3px; pointer-events:none;
 }
 /* ---------- sélection multiple (galerie) ---------- */
 .gallery-tile .gallery-select-mark{
@@ -788,6 +807,7 @@ button{font-family:inherit;}
         <div class="viewer-stage" id="viewerStage">
           <div class="viewer-fav-mark" id="viewerFavMark">★</div>
           <img id="viewerImg" src="" alt="">
+          <video id="viewerVideo" class="hidden" controls playsinline></video>
           <div class="viewer-missing hidden" id="viewerMissing">
             📷 Image non disponible sur cet appareil
             <div class="sub">Ce catalogue a été chargé depuis Drive (métadonnées uniquement) ; le fichier image lui-même n'a jamais été importé ici. Utilisez « Choisir un dossier d'images… » pour l'ajouter, ou consultez-le sur l'appareil où il a été importé.</div>
@@ -1087,7 +1107,7 @@ button{font-family:inherit;}
     <div class="modal-body">
       <div class="field-row">
         <label for="neFile">Image</label>
-        <input type="file" id="neFile" accept="image/*">
+        <input type="file" id="neFile" accept="image/*,video/mp4">
       </div>
       <div class="field-grid">
         <div class="field-row"><label for="neDate">Date cliché</label><input type="date" id="neDate"></div>
@@ -1191,6 +1211,15 @@ async function idbDelete(store, key){
   return new Promise((res, rej)=>{
     const tx = db.transaction(store, "readwrite");
     tx.objectStore(store).delete(key);
+    tx.oncomplete = ()=> res(true);
+    tx.onerror = ()=> rej(tx.error);
+  });
+}
+async function idbClear(store){
+  const db = await openDB();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).clear();
     tx.oncomplete = ()=> res(true);
     tx.onerror = ()=> rej(tx.error);
   });
@@ -1455,12 +1484,23 @@ function renderGrid(){
   document.getElementById("resultCount").textContent = `Image ${idx+1} sur ${list.length}`;
 
   const img = document.getElementById("viewerImg");
+  const video = document.getElementById("viewerVideo");
   const missing = document.getElementById("viewerMissing");
-  if(p.dataUrl){
+  video.pause();
+  if(p.isVideo){
+    img.classList.add("hidden");
+    video.classList.remove("hidden");
+    missing.classList.add("hidden");
+    if(video.dataset.currentId !== p.id){ video.src = p.dataUrl || ""; video.dataset.currentId = p.id; }
+  } else if(p.dataUrl){
+    video.classList.add("hidden");
+    video.removeAttribute("src");
+    delete video.dataset.currentId;
     img.classList.remove("hidden");
     missing.classList.add("hidden");
     img.src = p.dataUrl;
   } else {
+    video.classList.add("hidden");
     img.classList.add("hidden");
     missing.classList.remove("hidden");
     img.removeAttribute("src");
@@ -1528,7 +1568,23 @@ function buildGalleryTile(p){
     fav.textContent = "★";
     tile.appendChild(fav);
   }
-  if(p.dataUrl){
+  if(p.isVideo){
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = p.fileName || "";
+    img.src = p.posterDataUrl || "";
+    tile.appendChild(img);
+    const play = document.createElement("span");
+    play.className = "gallery-video-play";
+    play.textContent = "▶";
+    tile.appendChild(play);
+    if(p.durationSec){
+      const dur = document.createElement("span");
+      dur.className = "gallery-video-duration";
+      dur.textContent = formatDuration(p.durationSec);
+      tile.appendChild(dur);
+    }
+  } else if(p.dataUrl){
     const img = document.createElement("img");
     img.loading = "lazy";
     img.alt = p.fileName || "";
@@ -1825,6 +1881,7 @@ function estimateFileDate(file, existingRow){
 async function importOneFile(file, csvRowByFileName, stats){
   if(State.photos.find(p=>p.fileName===file.name)) return; // doublon dans la sélection elle-même
   try{
+    const isVideo = isVideoFile(file);
     // Sur Android, un fichier "vu" dans le sélecteur de dossier peut ne pas
     // être réellement lisible (ex. photo Google Photos non téléchargée sur
     // l'appareil, permission révoquée entre-temps…) : la lecture échoue
@@ -1832,9 +1889,15 @@ async function importOneFile(file, csvRowByFileName, stats){
     // interrompre le traitement des autres à cause d'une seule image en
     // défaut — sans ce try/catch, une erreur au 1er fichier annulait
     // silencieusement tout l'import et laissait le 1er écran vide.
-    const dataUrl = await readFileAsDataURLWithHeicSupport(file, stats);
-    const dims = await getImageDimensions(dataUrl);
-    const exif = await readBasicExif(file);
+    const dataUrl = isVideo ? await readFileAsDataURL(file) : await readFileAsDataURLWithHeicSupport(file, stats);
+    let dims, exif = null, videoMeta = null;
+    if(isVideo){
+      videoMeta = await getVideoMeta(dataUrl);
+      dims = {width: videoMeta.width, height: videoMeta.height};
+    } else {
+      dims = await getImageDimensions(dataUrl);
+      exif = await readBasicExif(file);
+    }
     const existingRow = csvRowByFileName.get(file.name);
 
     let rec;
@@ -1842,6 +1905,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
       rec = {
         id: uid("ph"), fileName: file.name, dataUrl,
+        isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         titre: existingRow.titre || "",
         dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
         personnage: existingRow.personnage || "",
@@ -1875,6 +1939,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       const personnage = meta.personnage;
       rec = {
         id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl, dateAchat,
+        isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
         favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
         sizeBytes: file.size, width:dims.width, height:dims.height, exif,
@@ -1971,8 +2036,21 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
 async function handleFilesSelected(fileList, folderNameOverride){
   const myImportToken = ++importToken;
   const allFiles = [...fileList];
-  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(f.name));
+  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
+  // Nettoyage préalable : que ce soit via "Choisir un dossier d'images…" ou
+  // "Sélectionner des images", chaque nouvel import repart d'une planche-
+  // contact et d'un visualiseur VIERGES — pour éviter toute confusion entre
+  // d'anciennes photos déjà affichées dans cette session et celles du
+  // nouvel import, plutôt que de les accumuler silencieusement ensemble.
+  if(State.photos.length){
+    await idbClear("photos");
+    State.photos = [];
+    State.selectedId = null;
+    State.viewIndex = 0;
+    renderGrid();
+    if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+  }
   const folderName = folderNameOverride || (files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier");
   State.folderName = folderName;
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
@@ -2070,7 +2148,7 @@ folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.file
    refusé). Le filtre reste donc volontairement restreint aux images. */
 const filePickerInput = document.createElement("input");
 filePickerInput.type = "file";
-filePickerInput.accept = "image/*";
+filePickerInput.accept = "image/*,video/mp4"; // Photo Picker Android reste déclenché (image/vidéo purs) contrairement à un type générique ajouté par le passé, qui avait cassé la lecture — voir note ci-dessus
 filePickerInput.multiple = true;
 filePickerInput.className = "hidden";
 document.body.appendChild(filePickerInput);
@@ -2232,6 +2310,58 @@ function getImageDimensions(dataUrl){
     img.onerror = ()=> resolve({width:0, height:0});
     img.src = dataUrl;
   });
+}
+/* -----------------------------------------------------------------
+   Prise en charge des vidéos MP4 : contrairement aux photos, une vidéo n'a
+   ni EXIF ni dimensions immédiatement disponibles — il faut charger un
+   <video> hors-écran, attendre ses métadonnées, puis capturer une image
+   (vignette) à un instant T pour avoir un aperçu utilisable dans la
+   galerie/le visualiseur (une balise <img> ne peut pas afficher une vidéo).
+   ----------------------------------------------------------------- */
+function isVideoFile(file){
+  return /^video\/mp4/i.test(file.type||"") || /\.mp4$/i.test(file.name||"");
+}
+function getVideoMeta(dataUrl){
+  return new Promise((resolve)=>{
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    v.playsInline = true;
+    let settled = false;
+    const finish = (result)=>{ if(!settled){ settled = true; resolve(result); } };
+    v.onloadedmetadata = ()=>{
+      // Se positionne un peu après le tout début (plutôt qu'à 0s) pour
+      // éviter une vignette souvent noire ou floue (fondu d'ouverture,
+      // mise au point pas encore faite…).
+      try{ v.currentTime = Math.min(0.4, (v.duration||1)/8); }
+      catch(e){ finish({width:v.videoWidth||0, height:v.videoHeight||0, duration:v.duration||0, poster:null}); }
+    };
+    v.onseeked = ()=>{
+      try{
+        const canvas = document.createElement("canvas");
+        canvas.width = v.videoWidth || 640;
+        canvas.height = v.videoHeight || 360;
+        canvas.getContext("2d").drawImage(v, 0, 0, canvas.width, canvas.height);
+        finish({width:v.videoWidth||0, height:v.videoHeight||0, duration:v.duration||0, poster:canvas.toDataURL("image/jpeg", 0.75)});
+      }catch(e){
+        // Capture impossible (ex. restrictions CORS sur certains navigateurs
+        // pour les data: URL vidéo) : on garde au moins les dimensions/durée.
+        finish({width:v.videoWidth||0, height:v.videoHeight||0, duration:v.duration||0, poster:null});
+      }
+    };
+    v.onerror = ()=> finish({width:0, height:0, duration:0, poster:null});
+    // Filet de sécurité : fichier corrompu ou format non décodable par ce
+    // navigateur — n'attend jamais indéfiniment.
+    setTimeout(()=> finish({width:v.videoWidth||0, height:v.videoHeight||0, duration:v.duration||0, poster:null}), 4000);
+    v.src = dataUrl;
+  });
+}
+/* Icône ▶ discrète superposée à la vignette d'une vidéo (galerie, bande du
+   diaporama…), avec la durée si connue. */
+function formatDuration(sec){
+  sec = Math.round(sec||0);
+  const m = Math.floor(sec/60), s = sec%60;
+  return `${m}:${String(s).padStart(2,"0")}`;
 }
 
 /* -----------------------------------------------------------------
@@ -2824,6 +2954,7 @@ const viewerImg = document.getElementById("viewerImg");
 function applyViewerZoom(){
   const p = getSelected();
   if(!p) return;
+  if(p.isVideo) return; // la vidéo se dimensionne via CSS (#viewerVideo), pas par ce zoom JS pensé pour les photos
   const cw = viewerScroll.clientWidth, ch = viewerScroll.clientHeight;
   // Priorité aux dimensions RÉELLES du bitmap déjà chargé (viewerImg.naturalWidth/
   // Height) plutôt qu'aux dimensions mémorisées en base (p.width/p.height) :
@@ -4217,15 +4348,23 @@ document.getElementById("neFile").addEventListener("change", async (e)=>{
 });
 document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   const fileInput = document.getElementById("neFile");
-  if(!fileInput.files[0]) return toast("Choisissez une image.");
+  if(!fileInput.files[0]) return toast("Choisissez une image ou une vidéo.");
   const file = fileInput.files[0];
-  const dataUrl = await readFileAsDataURLWithHeicSupport(file);
-  const dims = await getImageDimensions(dataUrl);
-  const exif = await readBasicExif(file);
+  const isVideo = isVideoFile(file);
+  const dataUrl = isVideo ? await readFileAsDataURL(file) : await readFileAsDataURLWithHeicSupport(file);
+  let dims, exif = null, videoMeta = null;
+  if(isVideo){
+    videoMeta = await getVideoMeta(dataUrl);
+    dims = {width: videoMeta.width, height: videoMeta.height};
+  } else {
+    dims = await getImageDimensions(dataUrl);
+    exif = await readBasicExif(file);
+  }
   const lieu = document.getElementById("neLieu").value.trim();
   const personnage = document.getElementById("nePersonnage").value.trim();
   const rec = {
     id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl,
+    isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
     dateAchat: document.getElementById("neDate").value || new Date().toISOString().slice(0,10),
     personnage,
     lieu,
@@ -4244,7 +4383,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   populateFilterOptions();
   renderGrid();
   closeModal("modalNewEntry");
-  toast("Nouvelle entrée ajoutée au catalogue.");
+  toast(isVideo ? "Nouvelle vidéo ajoutée au catalogue." : "Nouvelle entrée ajoutée au catalogue.");
   autoBuildCsv();
 });
 
