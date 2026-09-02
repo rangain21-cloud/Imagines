@@ -616,7 +616,7 @@ button{font-family:inherit;}
    transition (voir JS) pour repartir de l'état "entrant" (scale 1.035) la
    prochaine fois. */
 .slide-img.exiting{
-  transform: translate(-50%,-50%) scale(1.22) rotate(var(--rot, 0deg));
+  transform: translate(-50%,-50%) scale(var(--exit-scale, 1.22)) rotate(var(--rot, 0deg));
   transition: opacity .38s ease .17s, transform .55s ease;
   z-index:1; /* reste visible sous l'image entrante, qui elle-même met un peu de temps à devenir opaque (fondu croisé) */
 }
@@ -3889,6 +3889,23 @@ function openDiaporama(id){
    la nouvelle apparaît) — jamais de flash ni d'image manquante pendant la
    transition. instant=true (1er affichage à l'ouverture) fait juste
    apparaître la photo en fondu depuis le noir, sans image sortante. */
+/* Calcule, pour une image en train de sortir, l'agrandissement nécessaire
+   pour qu'elle finisse par couvrir TOUT le cadre pendant sa disparition —
+   sans ça, un multiplicateur fixe laisserait des bandes noires résiduelles
+   pour une photo portrait (elle grossirait proportionnellement, mais
+   garderait ses bandes). On compare sa taille actuellement affichée (déjà
+   ajustée selon le niveau Ajusté/Équilibré/Plein écran) à la taille qu'il
+   lui faudrait en mode "Plein écran" (object-fit:cover) pour ce cadre. */
+function computeExitScale(img){
+  const stageW = slideshowStageEl.clientWidth, stageH = slideshowStageEl.clientHeight;
+  const iw = img.naturalWidth, ih = img.naturalHeight;
+  const currentW = parseFloat(img.style.width);
+  if(!iw || !ih || !stageW || !stageH || !currentW) return 1.22; // repli si dimensions indisponibles
+  const coverScale = Math.max(stageW/iw, stageH/ih);
+  const currentScale = currentW / iw;
+  const needed = coverScale / currentScale;
+  return Math.max(1.08, Math.min(1.6, needed)); // borné : toujours un peu de mouvement, jamais un saut brutal
+}
 function showSlideshowFrame(instant){
   const p = State.slideshowList[State.slideshowIndex];
   if(!p) return closeSlideshow();
@@ -3902,6 +3919,7 @@ function showSlideshowFrame(instant){
     incoming.classList.remove("exiting");
     incoming.classList.add("active");
     if(outgoing){
+      outgoing.style.setProperty("--exit-scale", computeExitScale(outgoing));
       outgoing.classList.remove("active");
       outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
       setTimeout(()=> outgoing.classList.remove("exiting"), 650); // nettoyage après la transition (.55s + marge), pour repartir de l'état "entrant" la prochaine fois
