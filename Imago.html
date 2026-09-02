@@ -600,24 +600,27 @@ button{font-family:inherit;}
   transform: translate(-50%,-50%) scale(1.035) rotate(var(--rot, 0deg));
   opacity:0;
   display:block;
-  transition: opacity .55s ease, transform .55s ease;
+  /* Le fondu (opacité) est nettement RETARDÉ par rapport à l'agrandissement
+     (transform) : l'agrandissement se termine vite (.45s), puis l'image
+     reste figée, opaque et sans bande noire pendant un plateau de .45s,
+     avant un long fondu croisé final de 2s vers la photo suivante. */
+  transition: opacity 2s ease .9s, transform .45s ease;
 }
 .slide-img.active{
   opacity:1; z-index:2;
   transform: translate(-50%,-50%) scale(1) rotate(var(--rot, 0deg));
 }
+/* Ouverture du diaporama (1ère photo) : pas de délai, on veut la voir vite. */
+.slide-img.instant{
+  transition: opacity .5s ease, transform .5s ease;
+}
 /* Sortie : l'image qui s'efface s'élargit nettement plus (façon Google
    Photos) que la légère approche de l'image entrante — donne une
    impression de "traversée"/poussée vers l'avant plutôt qu'un simple
-   fondu statique. Le fondu (opacité) est volontairement RETARDÉ par
-   rapport à l'agrandissement (transform) : sans ce décalage, l'image
-   devient déjà trop transparente au moment où l'agrandissement devient
-   perceptible, et l'effet passe inaperçu. Classe retirée juste après la
-   transition (voir JS) pour repartir de l'état "entrant" (scale 1.035) la
-   prochaine fois. */
+   fondu statique. Classe retirée juste après la transition (voir JS) pour
+   repartir de l'état "entrant" (scale 1.035) la prochaine fois. */
 .slide-img.exiting{
   transform: translate(-50%,-50%) scale(var(--exit-scale, 1.22)) rotate(var(--rot, 0deg));
-  transition: opacity .38s ease .17s, transform .55s ease;
   z-index:1; /* reste visible sous l'image entrante, qui elle-même met un peu de temps à devenir opaque (fondu croisé) */
 }
 .slideshow-fill-toggle{
@@ -3881,7 +3884,7 @@ function openDiaporama(id){
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
   clearInterval(State.slideshowTimer);
-  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 4200);
+  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 5600); // laisse une pause confortable après la transition, désormais plus longue (≈2,9s)
 }
 /* Affiche la photo courante avec un fondu enchaîné doux (façon Google
    Photos) : la prochaine image est chargée sur le "tampon" actuellement
@@ -3914,6 +3917,7 @@ function showSlideshowFrame(instant){
   incoming.dataset.rot = p.rotation||0;
   incoming.style.setProperty("--rot", (p.rotation||0)+"deg");
   incoming.style.filter = p.filterCss || "none";
+  incoming.classList.toggle("instant", !!instant); // 1ère photo : apparition rapide, sans le long délai du fondu croisé
   incoming.onload = ()=>{
     applySlideshowImageSizing(incoming);
     incoming.classList.remove("exiting");
@@ -3922,7 +3926,7 @@ function showSlideshowFrame(instant){
       outgoing.style.setProperty("--exit-scale", computeExitScale(outgoing));
       outgoing.classList.remove("active");
       outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
-      setTimeout(()=> outgoing.classList.remove("exiting"), 650); // nettoyage après la transition (.55s + marge), pour repartir de l'état "entrant" la prochaine fois
+      setTimeout(()=> outgoing.classList.remove("exiting"), 3000); // nettoyage après la transition complète (agrandissement + plateau + fondu ≈2,9s), pour repartir de l'état "entrant" la prochaine fois
     }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
   };
