@@ -654,13 +654,30 @@ button{font-family:inherit;}
 .slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em; z-index:5;}
 
 /* ---------- bande de miniatures du diaporama (choix rapide) ---------- */
+/* Largeur pilotée par une variable CSS (au lieu d'une valeur fixe) pour
+   permettre le redimensionnement à la souris via #slideshowRailResizer
+   (voir JS, bloc "Redimensionnement de la bande de miniatures"). Valeur
+   mémorisée d'une session à l'autre (localStorage). */
 .slideshow-rail{
-  width:132px; flex-shrink:0; height:100%;
+  width:var(--slideshow-rail-w, 132px); flex-shrink:0; height:100%;
+  min-width:90px; max-width:60vw;
   overflow-y:auto; overflow-x:hidden;
   background:rgba(10,10,10,.82);
-  border-right:1px solid rgba(255,255,255,.08);
   padding:10px 8px; display:flex; flex-direction:column; gap:7px;
 }
+.slideshow-rail-resizer{
+  flex-shrink:0; width:6px; height:100%;
+  cursor:col-resize; position:relative;
+  background:rgba(255,255,255,.08);
+  touch-action:none;
+}
+.slideshow-rail-resizer::after{
+  content:""; position:absolute; top:0; bottom:0; left:50%;
+  width:2px; transform:translateX(-50%);
+  background:rgba(255,255,255,.18);
+}
+.slideshow-rail-resizer:hover::after,
+.slideshow-rail-resizer.dragging::after{background:var(--copper-hi);}
 .slideshow-rail-head{
   color:#cfcfcf; font-size:11px; line-height:1.4; padding:0 2px 6px;
   border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:2px;
@@ -801,6 +818,7 @@ button{font-family:inherit;}
     <div class="grid-toolbar">
       <h2 id="gridTitle">Images</h2>
       <span class="result-count" id="resultCount"></span>
+      <button class="btn" id="btnSortOrder" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri chronologique</button>
       <div class="zoom-controls">
         <button id="zoomOut" title="Diminuer">–</button>
         <input type="range" id="zoomRange" class="zoom-range" min="30" max="300" value="100">
@@ -1184,6 +1202,7 @@ button{font-family:inherit;}
     <div class="slideshow-rail-head">Cliquez pour aller à une photo</div>
     <div id="slideshowRailTiles"></div>
   </div>
+  <div class="slideshow-rail-resizer" id="slideshowRailResizer" title="Glisser pour redimensionner"></div>
   <div class="slideshow-stage">
     <img id="slideshowImgA" class="slide-img" src="" alt="">
     <img id="slideshowImgB" class="slide-img" src="" alt="">
@@ -1277,7 +1296,8 @@ const State = {
   photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, corbeille, rotation, albums:[]}
   albums: [],         // {id, name}
   auteurs: [],         // {id, name, note}
-  filters: {auteur:"", personnage:"", lieu:"", support:"", type:"", etiquette:""},
+  filters: {auteur:"", personnage:"", lieu:"", support:"", type:"", titre:""},
+  sortOrder: localStorage.getItem("imago_sort_order") || "chrono", // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien)
   selectedId: null,
   viewIndex: 0,
   view: {scale:1},
@@ -1481,12 +1501,22 @@ function activePhotos(){
     if(f.personnage && !personnageTokens(p.personnage).includes(f.personnage)) return false;
     if(f.lieu && p.lieu !== f.lieu) return false;
     if(f.support && p.support !== f.support) return false;
-    if(f.etiquette){
-      const kw = f.etiquette.toLowerCase();
-      if(!(p.etiquette||"").toLowerCase().includes(kw)) return false;
+    if(f.titre){
+      const kw = f.titre.toLowerCase();
+      if(!(p.titre||"").toLowerCase().includes(kw)) return false;
     }
     return true;
-  }).sort((a,b)=> naturalCompare(a.fileName, b.fileName));
+  }).sort((a,b)=>{
+    // Tri par date (dateAchat, format ISO donc comparable en chaîne),
+    // sens piloté par State.sortOrder (bouton "Tri chronologique" de la
+    // barre d'outils du visualiseur principal) ; à date égale (ou
+    // manquante), on retombe sur le tri naturel du nom de fichier pour un
+    // ordre stable et prévisible.
+    const da = a.dateAchat || "", db = b.dateAchat || "";
+    let cmp = da < db ? -1 : da > db ? 1 : naturalCompare(a.fileName, b.fileName);
+    if(State.sortOrder === "antichrono") cmp = -cmp;
+    return cmp;
+  });
 }
 
 function renderGrid(){
@@ -1848,9 +1878,29 @@ document.getElementById("fPersonnage").addEventListener("change", e=>{State.filt
 document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; renderGrid();});
 document.getElementById("fSupport").addEventListener("change", e=>{State.filters.support=e.target.value; renderGrid();});
 document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; renderGrid();});
-document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.etiquette=e.target.value; renderGrid();});
+document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.titre=e.target.value; renderGrid();});
+/* Bouton "Tri chronologique" / "Tri anti-chronologique" de la barre
+   d'outils du visualiseur principal (Main 90%) : bascule le sens du tri
+   par date appliqué dans activePhotos(), mémorisé d'une session à l'autre. */
+function updateSortOrderBtn(){
+  const btn = document.getElementById("btnSortOrder");
+  if(State.sortOrder === "antichrono"){
+    btn.textContent = "⇅ Tri anti-chronologique";
+    btn.title = "Du plus récent au plus ancien — cliquer pour inverser";
+  } else {
+    btn.textContent = "⇅ Tri chronologique";
+    btn.title = "Du plus ancien au plus récent — cliquer pour inverser";
+  }
+}
+document.getElementById("btnSortOrder").addEventListener("click", ()=>{
+  State.sortOrder = State.sortOrder === "antichrono" ? "chrono" : "antichrono";
+  localStorage.setItem("imago_sort_order", State.sortOrder);
+  updateSortOrderBtn();
+  renderGrid();
+});
+updateSortOrderBtn();
 function resetFilters(){
-  State.filters = {auteur:"", personnage:"", lieu:"", support:"", type:"", etiquette:""};
+  State.filters = {auteur:"", personnage:"", lieu:"", support:"", type:"", titre:""};
   document.getElementById("fAuteur").value="";
   document.getElementById("fPersonnage").value="";
   document.getElementById("fLieu").value="";
@@ -4206,6 +4256,41 @@ slideshowRailTiles.addEventListener("click", (e)=>{
   State.slideshowIndex = Number(tile.dataset.index);
   showSlideshowFrame();
 });
+/* Redimensionnement de la bande de miniatures (glisser-déposer sur la
+   poignée #slideshowRailResizer, entre la bande et la scène). Largeur
+   bornée (voir min-width/max-width CSS de .slideshow-rail) et mémorisée
+   d'une session à l'autre. Pointer Events plutôt que mouse/touch séparés :
+   couvre souris ET tactile avec un seul jeu d'écouteurs. */
+(function initSlideshowRailResizer(){
+  const resizer = document.getElementById("slideshowRailResizer");
+  const rail = document.getElementById("slideshowRail");
+  const RAIL_W_KEY = "imago_slideshow_rail_w";
+  const savedW = parseInt(localStorage.getItem(RAIL_W_KEY), 10);
+  if(savedW) document.documentElement.style.setProperty("--slideshow-rail-w", savedW+"px");
+  let dragging = false, startX = 0, startW = 0;
+  resizer.addEventListener("pointerdown", (e)=>{
+    dragging = true;
+    startX = e.clientX;
+    startW = rail.getBoundingClientRect().width;
+    resizer.classList.add("dragging");
+    resizer.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  resizer.addEventListener("pointermove", (e)=>{
+    if(!dragging) return;
+    const newW = Math.round(startW + (e.clientX - startX));
+    document.documentElement.style.setProperty("--slideshow-rail-w", newW+"px");
+  });
+  function endDrag(e){
+    if(!dragging) return;
+    dragging = false;
+    resizer.classList.remove("dragging");
+    const finalW = Math.round(rail.getBoundingClientRect().width);
+    localStorage.setItem(RAIL_W_KEY, finalW);
+  }
+  resizer.addEventListener("pointerup", endDrag);
+  resizer.addEventListener("pointercancel", endDrag);
+})();
 /* Dimensionnement de la photo dans le diaporama, à 3 niveaux :
    - Ajusté      : équivaut à object-fit:contain (photo entière visible,
                    bandes noires possibles pour un portrait).
