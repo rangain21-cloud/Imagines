@@ -202,6 +202,17 @@ button{font-family:inherit;}
   max-width:420px; padding:30px;
 }
 .viewer-missing .sub{font-family:var(--font-ui); font-size:12.5px; margin-top:10px; line-height:1.5;}
+/* Superposition affichée sur la vignette d'une grosse vidéo (>5 Mo) tant que
+   son contenu complet n'a pas été chargé à la demande (voir
+   loadPendingVideoFile) — évite de convertir toutes les vidéos volumineuses
+   du dossier en base64 dès l'import. */
+.viewer-video-pending{
+  position:absolute; inset:0; z-index:4;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
+  background:rgba(16,27,22,.6); text-align:center; padding:24px;
+}
+.viewer-video-pending.hidden{display:none;}
+.viewer-video-pending .sub{max-width:360px; font-size:12.5px; color:var(--ink-dim); line-height:1.5; font-family:var(--font-ui);}
 .nav-btn{
   position:absolute; top:50%; transform:translateY(-50%);
   width:46px; height:46px; border-radius:50%;
@@ -839,6 +850,10 @@ button{font-family:inherit;}
           <div class="viewer-fav-mark" id="viewerFavMark">★</div>
           <img id="viewerImg" src="" alt="">
           <video id="viewerVideo" class="hidden" controls playsinline></video>
+          <div class="viewer-video-pending hidden" id="viewerVideoPending">
+            <button class="btn copper" id="btnLoadPendingVideo">▶ Charger la vidéo (<span id="pendingVideoSize"></span>)</button>
+            <div class="sub">Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.</div>
+          </div>
           <div class="viewer-missing hidden" id="viewerMissing">
             📷 Image non disponible sur cet appareil
             <div class="sub">Ce catalogue a été chargé depuis Drive (métadonnées uniquement) ; le fichier image lui-même n'a jamais été importé ici. Utilisez « Choisir un dossier d'images… » pour l'ajouter, ou consultez-le sur l'appareil où il a été importé.</div>
@@ -1406,6 +1421,15 @@ const SHARE_DONE_QUIPS = [
    entièrement (voir handleFilesSelected et importRestInBackground) — ne
    déclenche la fanfare que si quelque chose a effectivement été chargé
    (pas de célébration si l'import a totalement échoué). */
+/* Construit le récapitulatif final (toast) d'un import, en ajoutant la
+   mention des grosses vidéos différées (>5 Mo, vignette seulement importée)
+   quand il y en a. Partagé entre l'import "1er écran" et l'import en
+   arrière-plan pour ne pas dupliquer ce texte. */
+function importSummaryMessage(stats){
+  return `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
+    (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : "") +
+    (stats.videoDeferred ? ` 🎬 ${stats.videoDeferred} vidéo(s) de plus de 5 Mo importée(s) en vignette seulement — ouvrez-les pour charger leur contenu à la demande.` : "");
+}
 function celebrateImportComplete(stats, message, durationMs){
   celebrate((stats.added||0) + (stats.reused||0) > 0, message, durationMs);
 }
@@ -1557,8 +1581,22 @@ function renderGrid(){
   const img = document.getElementById("viewerImg");
   const video = document.getElementById("viewerVideo");
   const missing = document.getElementById("viewerMissing");
+  const videoPending = document.getElementById("viewerVideoPending");
   video.pause();
-  if(p.isVideo){
+  videoPending.classList.add("hidden");
+  if(p.isVideo && p.videoPending){
+    // Grosse vidéo (>5 Mo) pas encore chargée : on affiche sa vignette avec
+    // un bouton pour charger le contenu complet à la demande — voir
+    // loadPendingVideoFile().
+    video.classList.add("hidden");
+    video.removeAttribute("src");
+    delete video.dataset.currentId;
+    img.classList.remove("hidden");
+    missing.classList.add("hidden");
+    img.src = p.posterDataUrl || "";
+    document.getElementById("pendingVideoSize").textContent = fmtSize(p.videoSizeBytes) || "?";
+    videoPending.classList.remove("hidden");
+  } else if(p.isVideo){
     img.classList.add("hidden");
     video.classList.remove("hidden");
     missing.classList.add("hidden");
@@ -1982,6 +2020,23 @@ const IMPORT_PRIORITY_COUNT = 50;
 const IMPORT_BACKGROUND_CHUNK = 15;
 let importToken = 0; // incrémenté à chaque nouvel import, pour abandonner un import en arrière-plan devenu obsolète (nouveau dossier choisi entre-temps)
 
+/* Seuil "petite vidéo" (voir importOneFile ci-dessous) : en dessous, une
+   vidéo est importée intégralement comme avant (convertie en base64,
+   lisible immédiatement). Au-delà, seules sa vignette et ses métadonnées
+   sont importées à l'ouverture du dossier — le contenu complet n'est JAMAIS
+   converti en base64 à ce stade, ce qui est la cause du plantage mémoire
+   ("Breakpoint"/OOM Chrome) constaté sur un dossier de ~1200 fichiers : une
+   vidéo de smartphone dépasse très largement 5 Mo, et sa version base64
+   (+33 %) restait en permanence en mémoire ET dans IndexedDB pour chaque
+   vidéo du dossier. */
+const VIDEO_INLINE_MAX_BYTES = 5 * 1024 * 1024; // 5 Mo
+/* Référence au File d'origine des vidéos volumineuses différées, pour
+   pouvoir les lire à la demande (voir loadPendingVideoFile) SANS jamais les
+   convertir en base64 — valable uniquement pour la session en cours (un
+   File ne survit pas à un rechargement de page) ; clé = id de la fiche
+   photo. */
+const pendingVideoFiles = new Map();
+
 /* Estimation RAPIDE (sans lire le contenu du fichier, donc quasi instantanée
    même sur 700 photos) de la date d'une image, utilisée uniquement pour
    décider quelles photos sont "les plus récentes" à afficher en priorité :
@@ -2003,6 +2058,7 @@ async function importOneFile(file, csvRowByFileName, stats){
   if(State.photos.find(p=>p.fileName===file.name)) return; // doublon dans la sélection elle-même
   try{
     const isVideo = isVideoFile(file);
+    const deferVideo = isVideo && file.size > VIDEO_INLINE_MAX_BYTES; // grosse vidéo : contenu chargé à la demande, voir plus bas
     // Sur Android, un fichier "vu" dans le sélecteur de dossier peut ne pas
     // être réellement lisible (ex. photo Google Photos non téléchargée sur
     // l'appareil, permission révoquée entre-temps…) : la lecture échoue
@@ -2010,9 +2066,24 @@ async function importOneFile(file, csvRowByFileName, stats){
     // interrompre le traitement des autres à cause d'une seule image en
     // défaut — sans ce try/catch, une erreur au 1er fichier annulait
     // silencieusement tout l'import et laissait le 1er écran vide.
-    const dataUrl = isVideo ? await readFileAsDataURL(file) : await readFileAsDataURLWithHeicSupport(file, stats);
+    const dataUrl = (isVideo && !deferVideo) ? await readFileAsDataURL(file)
+                   : (!isVideo) ? await readFileAsDataURLWithHeicSupport(file, stats)
+                   : null; // grosse vidéo : jamais lue en base64 à l'import
     let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
-    if(isVideo){
+    if(isVideo && deferVideo){
+      // Vignette + métadonnées seulement, via une URL objet temporaire
+      // (aucune conversion en base64, donc aucun coût mémoire proportionnel
+      // à la taille du fichier vidéo — contrairement à readFileAsDataURL).
+      const objectUrl = URL.createObjectURL(file);
+      try{
+        videoMeta = await getVideoMeta(objectUrl);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      dims = {width: videoMeta.width, height: videoMeta.height};
+      finalDataUrl = null; // chargé à la demande, voir loadPendingVideoFile()
+      stats.videoDeferred = (stats.videoDeferred||0) + 1;
+    } else if(isVideo){
       videoMeta = await getVideoMeta(dataUrl);
       dims = {width: videoMeta.width, height: videoMeta.height};
     } else {
@@ -2030,6 +2101,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       rec = {
         id: uid("ph"), fileName: file.name, dataUrl: finalDataUrl,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
+        videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         titre: existingRow.titre || "",
         dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
         personnage: existingRow.personnage || "",
@@ -2064,6 +2136,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       rec = {
         id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
+        videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
         favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
         sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
@@ -2079,6 +2152,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     // stockage IndexedDB est restreint ou indisponible (navigation privée,
     // quota…) — mieux vaut afficher la photo pour la session en cours que
     // de la perdre entièrement à cause d'une erreur de stockage.
+    if(deferVideo) pendingVideoFiles.set(rec.id, file); // permet la lecture à la demande sans jamais convertir cette vidéo en base64 (voir loadPendingVideoFile)
     State.photos.push(rec);
     try{
       await idbPut("photos", rec);
@@ -2099,7 +2173,7 @@ async function importOneFile(file, csvRowByFileName, stats){
 /* Met à jour le message de statut (et, en fin d'import, le toast récap).
    `stillLoading` indique qu'il reste des photos à traiter en arrière-plan. */
 function reportImportProgress(folderName, catalogCandidates, stats, stillLoading){
-  const {added, reused, failedFiles, failedDetails, heicFailed} = stats;
+  const {added, reused, failedFiles, failedDetails, heicFailed, videoDeferred} = stats;
   const processed = added + reused;
   const allFailed = failedFiles.length>0 && processed===0;
   const androidHint = allFailed
@@ -2116,10 +2190,13 @@ function reportImportProgress(folderName, catalogCandidates, stats, stillLoading
     ? ` ⚠ ${heicFailed.length} photo(s) HEIC non converties (connexion internet requise) : ${heicFailed.slice(0,5).join(", ")}${heicFailed.length>5?"…":""} — elles sont importées mais resteront illisibles tant que la conversion n'aura pas réussi (réessayez plus tard avec Internet).`
     : "";
   const loadingNote = stillLoading ? " Le reste du dossier continue de se charger en arrière-plan…" : "";
+  const videoDeferredNote = videoDeferred
+    ? ` 🎬 ${videoDeferred} vidéo(s) de plus de 5 Mo : seule leur vignette a été importée — ouvrez-les pour charger leur contenu complet à la demande.`
+    : "";
   document.getElementById("folderStatus").textContent = (catalogCandidates.length
     ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
     : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`
-  ) + failNote + heicNote + loadingNote;
+  ) + failNote + heicNote + videoDeferredNote + loadingNote;
 }
 
 /* Traite le reste du dossier (au-delà des IMPORT_PRIORITY_COUNT photos déjà
@@ -2147,8 +2224,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
     } else {
       celebrateImportComplete(
         stats,
-        `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
-        (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : ""),
+        importSummaryMessage(stats),
         stats.failedFiles.length ? 12000 : undefined
       );
       autoBuildCsv();
@@ -2226,7 +2302,7 @@ async function handleFilesSelected(fileList, folderNameOverride){
   // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
-  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[] };
+  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0 };
   for(const file of priorityFiles){
     if(myImportToken !== importToken) return;
     await importOneFile(file, csvRowByFileName, stats);
@@ -2243,8 +2319,7 @@ async function handleFilesSelected(fileList, folderNameOverride){
   if(restFiles.length===0){
     celebrateImportComplete(
       stats,
-      `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
-      (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : ""),
+      importSummaryMessage(stats),
       stats.failedFiles.length ? 12000 : undefined
     );
     autoBuildCsv();
@@ -3178,6 +3253,73 @@ window.addEventListener("mousemove", (e)=>{
 window.addEventListener("mouseup", ()=>{ dragging=false; viewerStage.classList.remove("dragging"); });
 
 viewerImg.addEventListener("dblclick", ()=>{ if(getSelected()) openLoupe(State.selectedId); });
+
+/* -----------------------------------------------------------------
+   Chargement à la demande des grosses vidéos (>5 Mo) différées à l'import
+   (voir VIDEO_INLINE_MAX_BYTES / importOneFile). Deux cas :
+   1) le File d'origine est encore en mémoire pour cette session
+      (pendingVideoFiles) : on le lit directement en URL objet, SANS jamais
+      passer par une conversion en base64 — c'est le chemin normal.
+   2) le File n'est plus disponible (page rechargée depuis l'import) : on
+      propose à l'utilisateur de resélectionner ce fichier précis via un
+      petit sélecteur dédié, plutôt que de re-choisir tout le dossier.
+   Dans les deux cas, le contenu n'est chargé qu'en mémoire pour la lecture
+   (URL.createObjectURL), jamais réécrit en base64 ni renvoyé vers
+   IndexedDB — cela reste un chargement "pour cette session".
+   ----------------------------------------------------------------- */
+const singleVideoPickerInput = document.createElement("input");
+singleVideoPickerInput.type = "file";
+singleVideoPickerInput.accept = "video/mp4";
+singleVideoPickerInput.className = "hidden";
+document.body.appendChild(singleVideoPickerInput);
+let singleVideoPickerTargetId = null;
+
+function playVideoFromFile(p, file){
+  const video = document.getElementById("viewerVideo");
+  const img = document.getElementById("viewerImg");
+  const videoPending = document.getElementById("viewerVideoPending");
+  const objectUrl = URL.createObjectURL(file);
+  // L'ancienne URL objet (s'il y en avait une) est révoquée pour ne pas
+  // accumuler de références mémoire au fil des ouvertures successives.
+  if(video.dataset.objectUrl) URL.revokeObjectURL(video.dataset.objectUrl);
+  video.src = objectUrl;
+  video.dataset.objectUrl = objectUrl;
+  video.dataset.currentId = p.id;
+  img.classList.add("hidden");
+  videoPending.classList.add("hidden");
+  video.classList.remove("hidden");
+}
+async function loadPendingVideoFile(p){
+  const cachedFile = pendingVideoFiles.get(p.id);
+  if(cachedFile){
+    playVideoFromFile(p, cachedFile);
+    return;
+  }
+  // Session précédente terminée (page rechargée) : le File d'origine n'est
+  // plus disponible en mémoire — on demande à l'utilisateur de le
+  // resélectionner uniquement lui (pas tout le dossier).
+  singleVideoPickerTargetId = p.id;
+  toast(`Resélectionnez le fichier "${p.fileName}" pour le lire (son contenu n'a pas été gardé d'une session à l'autre pour économiser la mémoire).`, 6000);
+  singleVideoPickerInput.click();
+}
+singleVideoPickerInput.addEventListener("change", ()=>{
+  const file = singleVideoPickerInput.files[0];
+  singleVideoPickerInput.value = "";
+  if(!file || !singleVideoPickerTargetId) return;
+  const p = State.photos.find(ph=>ph.id===singleVideoPickerTargetId);
+  singleVideoPickerTargetId = null;
+  if(!p) return;
+  if(file.name !== p.fileName){
+    toast(`Ce n'est pas le bon fichier : "${p.fileName}" attendu, "${file.name}" sélectionné.`, 6000);
+    return;
+  }
+  pendingVideoFiles.set(p.id, file); // reste disponible pour le reste de la session
+  playVideoFromFile(p, file);
+});
+document.getElementById("btnLoadPendingVideo").addEventListener("click", ()=>{
+  const p = getSelected();
+  if(p) loadPendingVideoFile(p);
+});
 
 function goToImage(step){
   const list = activePhotos();
@@ -4283,7 +4425,19 @@ function showSlideshowFrame(instant){
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
     scheduleNextAutoAdvance(); // planifie la prochaine avance auto SEULEMENT maintenant que cette photo est réellement affichée (voir plus bas) — jamais à durée fixe déconnectée du décodage réel
   };
-  incoming.src = p.dataUrl;
+  incoming.onerror = ()=>{
+    // Source manquante (ex. grosse vidéo différée sans dataUrl, ou vignette
+    // vidéo non générée) : on ne bloque jamais le diaporama dessus, sinon
+    // l'avance automatique resterait figée indéfiniment sur cette photo
+    // faute d'onload — on journalise et on passe simplement à la suivante.
+    if(myToken !== slideshowFrameToken) return;
+    console.warn(`Diaporama : aucune image affichable pour "${p.fileName}" — avance automatique sans elle.`);
+    scheduleNextAutoAdvance();
+  };
+  // Une vidéo ne peut pas être décodée par une balise <img> : on affiche sa
+  // vignette (posterDataUrl) à la place, y compris pour les grosses vidéos
+  // différées à l'import qui n'ont pas de dataUrl complet.
+  incoming.src = (p.isVideo ? (p.posterDataUrl || "") : (p.dataUrl || ""));
   updateSlideshowRailHighlight();
 }
 /* Remplace l'ancien setInterval à durée fixe : re-planifie l'avance
@@ -4328,7 +4482,7 @@ function buildSlideshowRail(){
     tile.className = "slideshow-rail-tile";
     tile.dataset.index = idx;
     const img = document.createElement("img");
-    img.src = p.dataUrl;
+    img.src = p.isVideo ? (p.posterDataUrl || "") : (p.dataUrl || ""); // une vidéo n'a pas de dataUrl affichable dans une <img> — vignette à la place
     img.loading = "lazy";
     img.alt = "";
     tile.appendChild(img);
@@ -4657,9 +4811,17 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   if(!fileInput.files[0]) return toast("Choisissez une image ou une vidéo.");
   const file = fileInput.files[0];
   const isVideo = isVideoFile(file);
-  const dataUrl = isVideo ? await readFileAsDataURL(file) : await readFileAsDataURLWithHeicSupport(file);
+  const deferVideo = isVideo && file.size > VIDEO_INLINE_MAX_BYTES; // même seuil "petite vidéo" que pour l'import de dossier
+  const dataUrl = (isVideo && !deferVideo) ? await readFileAsDataURL(file)
+                 : (!isVideo) ? await readFileAsDataURLWithHeicSupport(file)
+                 : null;
   let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
-  if(isVideo){
+  if(isVideo && deferVideo){
+    const objectUrl = URL.createObjectURL(file);
+    try{ videoMeta = await getVideoMeta(objectUrl); } finally { URL.revokeObjectURL(objectUrl); }
+    dims = {width: videoMeta.width, height: videoMeta.height};
+    finalDataUrl = null;
+  } else if(isVideo){
     videoMeta = await getVideoMeta(dataUrl);
     dims = {width: videoMeta.width, height: videoMeta.height};
   } else {
@@ -4674,6 +4836,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   const rec = {
     id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl,
     isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
+    videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
     dateAchat: document.getElementById("neDate").value || new Date().toISOString().slice(0,10),
     personnage,
     lieu,
@@ -4687,12 +4850,13 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
     gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
     map: mapUrl(exif, lieu)
   };
+  if(deferVideo) pendingVideoFiles.set(rec.id, file);
   await idbPut("photos", rec);
   State.photos.push(rec);
   populateFilterOptions();
   renderGrid();
   closeModal("modalNewEntry");
-  toast(isVideo ? "Nouvelle vidéo ajoutée au catalogue." : "Nouvelle entrée ajoutée au catalogue.");
+  toast(isVideo ? (deferVideo ? "Nouvelle vidéo ajoutée (vignette seulement — ouvrez-la pour charger son contenu)." : "Nouvelle vidéo ajoutée au catalogue.") : "Nouvelle entrée ajoutée au catalogue.");
   autoBuildCsv();
 });
 
