@@ -754,6 +754,7 @@ button{font-family:inherit;}
     <div class="gallery-head-actions">
       <span class="gallery-select-count hidden" id="gallerySelectCount"></span>
       <button class="btn hidden" id="btnGalleryShareSelection" title="Envoyer les images sélectionnées dans Drive" disabled>⇪ Partager</button>
+      <button class="btn" id="btnSortOrderGallery" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
       <button class="btn" id="btnGallerySelectToggle" title="Sélectionner plusieurs images">☑ Sélectionner</button>
     </div>
   </div>
@@ -818,7 +819,7 @@ button{font-family:inherit;}
     <div class="grid-toolbar">
       <h2 id="gridTitle">Images</h2>
       <span class="result-count" id="resultCount"></span>
-      <button class="btn" id="btnSortOrder" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri chronologique</button>
+      <button class="btn" id="btnSortOrder" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
       <div class="zoom-controls">
         <button id="zoomOut" title="Diminuer">–</button>
         <input type="range" id="zoomRange" class="zoom-range" min="30" max="300" value="100">
@@ -1297,7 +1298,7 @@ const State = {
   albums: [],         // {id, name}
   auteurs: [],         // {id, name, note}
   filters: {auteur:"", personnage:"", lieu:"", support:"", type:"", titre:""},
-  sortOrder: localStorage.getItem("imago_sort_order") || "chrono", // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien)
+  sortOrder: localStorage.getItem("imago_sort_order") || "antichrono", // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien) — "antichrono" par défaut pour rester cohérent avec le tri historique de l'écran d'accueil (planche-contact triée du plus récent au plus ancien)
   selectedId: null,
   viewIndex: 0,
   view: {scale:1},
@@ -1599,7 +1600,12 @@ function renderGrid(){
 function galleryPhotos(){
   return State.photos
     .filter(p=>!p.corbeille)
-    .sort((a,b)=> (b.dateAchat||"").localeCompare(a.dateAchat||""));
+    .sort((a,b)=>{
+      const da = a.dateAchat || "", db = b.dateAchat || "";
+      let cmp = da < db ? -1 : da > db ? 1 : naturalCompare(a.fileName, b.fileName);
+      if(State.sortOrder === "antichrono") cmp = -cmp;
+      return cmp;
+    });
 }
 /* Affichage initial instantané limité aux images les plus récentes (déjà en
    tête grâce au tri ci-dessus), le reste du catalogue étant ajouté ensuite
@@ -1879,25 +1885,32 @@ document.getElementById("fLieu").addEventListener("change", e=>{State.filters.li
 document.getElementById("fSupport").addEventListener("change", e=>{State.filters.support=e.target.value; renderGrid();});
 document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; renderGrid();});
 document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.titre=e.target.value; renderGrid();});
-/* Bouton "Tri chronologique" / "Tri anti-chronologique" de la barre
-   d'outils du visualiseur principal (Main 90%) : bascule le sens du tri
-   par date appliqué dans activePhotos(), mémorisé d'une session à l'autre. */
+/* Bouton "Tri chronologique" / "Tri anti-chronologique" — présent à deux
+   endroits (écran d'accueil "l'heuristique" et visualiseur principal
+   "Main 90%"), synchronisés puisqu'ils pilotent le même State.sortOrder,
+   utilisé à la fois par galleryPhotos() et activePhotos(). Mémorisé d'une
+   session à l'autre. */
 function updateSortOrderBtn(){
-  const btn = document.getElementById("btnSortOrder");
-  if(State.sortOrder === "antichrono"){
-    btn.textContent = "⇅ Tri anti-chronologique";
-    btn.title = "Du plus récent au plus ancien — cliquer pour inverser";
-  } else {
-    btn.textContent = "⇅ Tri chronologique";
-    btn.title = "Du plus ancien au plus récent — cliquer pour inverser";
-  }
+  const label = State.sortOrder === "antichrono"
+    ? {text:"⇅ Tri anti-chronologique", title:"Du plus récent au plus ancien — cliquer pour inverser"}
+    : {text:"⇅ Tri chronologique", title:"Du plus ancien au plus récent — cliquer pour inverser"};
+  [document.getElementById("btnSortOrder"), document.getElementById("btnSortOrderGallery")].forEach(btn=>{
+    btn.textContent = label.text;
+    btn.title = label.title;
+  });
 }
-document.getElementById("btnSortOrder").addEventListener("click", ()=>{
+function toggleSortOrder(){
   State.sortOrder = State.sortOrder === "antichrono" ? "chrono" : "antichrono";
   localStorage.setItem("imago_sort_order", State.sortOrder);
   updateSortOrderBtn();
-  renderGrid();
-});
+  // Les deux écrans partagent le même State.sortOrder : on rafraîchit celui
+  // actuellement visible (l'autre se redessinera de toute façon à son
+  // prochain affichage, via openGallery()/showViewerFrame()).
+  if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+  else renderGrid();
+}
+document.getElementById("btnSortOrder").addEventListener("click", toggleSortOrder);
+document.getElementById("btnSortOrderGallery").addEventListener("click", toggleSortOrder);
 updateSortOrderBtn();
 function resetFilters(){
   State.filters = {auteur:"", personnage:"", lieu:"", support:"", type:"", titre:""};
