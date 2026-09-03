@@ -1998,13 +1998,16 @@ async function importOneFile(file, csvRowByFileName, stats){
     // défaut — sans ce try/catch, une erreur au 1er fichier annulait
     // silencieusement tout l'import et laissait le 1er écran vide.
     const dataUrl = isVideo ? await readFileAsDataURL(file) : await readFileAsDataURLWithHeicSupport(file, stats);
-    let dims, exif = null, videoMeta = null;
+    let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
     if(isVideo){
       videoMeta = await getVideoMeta(dataUrl);
       dims = {width: videoMeta.width, height: videoMeta.height};
     } else {
-      dims = await getImageDimensions(dataUrl);
-      exif = await readBasicExif(file);
+      exif = await readBasicExif(file); // lu depuis le fichier original, indépendamment d'un éventuel redimensionnement ci-dessous
+      const resized = await loadAndMaybeDownscaleImage(dataUrl);
+      finalDataUrl = resized.dataUrl;
+      dims = {width: resized.width, height: resized.height};
+      encodedSize = Math.round(finalDataUrl.length * 0.75); // taille réellement conservée (proche de l'originale si aucun redimensionnement n'a eu lieu)
     }
     const existingRow = csvRowByFileName.get(file.name);
 
@@ -2012,7 +2015,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     if(existingRow){
       // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
       rec = {
-        id: uid("ph"), fileName: file.name, dataUrl,
+        id: uid("ph"), fileName: file.name, dataUrl: finalDataUrl,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         titre: existingRow.titre || "",
         dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
@@ -2030,9 +2033,9 @@ async function importOneFile(file, csvRowByFileName, stats){
         filterKey: existingRow.filterKey || null,
         filterCss: existingRow.filterKey ? (FILTER_PRESETS.find(f=>f.key===existingRow.filterKey)||{}).css || "" : "",
         optique: existingRow.optique || exifCameraName(exif),
-        poids: existingRow.poids ? Number(existingRow.poids) : Math.round(file.size/1024),
+        poids: existingRow.poids ? Number(existingRow.poids) : Math.round(encodedSize/1024),
         map: isValidMapUrl(existingRow.map) ? existingRow.map : mapUrl(exif, existingRow.lieu || ""),
-        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
+        sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
         gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
         gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null
       };
@@ -2046,12 +2049,12 @@ async function importOneFile(file, csvRowByFileName, stats){
       const lieu = "";
       const personnage = meta.personnage;
       rec = {
-        id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl, dateAchat,
+        id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
         favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
-        sizeBytes: file.size, width:dims.width, height:dims.height, exif,
-        optique: exifCameraName(exif), poids: Math.round(file.size/1024),
+        sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
+        optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
         gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
         gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
         map: mapUrl(exif, lieu)
@@ -2416,6 +2419,54 @@ function getImageDimensions(dataUrl){
     const img = new Image();
     img.onload = ()=> resolve({width:img.naturalWidth, height:img.naturalHeight});
     img.onerror = ()=> resolve({width:0, height:0});
+    img.src = dataUrl;
+  });
+}
+/* Limite de taille appliquée aux PHOTOS à l'import (pas aux vidéos, qui ne
+   passent pas par ici). Sans ça, chaque photo est conservée EN PERMANENCE
+   dans State.photos (donc en mémoire vive) sous sa forme base64 intégrale
+   — pour un smartphone/appareil photo moderne (12 à 48 Mpx), cela
+   représente plusieurs dizaines de Mo par photo une fois décodée en
+   chaîne JS. Sur un dossier de plusieurs centaines/milliers de photos,
+   ceci épuise la mémoire du navigateur et provoque un plantage de l'onglet
+   Chrome (souvent visible comme une erreur "Breakpoint"/OOM) au bout de
+   quelques minutes d'import. 2400px de long côté reste largement
+   suffisant pour un affichage plein écran (diaporama, visualiseur
+   principal) même sur un moniteur 4K, tout en divisant la mémoire
+   utilisée par photo par un facteur de 5 à 15 selon la résolution
+   d'origine. */
+const IMPORT_MAX_DIM = 2400;
+const IMPORT_JPEG_QUALITY = 0.86;
+/* Décode une photo pour mesurer ses dimensions et, si nécessaire, la
+   redimensionne via <canvas> pour ramener son plus grand côté à
+   IMPORT_MAX_DIM (ré-encodée en JPEG). Ne touche PAS aux photos déjà sous
+   la limite (aucune perte de qualité superflue). Retourne toujours
+   {dataUrl, width, height} — dataUrl est celui d'origine si aucun
+   redimensionnement n'a eu lieu. */
+function loadAndMaybeDownscaleImage(dataUrl){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const w = img.naturalWidth, h = img.naturalHeight;
+      if(!w || !h || Math.max(w,h) <= IMPORT_MAX_DIM){
+        resolve({dataUrl, width:w, height:h});
+        return;
+      }
+      try{
+        const scale = IMPORT_MAX_DIM / Math.max(w,h);
+        const nw = Math.round(w*scale), nh = Math.round(h*scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = nw; canvas.height = nh;
+        canvas.getContext("2d").drawImage(img, 0, 0, nw, nh);
+        resolve({dataUrl: canvas.toDataURL("image/jpeg", IMPORT_JPEG_QUALITY), width: nw, height: nh});
+      }catch(e){
+        // Échec du redimensionnement (image corrompue pour le canvas,
+        // restriction navigateur…) : on garde l'original plutôt que de
+        // perdre la photo.
+        resolve({dataUrl, width:w, height:h});
+      }
+    };
+    img.onerror = ()=> resolve({dataUrl, width:0, height:0});
     img.src = dataUrl;
   });
 }
@@ -4551,18 +4602,21 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   const file = fileInput.files[0];
   const isVideo = isVideoFile(file);
   const dataUrl = isVideo ? await readFileAsDataURL(file) : await readFileAsDataURLWithHeicSupport(file);
-  let dims, exif = null, videoMeta = null;
+  let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
   if(isVideo){
     videoMeta = await getVideoMeta(dataUrl);
     dims = {width: videoMeta.width, height: videoMeta.height};
   } else {
-    dims = await getImageDimensions(dataUrl);
     exif = await readBasicExif(file);
+    const resized = await loadAndMaybeDownscaleImage(dataUrl);
+    finalDataUrl = resized.dataUrl;
+    dims = {width: resized.width, height: resized.height};
+    encodedSize = Math.round(finalDataUrl.length * 0.75);
   }
   const lieu = document.getElementById("neLieu").value.trim();
   const personnage = document.getElementById("nePersonnage").value.trim();
   const rec = {
-    id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl,
+    id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl,
     isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
     dateAchat: document.getElementById("neDate").value || new Date().toISOString().slice(0,10),
     personnage,
@@ -4571,8 +4625,8 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
     etiquette: document.getElementById("neEtiquette").value.trim(),
     auteur: document.getElementById("neAuteur").value.trim() || "Philippe",
     favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
-    sizeBytes:file.size, width:dims.width, height:dims.height, exif,
-    optique: exifCameraName(exif), poids: Math.round(file.size/1024),
+    sizeBytes:encodedSize, width:dims.width, height:dims.height, exif,
+    optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
     gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
     gpsLon: exif && exif.gpsLon!=null ? exif.gpsLon : null,
     map: mapUrl(exif, lieu)
