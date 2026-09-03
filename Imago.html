@@ -4155,6 +4155,19 @@ const slideshowRailTiles = document.getElementById("slideshowRailTiles");
 const slideshowStageEl = document.querySelector(".slideshow-stage");
 let loupeZoom = 1, loupeX=0, loupeY=0, loupeDrag=false, loupeStart={x:0,y:0}, loupeOrigin={x:0,y:0};
 let activeSlideKey = "A"; // image actuellement visible, pour le fondu enchaîné (l'autre reçoit la prochaine photo en arrière-plan)
+/* Jeton incrémenté à chaque appel à showSlideshowFrame() : si un 2e appel
+   (avance auto OU navigation manuelle aux flèches) survient AVANT que
+   l'onload du 1er ait eu le temps de se déclencher (décodage d'une image
+   volumineuse plus lent que l'intervalle réglé, onglet en arrière-plan,
+   appareil lent…), l'onload "en retard" du 1er appel se reconnaît obsolète
+   et n'active plus son image. Sans ce garde-fou, les 2 appels finissaient
+   par ajouter chacun leur classe "active" à un moment différent, d'où le
+   chevauchement visible signalé avec un minutage court : ce n'est pas la
+   valeur du minutage elle-même qui est en cause, mais l'ancien setInterval
+   à durée fixe qui ne vérifiait jamais que la transition précédente était
+   bien terminée avant de déclencher la suivante (voir scheduleNextAutoAdvance
+   plus bas, qui remplace ce setInterval par une re-planification en chaîne). */
+let slideshowFrameToken = 0;
 function getActiveSlideImg(){ return activeSlideKey==="A" ? slideshowImgA : slideshowImgB; }
 function getInactiveSlideImg(){ return activeSlideKey==="A" ? slideshowImgB : slideshowImgA; }
 
@@ -4209,10 +4222,12 @@ function openDiaporama(id){
   buildSlideshowRail();
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
-  clearInterval(State.slideshowTimer);
-  const {plateau, fondu} = applySlideshowTimingVars();
-  const totalMs = (plateau + fondu) * 1000;
-  State.slideshowTimer = setInterval(()=> stepSlideshow(1), totalMs);
+  clearTimeout(State.slideshowTimer);
+  State.slideshowTimer = null;
+  applySlideshowTimingVars();
+  // Pas de setInterval ici : la 1ère avance auto est planifiée par
+  // showSlideshowFrame(true) ci-dessus une fois la 1ère photo réellement
+  // affichée (voir scheduleNextAutoAdvance, appelée depuis son onload).
 }
 /* Affiche la photo courante avec un fondu enchaîné doux (façon Google
    Photos) : la prochaine image est chargée sur le "tampon" actuellement
@@ -4240,6 +4255,7 @@ function computeExitScale(img){
 function showSlideshowFrame(instant){
   const p = State.slideshowList[State.slideshowIndex];
   if(!p) return closeSlideshow();
+  const myToken = ++slideshowFrameToken; // voir déclaration de slideshowFrameToken plus haut
   const incoming = instant ? getActiveSlideImg() : getInactiveSlideImg();
   const outgoing = instant ? null : getActiveSlideImg();
   incoming.dataset.rot = p.rotation||0;
@@ -4247,6 +4263,12 @@ function showSlideshowFrame(instant){
   incoming.style.filter = p.filterCss || "none";
   incoming.classList.toggle("instant", !!instant); // 1ère photo : apparition rapide, sans le long délai du fondu croisé
   incoming.onload = ()=>{
+    // Un appel plus récent à showSlideshowFrame() (avance auto ou flèche
+    // manuelle) a pris le relais pendant que CETTE image chargeait encore :
+    // on abandonne silencieusement plutôt que d'activer une image devenue
+    // obsolète par-dessus la nouvelle — c'est ce qui provoquait le
+    // chevauchement visible.
+    if(myToken !== slideshowFrameToken) return;
     applySlideshowImageSizing(incoming);
     incoming.classList.remove("exiting");
     incoming.classList.add("active");
@@ -4254,12 +4276,32 @@ function showSlideshowFrame(instant){
       outgoing.style.setProperty("--exit-scale", computeExitScale(outgoing));
       outgoing.classList.remove("active");
       outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
-      setTimeout(()=> outgoing.classList.remove("exiting"), (getSlideshowTiming().plateau + getSlideshowTiming().fondu)*1000 + 300); // nettoyage après la transition complète (plateau + fondu réglés), pour repartir de l'état "entrant" la prochaine fois
+      setTimeout(()=>{
+        if(myToken === slideshowFrameToken) outgoing.classList.remove("exiting"); // nettoyage après la transition complète (plateau + fondu réglés), pour repartir de l'état "entrant" la prochaine fois
+      }, (getSlideshowTiming().plateau + getSlideshowTiming().fondu)*1000 + 300);
     }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
+    scheduleNextAutoAdvance(); // planifie la prochaine avance auto SEULEMENT maintenant que cette photo est réellement affichée (voir plus bas) — jamais à durée fixe déconnectée du décodage réel
   };
   incoming.src = p.dataUrl;
   updateSlideshowRailHighlight();
+}
+/* Remplace l'ancien setInterval à durée fixe : re-planifie l'avance
+   automatique à chaque fois qu'une photo vient d'être réellement affichée
+   (appelé depuis l'onload de showSlideshowFrame), jamais à l'avance sur une
+   horloge indépendante. Ainsi le délai avant la prochaine photo démarre
+   toujours au bon moment, quel que soit le temps qu'a pris le décodage de
+   la photo courante — plus aucun risque que 2 avances se chevauchent, quel
+   que soit le minutage choisi. Une navigation manuelle (flèches, clic sur
+   une vignette de la bande) redémarre aussi ce délai, ce qui est le
+   comportement attendu d'un diaporama. */
+function scheduleNextAutoAdvance(){
+  clearTimeout(State.slideshowTimer);
+  State.slideshowTimer = null;
+  if(State.slideshowMode !== "diaporama") return; // pas d'avance auto en mode Loupe
+  if(!slideshowEl.classList.contains("show")) return;
+  const {plateau, fondu} = getSlideshowTiming();
+  State.slideshowTimer = setTimeout(()=> stepSlideshow(1), (plateau + fondu) * 1000);
 }
 function stepSlideshow(dir){
   if(State.slideshowList.length===0) return;
@@ -4268,7 +4310,8 @@ function stepSlideshow(dir){
 }
 function closeSlideshow(){
   slideshowEl.classList.remove("show");
-  clearInterval(State.slideshowTimer);
+  slideshowFrameToken++; // invalide tout onload encore en attente pour l'image en cours de chargement
+  clearTimeout(State.slideshowTimer);
   State.slideshowTimer = null;
   slideshowImgA.classList.remove("active", "exiting");
   slideshowImgB.classList.remove("active", "exiting");
