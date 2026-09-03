@@ -689,6 +689,17 @@ button{font-family:inherit;}
 }
 .toast.show{opacity:1;}
 
+/* Indicateur de "construction en cours" pour le diaporama (utile avec de
+   gros catalogues, où la bande de miniatures peut prendre un instant à se
+   construire). Au-dessus même du diaporama (z-index) puisqu'il s'affiche
+   juste avant/pendant son ouverture. */
+.diaporama-loading{
+  position:fixed; inset:0; z-index:2100;
+  background:rgba(0,0,0,.78);
+  display:flex; align-items:center; justify-content:center;
+  color:#e8dcc2; font-size:15px; letter-spacing:.02em;
+}
+
 .hidden{display:none !important;}
 </style>
 </head>
@@ -849,6 +860,10 @@ button{font-family:inherit;}
     <div class="search-field">
       <label for="fSupport">Liste par Support</label>
       <select id="fSupport"><option value="">— Tous —</option></select>
+    </div>
+    <div class="search-field">
+      <label for="fType">Type de fichier</label>
+      <select id="fType"><option value="">— Tous —</option></select>
     </div>
     <div class="search-field">
       <label for="fEtiquette">Mot clé de l'étiquette</label>
@@ -1155,6 +1170,7 @@ button{font-family:inherit;}
 </div>
 
 <div class="toast" id="toast"></div>
+<div class="diaporama-loading hidden" id="diaporamaLoading">⏳ Préparation du diaporama…</div>
 
 <script>
 "use strict";
@@ -1238,7 +1254,7 @@ const State = {
   photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, corbeille, rotation, albums:[]}
   albums: [],         // {id, name}
   auteurs: [],         // {id, name, note}
-  filters: {auteur:"", personnage:"", lieu:"", support:"", etiquette:""},
+  filters: {auteur:"", personnage:"", lieu:"", support:"", type:"", etiquette:""},
   selectedId: null,
   viewIndex: 0,
   view: {scale:1},
@@ -1438,6 +1454,7 @@ function activePhotos(){
     // celles où il est seul — d'où une recherche par mot-clé exact plutôt
     // qu'une égalité stricte de tout le champ.
     if(f.auteur && p.auteur !== f.auteur) return false;
+    if(f.type && fileTypeOf(p) !== f.type) return false;
     if(f.personnage && !personnageTokens(p.personnage).includes(f.personnage)) return false;
     if(f.lieu && p.lieu !== f.lieu) return false;
     if(f.support && p.support !== f.support) return false;
@@ -1760,6 +1777,21 @@ function updateToolbarState(){
 function uniqueValues(field){
   return [...new Set(State.photos.filter(p=>!p.corbeille).map(p=>p[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
 }
+/* Type de fichier (JPG, PNG, HEIC, MP4…) déduit de l'extension du nom de
+   fichier — pas une rubrique à part dans le catalogue, ça n'a pas de sens
+   de le stocker séparément puisqu'il découle directement du fichier
+   lui-même. JPG/JPEG sont regroupés (même format, extension différente
+   selon l'appareil/l'export). */
+function fileTypeOf(p){
+  const m = /\.([a-zA-Z0-9]+)$/.exec(p.fileName||"");
+  if(!m) return "";
+  let ext = m[1].toUpperCase();
+  if(ext==="JPEG") ext = "JPG";
+  return ext;
+}
+function uniqueFileTypes(){
+  return [...new Set(State.photos.filter(p=>!p.corbeille).map(fileTypeOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+}
 /* Liste par Personnage (bandeau Recherches) : un personnage par ligne, et
    non le contenu brut du champ (qui peut cumuler plusieurs personnages
    séparés par des virgules) — s'appuie sur les mêmes mots-clés exacts,
@@ -1776,6 +1808,7 @@ function populateFilterOptions(){
   fillSelect("fPersonnage", uniquePersonnageTokens(), State.filters.personnage);
   fillSelect("fLieu", uniqueValues("lieu"), State.filters.lieu);
   fillSelect("fSupport", uniqueValues("support"), State.filters.support);
+  fillSelect("fType", uniqueFileTypes(), State.filters.type);
 }
 function fillSelect(id, values, current){
   const sel = document.getElementById(id);
@@ -1791,13 +1824,15 @@ document.getElementById("fAuteur").addEventListener("change", e=>{State.filters.
 document.getElementById("fPersonnage").addEventListener("change", e=>{State.filters.personnage=e.target.value; renderGrid();});
 document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; renderGrid();});
 document.getElementById("fSupport").addEventListener("change", e=>{State.filters.support=e.target.value; renderGrid();});
+document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; renderGrid();});
 document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.etiquette=e.target.value; renderGrid();});
 function resetFilters(){
-  State.filters = {auteur:"", personnage:"", lieu:"", support:"", etiquette:""};
+  State.filters = {auteur:"", personnage:"", lieu:"", support:"", type:"", etiquette:""};
   document.getElementById("fAuteur").value="";
   document.getElementById("fPersonnage").value="";
   document.getElementById("fLieu").value="";
   document.getElementById("fSupport").value="";
+  document.getElementById("fType").value="";
   document.getElementById("fEtiquette").value="";
 }
 document.getElementById("btnResetFilters").addEventListener("click", ()=>{
@@ -4253,7 +4288,16 @@ document.getElementById("actDownload").addEventListener("click", async ()=>{
 document.getElementById("actSlideshow").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
   closeModal("modalMore");
-  openDiaporama(p.id);
+  const loading = document.getElementById("diaporamaLoading");
+  loading.classList.remove("hidden");
+  // setTimeout(...,20) laisse le temps au navigateur de peindre l'indicateur
+  // AVANT le travail de construction (bande de miniatures, potentiellement
+  // lourde avec des centaines de photos), qui bloque sinon le fil principal
+  // sans que l'indicateur n'ait eu le temps de s'afficher.
+  setTimeout(()=>{
+    openDiaporama(p.id);
+    loading.classList.add("hidden");
+  }, 20);
 });
 document.getElementById("actRotateLeft").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
