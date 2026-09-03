@@ -622,9 +622,10 @@ button{font-family:inherit;}
   /* Le fondu (opacité) est nettement RETARDÉ par rapport à l'agrandissement
      (transform) : l'agrandissement se termine vite (.45s, inclus dans le
      plateau ci-dessous), puis l'image reste figée, opaque et sans bande
-     noire pendant un plateau de 3s, avant un fondu croisé final de 4s vers
-     la photo suivante — soit 7s au total par photo. */
-  transition: opacity 4s ease 3s, transform .45s ease;
+     noire pendant un plateau réglable (voir modale "Réglages du
+     diaporama", variables --ss-plateau / --ss-fondu), avant un fondu croisé
+     final vers la photo suivante. */
+  transition: opacity var(--ss-fondu, 4s) ease var(--ss-plateau, 3s), transform .45s ease;
 }
 .slide-img.active{
   opacity:1; z-index:2;
@@ -1136,6 +1137,28 @@ button{font-family:inherit;}
     <div class="modal-foot">
       <button class="btn reset" data-close="modalNewEntry">Annuler</button>
       <button class="btn copper" id="btnSaveNewEntry">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: RÉGLAGE DU DIAPORAMA ============== -->
+<div class="modal-overlay" id="modalSlideshowSettings">
+  <div class="modal">
+    <div class="modal-head"><h2>Réglages du diaporama</h2><button class="modal-close" data-close="modalSlideshowSettings">×</button></div>
+    <div class="modal-body">
+      <div class="field-row">
+        <label for="ssPlateau">Plateau — durée où la photo reste figée, plein cadre (secondes)</label>
+        <input type="number" id="ssPlateau" min="0" max="30" step="0.5" style="width:100%;">
+      </div>
+      <div class="field-row">
+        <label for="ssFondu">Fondu croisé — durée de la transition vers la photo suivante (secondes)</label>
+        <input type="number" id="ssFondu" min="0.5" max="15" step="0.5" style="width:100%;">
+      </div>
+      <p class="drive-note" id="ssTotalInfo" style="margin-top:6px;"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" id="btnSlideshowSettingsDefault">Valeurs par défaut (3s + 4s)</button>
+      <button class="btn copper" id="btnSlideshowSettingsStart">▶ Lancer le diaporama</button>
     </div>
   </div>
 </div>
@@ -4032,6 +4055,28 @@ function resetSlideTransforms(){
   slideshowImgA.style.transform = "";
   slideshowImgB.style.transform = "";
 }
+/* -----------------------------------------------------------------
+   Réglages du diaporama (plateau / fondu, en secondes) : réglables par
+   l'utilisateur avant chaque lancement (voir modale "Réglages du
+   diaporama"), mémorisés d'une session à l'autre. Appliqués via des
+   variables CSS (--ss-plateau / --ss-fondu) que .slide-img utilise dans sa
+   transition (voir CSS), pour ne pas dupliquer les valeurs entre JS et CSS.
+   ----------------------------------------------------------------- */
+const SLIDESHOW_TIMING_DEFAULTS = {plateau:3, fondu:4};
+function getSlideshowTiming(){
+  const plateau = parseFloat(localStorage.getItem("imago_slideshow_plateau"));
+  const fondu = parseFloat(localStorage.getItem("imago_slideshow_fondu"));
+  return {
+    plateau: isFinite(plateau) && plateau>=0 ? plateau : SLIDESHOW_TIMING_DEFAULTS.plateau,
+    fondu: isFinite(fondu) && fondu>0 ? fondu : SLIDESHOW_TIMING_DEFAULTS.fondu
+  };
+}
+function applySlideshowTimingVars(){
+  const {plateau, fondu} = getSlideshowTiming();
+  document.documentElement.style.setProperty("--ss-plateau", plateau+"s");
+  document.documentElement.style.setProperty("--ss-fondu", fondu+"s");
+  return {plateau, fondu};
+}
 function openLoupe(id){
   State.slideshowMode = "loupe";
   State.slideshowList = activePhotos();
@@ -4051,7 +4096,9 @@ function openDiaporama(id){
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
   clearInterval(State.slideshowTimer);
-  State.slideshowTimer = setInterval(()=> stepSlideshow(1), 7000); // 7s par photo (plateau 3s + fondu 4s)
+  const {plateau, fondu} = applySlideshowTimingVars();
+  const totalMs = (plateau + fondu) * 1000;
+  State.slideshowTimer = setInterval(()=> stepSlideshow(1), totalMs);
 }
 /* Affiche la photo courante avec un fondu enchaîné doux (façon Google
    Photos) : la prochaine image est chargée sur le "tampon" actuellement
@@ -4093,7 +4140,7 @@ function showSlideshowFrame(instant){
       outgoing.style.setProperty("--exit-scale", computeExitScale(outgoing));
       outgoing.classList.remove("active");
       outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
-      setTimeout(()=> outgoing.classList.remove("exiting"), 7300); // nettoyage après la transition complète (plateau 3s + fondu 4s = 7s), pour repartir de l'état "entrant" la prochaine fois
+      setTimeout(()=> outgoing.classList.remove("exiting"), (getSlideshowTiming().plateau + getSlideshowTiming().fondu)*1000 + 300); // nettoyage après la transition complète (plateau + fondu réglés), pour repartir de l'état "entrant" la prochaine fois
     }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
   };
@@ -4288,12 +4335,35 @@ document.getElementById("actDownload").addEventListener("click", async ()=>{
 document.getElementById("actSlideshow").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
   closeModal("modalMore");
+  const {plateau, fondu} = getSlideshowTiming();
+  document.getElementById("ssPlateau").value = plateau;
+  document.getElementById("ssFondu").value = fondu;
+  updateSsTotalInfo();
+  openModal("modalSlideshowSettings");
+});
+function updateSsTotalInfo(){
+  const plateau = parseFloat(document.getElementById("ssPlateau").value) || 0;
+  const fondu = parseFloat(document.getElementById("ssFondu").value) || 0;
+  document.getElementById("ssTotalInfo").textContent = `Total : ${(plateau+fondu).toLocaleString("fr-FR")} seconde(s) par photo.`;
+}
+document.getElementById("ssPlateau").addEventListener("input", updateSsTotalInfo);
+document.getElementById("ssFondu").addEventListener("input", updateSsTotalInfo);
+document.getElementById("btnSlideshowSettingsDefault").addEventListener("click", ()=>{
+  document.getElementById("ssPlateau").value = SLIDESHOW_TIMING_DEFAULTS.plateau;
+  document.getElementById("ssFondu").value = SLIDESHOW_TIMING_DEFAULTS.fondu;
+  updateSsTotalInfo();
+});
+document.getElementById("btnSlideshowSettingsStart").addEventListener("click", ()=>{
+  const p = getSelected(); if(!p) return;
+  let plateau = parseFloat(document.getElementById("ssPlateau").value);
+  let fondu = parseFloat(document.getElementById("ssFondu").value);
+  if(!isFinite(plateau) || plateau<0) plateau = SLIDESHOW_TIMING_DEFAULTS.plateau;
+  if(!isFinite(fondu) || fondu<=0) fondu = SLIDESHOW_TIMING_DEFAULTS.fondu;
+  localStorage.setItem("imago_slideshow_plateau", plateau);
+  localStorage.setItem("imago_slideshow_fondu", fondu);
+  closeModal("modalSlideshowSettings");
   const loading = document.getElementById("diaporamaLoading");
   loading.classList.remove("hidden");
-  // setTimeout(...,20) laisse le temps au navigateur de peindre l'indicateur
-  // AVANT le travail de construction (bande de miniatures, potentiellement
-  // lourde avec des centaines de photos), qui bloque sinon le fil principal
-  // sans que l'indicateur n'ait eu le temps de s'afficher.
   setTimeout(()=>{
     openDiaporama(p.id);
     loading.classList.add("hidden");
