@@ -598,6 +598,13 @@ button{font-family:inherit;}
 .info-content .sub-line{color:var(--ink-dim); font-size:12px;}
 .info-content a{color:var(--copper-hi);}
 .info-pencil{background:none; border:none; color:var(--ink-dim); cursor:pointer; font-size:14px; padding:2px 4px;}
+/* Bouton poussoir "Favori : Oui/Non" de la modale Infos (sous Personnage) */
+.info-fav-btn{
+  padding:6px 14px; font-size:12.5px; border-radius:20px;
+  border:1px solid var(--copper); background:transparent; color:var(--ink-dim); cursor:pointer;
+}
+.info-fav-btn.active{background:var(--copper); color:#1b1108; border-color:var(--copper);}
+.info-fav-btn:hover{border-color:var(--copper-hi);}
 .info-pencil:hover{color:var(--copper-hi);}
 .info-inline-edit{display:flex; gap:6px; margin-top:4px;}
 .info-inline-edit input{flex:1; padding:5px 8px; font-size:12.5px; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink);}
@@ -663,6 +670,19 @@ button{font-family:inherit;}
 }
 .slideshow-fill-toggle:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
 .slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em; z-index:5;}
+/* Date (bas-gauche) et lieu (bas-droite) incrustés sur chaque photo du
+   diaporama, mis à jour en même temps que le fondu enchaîné (voir
+   showSlideshowFrame). */
+.slide-caption{
+  position:absolute; bottom:16px; z-index:4; max-width:44%;
+  font-family:'Calibri','Candara','Segoe UI',sans-serif; font-size:10pt; color:#f4efe6;
+  text-shadow:0 1px 3px rgba(0,0,0,.9), 0 0 8px rgba(0,0,0,.55);
+  pointer-events:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  transition:opacity .5s ease;
+}
+.slide-caption:empty{display:none;}
+.slide-caption-date{left:18px; text-align:left;}
+.slide-caption-lieu{right:18px; text-align:right;}
 
 /* ---------- bande de miniatures du diaporama (choix rapide) ---------- */
 /* Largeur pilotée par une variable CSS (au lieu d'une valeur fixe) pour
@@ -1222,6 +1242,8 @@ button{font-family:inherit;}
   <div class="slideshow-stage">
     <img id="slideshowImgA" class="slide-img" src="" alt="">
     <img id="slideshowImgB" class="slide-img" src="" alt="">
+    <div class="slide-caption slide-caption-date" id="slideCaptionDate"></div>
+    <div class="slide-caption slide-caption-lieu" id="slideCaptionLieu"></div>
     <button class="slideshow-fill-toggle" id="slideshowFillToggle" title="Basculer entre image entière (bandes noires possibles), équilibré et plein écran (léger recadrage)">⛶ Ajusté</button>
     <div class="slideshow-hint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
   </div>
@@ -4179,6 +4201,14 @@ function renderInfoModal(p){
     </div>
 
     <div class="info-row">
+      <div class="info-ic">★</div>
+      <div class="info-content">
+        <button class="btn info-fav-btn${p.favori ? ' active' : ''}" id="infoFavBtn" type="button">Favori : ${p.favori ? "Oui" : "Non"}</button>
+        <div class="sub-line">Rubrique « favori » du catalogue CSV</div>
+      </div>
+    </div>
+
+    <div class="info-row">
       <div class="info-ic">⇪</div>
       <div class="info-content">
         <div class="main-line">${shared ? "Partagée avec " + escapeHtml(shared) : "Non partagée"}</div>
@@ -4219,6 +4249,18 @@ function renderInfoModal(p){
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
   rows.querySelector('[data-edit="personnage"]').addEventListener("click", ()=> startInlineEdit("infoPersonnageText", "personnage", p));
   rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p));
+  document.getElementById("infoFavBtn").addEventListener("click", async ()=>{
+    // Bouton poussoir "Favori : Oui/Non" — bascule directement la rubrique
+    // "favori" du catalogue CSV (même donnée que l'étoile ★ de la barre
+    // d'outils et le repère affiché dans le visualiseur).
+    p.favori = !p.favori;
+    await idbPut("photos", p);
+    renderGrid();
+    updateToolbarState();
+    document.getElementById("viewerFavMark").classList.toggle("show", !!p.favori);
+    autoBuildCsv();
+    renderInfoModal(p);
+  });
   const verifyBtn = document.getElementById("infoVerifyLieuBtn");
   if(verifyBtn){
     verifyBtn.addEventListener("click", async ()=>{
@@ -4423,6 +4465,7 @@ function showSlideshowFrame(instant){
       }, (getSlideshowTiming().plateau + getSlideshowTiming().fondu)*1000 + 300);
     }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
+    updateSlideCaptions(p);
     scheduleNextAutoAdvance(); // planifie la prochaine avance auto SEULEMENT maintenant que cette photo est réellement affichée (voir plus bas) — jamais à durée fixe déconnectée du décodage réel
   };
   incoming.onerror = ()=>{
@@ -4439,6 +4482,23 @@ function showSlideshowFrame(instant){
   // différées à l'import qui n'ont pas de dataUrl complet.
   incoming.src = (p.isVideo ? (p.posterDataUrl || "") : (p.dataUrl || ""));
   updateSlideshowRailHighlight();
+}
+const slideCaptionDateEl = document.getElementById("slideCaptionDate");
+const slideCaptionLieuEl = document.getElementById("slideCaptionLieu");
+/* Date (bas-gauche) et lieu (bas-droite) incrustés sur la photo affichée,
+   mis à jour au même instant que le fondu enchaîné vers la nouvelle image
+   (appelé depuis l'onload de showSlideshowFrame). Un léger fondu d'opacité
+   (voir CSS .slide-caption) adoucit le changement de texte au lieu d'un
+   remplacement brutal. */
+function updateSlideCaptions(p){
+  slideCaptionDateEl.style.opacity = 0;
+  slideCaptionLieuEl.style.opacity = 0;
+  requestAnimationFrame(()=>{
+    slideCaptionDateEl.textContent = p.dateAchat ? fmtDateFr(p.dateAchat) : "";
+    slideCaptionLieuEl.textContent = p.lieu || "";
+    slideCaptionDateEl.style.opacity = 1;
+    slideCaptionLieuEl.style.opacity = 1;
+  });
 }
 /* Remplace l'ancien setInterval à durée fixe : re-planifie l'avance
    automatique à chaque fois qu'une photo vient d'être réellement affichée
