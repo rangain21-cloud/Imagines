@@ -4314,15 +4314,10 @@ function renderInfoModal(p){
       <div class="info-ic">📍</div>
       <div class="info-content" style="flex:1;">
         <div class="main-line" id="infoLieuText">${p.lieu ? escapeHtml(p.lieu) : "Aucun lieu renseigné"}</div>
-        ${(!p.lieu && p.lieuCandidate) ? (
-          p.lieuCandidateSource === "gps" ? `
-          <div class="sub-line">📍 Lieu proposé via GPS : « ${escapeHtml(p.lieuCandidate)} »</div>
-          <button class="btn" id="infoUseGpsLieuBtn" type="button" style="margin-top:6px; padding:6px 10px; font-size:12px;">✓ Utiliser ce lieu</button>
-          ` : `
+        ${(!p.lieu && p.lieuCandidate) ? `
           <div class="sub-line">Détecté dans le nom du fichier : « ${escapeHtml(p.lieuCandidate)} » (non vérifié)</div>
           <button class="btn" id="infoVerifyLieuBtn" type="button" style="margin-top:6px; padding:6px 10px; font-size:12px;">🌐 Vérifier via Wikipédia</button>
-          `
-        ) : (!p.lieu && hasGps ? `<div class="sub-line">Recherche du lieu via GPS…</div>` : "")}
+        ` : (!p.lieu && hasGps ? `<div class="sub-line">Recherche du lieu via GPS…</div>` : "")}
         ${hasGps ? `<div class="sub-line">${escapeHtml(decimalToDMS(p.gpsLat, p.gpsLon))} · ${p.gpsLat.toFixed(6)}, ${p.gpsLon.toFixed(6)}</div>` : ""}
         ${hasGps ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>` : `<div class="sub-line">Aucune coordonnée GPS dans ce fichier — pas d'aperçu carte.</div>`}
         ${mapLinkHref ? `<a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
@@ -4366,24 +4361,6 @@ function renderInfoModal(p){
       renderInfoModal(p);
     });
   }
-  const useGpsLieuBtn = document.getElementById("infoUseGpsLieuBtn");
-  if(useGpsLieuBtn){
-    // Lieu proposé via reverse-géocodage GPS (voir maybeFetchGpsLieuCandidate) :
-    // déjà fiable par construction (coordonnées exactes du fichier), donc pas
-    // besoin d'une vérification Wikipédia comme pour un nom deviné dans le
-    // nom de fichier — un simple "Utiliser ce lieu" suffit.
-    useGpsLieuBtn.addEventListener("click", async ()=>{
-      p.lieu = p.lieuCandidate;
-      p.lieuCandidate = "";
-      p.lieuCandidateSource = "";
-      if(!p.titre || p.titre === buildTitre("", p.personnage)) p.titre = buildTitre(p.lieu, p.personnage);
-      await idbPut("photos", p);
-      populateFilterOptions();
-      renderGrid();
-      autoBuildCsv();
-      renderInfoModal(p);
-    });
-  }
 }
 /* Propose automatiquement un lieu à partir du GPS embarqué dans le fichier
    (bien plus fiable qu'une déduction depuis le nom de fichier) quand aucun
@@ -4391,28 +4368,33 @@ function renderInfoModal(p){
    pour LA photo affichée uniquement (jamais en masse sur tout le
    catalogue), pour respecter la politique d'usage de Nominatim (service de
    géocodage gratuit, à ne pas solliciter en rafale) et éviter d'attendre
-   1200 requêtes réseau à l'import d'un dossier. Le résultat est mis en
-   cache sur la fiche (lieuCandidate + lieuCandidateSource="gps") pour ne
-   pas réinterroger le service à chaque réouverture de la modale. */
+   1200 requêtes réseau à l'import d'un dossier. Le lieu trouvé est appliqué
+   directement (pas de confirmation demandée, contrairement à une déduction
+   depuis le nom de fichier qui reste, elle, soumise à vérification) : les
+   coordonnées GPS d'un fichier sont une donnée fiable en elles-mêmes. */
 const gpsLieuFetchInFlight = new Set();
 async function maybeFetchGpsLieuCandidate(p){
   if(p.lieu) return; // déjà un lieu confirmé
   if(p.gpsLat==null || p.gpsLon==null) return; // pas de GPS : on garde le mécanisme existant (nom de fichier)
-  if(p.lieuCandidateSource === "gps") return; // déjà proposé une fois via GPS, résultat mis en cache
+  if(p.lieuGpsChecked) return; // déjà recherché une fois via GPS (résultat vide ou déjà appliqué) — pas de nouvelle requête
   if(gpsLieuFetchInFlight.has(p.id)) return; // requête déjà en cours pour cette photo
   gpsLieuFetchInFlight.add(p.id);
   try{
     const place = await reverseGeocode(p.gpsLat, p.gpsLon);
+    p.lieuGpsChecked = true; // évite de réinterroger le service à chaque réouverture, même si rien n'a été trouvé
     if(place){
-      p.lieuCandidate = place;
-      p.lieuCandidateSource = "gps";
-      await idbPut("photos", p);
-      // Ne rafraîchir l'affichage que si la modale Infos est toujours ouverte
-      // sur CETTE MÊME photo (l'utilisateur a pu changer de sélection ou
-      // fermer la modale pendant que la requête réseau était en cours).
-      if(document.getElementById("modalInfo").classList.contains("show") && getSelected() && getSelected().id === p.id){
-        renderInfoModal(p);
-      }
+      p.lieu = place;
+      if(!p.titre || p.titre === buildTitre("", p.personnage)) p.titre = buildTitre(p.lieu, p.personnage);
+    }
+    await idbPut("photos", p);
+    populateFilterOptions();
+    renderGrid();
+    autoBuildCsv();
+    // Ne rafraîchir l'affichage que si la modale Infos est toujours ouverte
+    // sur CETTE MÊME photo (l'utilisateur a pu changer de sélection ou
+    // fermer la modale pendant que la requête réseau était en cours).
+    if(document.getElementById("modalInfo").classList.contains("show") && getSelected() && getSelected().id === p.id){
+      renderInfoModal(p);
     }
   }catch(err){
     console.warn(`Géolocalisation automatique impossible pour "${p.fileName}" (connexion internet requise).`, err);
