@@ -584,6 +584,11 @@ button{font-family:inherit;}
   margin-bottom:14px;
 }
 .info-title-input:focus{border-bottom-color:var(--copper);}
+.info-auteur-input{
+  width:100%; border:none; border-bottom:1px solid var(--line); background:none;
+  color:var(--ink); font-family:var(--font-ui); font-size:13.5px; padding:3px 2px 6px;
+}
+.info-auteur-input:focus{border-bottom-color:var(--copper);}
 .info-contact{display:flex; align-items:center; gap:10px; margin-bottom:12px;}
 .info-avatar{
   width:34px; height:34px; border-radius:50%; background:var(--copper);
@@ -1063,7 +1068,7 @@ button{font-family:inherit;}
             </div>
             <div class="sub-line" id="edGpsInfo" style="margin-top:5px;"></div>
           </div>
-          <div class="field-row" style="grid-column:1/-1;"><label for="edEtiquette">Étiquette (mots-clés séparés par une virgule)</label><input type="text" id="edEtiquette"></div>
+          <div class="field-row" style="grid-column:1/-1;"><label for="edEtiquette">Étiquette (mots-clés séparés par une virgule)</label><input type="text" class="info-title-input" id="edEtiquette" placeholder="Ajouter une étiquette" style="margin-bottom:0;"></div>
           <div class="field-row" style="grid-column:1/-1;"><label for="edAuteur">Auteur</label><input type="text" id="edAuteur" list="auteurList"></div>
           <div class="field-row"><label for="edOptique">Caméra</label><input type="text" id="edOptique" placeholder="ex. Apple iPhone 14 Pro"></div>
           <div class="field-row">
@@ -1761,13 +1766,27 @@ function scheduleGalleryBackgroundFill(grid, rest, offset, token){
   if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
   else setTimeout(step, 0);
 }
+/* Compteur affiché à la suite de l'intitulé "l'heuristique — où l'Art de
+   trouver, de découvrir" (span #galleryCount). Pendant un import
+   (importTotalCount > 0, voir handleFilesSelected/importOneFile), il
+   indique la progression "chargées / restantes" ; sinon il revient au
+   simple total d'images déjà cataloguées — jamais vide tant qu'il y a au
+   moins une image, ce qui le rend "pérenne" plutôt que transitoire. */
+function updateGalleryCounter(){
+  const el = document.getElementById("galleryCount");
+  if(importTotalCount > 0){
+    const remaining = Math.max(0, importTotalCount - importDoneCount);
+    el.textContent = `${importDoneCount} image${importDoneCount>1?"s":""} chargée(s) / ${remaining} restante(s)`;
+    return;
+  }
+  const list = galleryPhotos();
+  el.textContent = list.length ? `${list.length} image${list.length>1?"s":""}` : "";
+}
 function renderGallery(focusId){
   const list = galleryPhotos();
   const grid = document.getElementById("galleryGrid");
   const empty = document.getElementById("galleryEmpty");
-  document.getElementById("galleryCount").textContent = list.length
-    ? `${list.length} image${list.length>1?"s":""}`
-    : "";
+  updateGalleryCounter();
   grid.innerHTML = "";
   galleryRenderToken++;
   const myToken = galleryRenderToken;
@@ -2042,6 +2061,16 @@ const IMPORT_PRIORITY_COUNT = 50;
 const IMPORT_BACKGROUND_CHUNK = 15;
 let importToken = 0; // incrémenté à chaque nouvel import, pour abandonner un import en arrière-plan devenu obsolète (nouveau dossier choisi entre-temps)
 
+/* Compteur persistant "images chargées / images restantes", affiché à la
+   suite de l'intitulé "l'heuristique — où l'Art de trouver, de découvrir"
+   (voir updateGalleryCounter). Mis à jour à chaque fichier traité — pas
+   seulement à chaque paquet — pour un retour visuel fluide pendant le
+   chargement d'un gros dossier (~1200 fichiers). importTotalCount reste à 0
+   hors import : le compteur affiche alors simplement le nombre total
+   d'images déjà cataloguées. */
+let importTotalCount = 0;
+let importDoneCount = 0;
+
 /* Seuil "petite vidéo" (voir importOneFile ci-dessous) : en dessous, une
    vidéo est importée intégralement comme avant (convertie en base64,
    lisible immédiatement). Au-delà, seules sa vignette et ses métadonnées
@@ -2077,7 +2106,7 @@ function estimateFileDate(file, existingRow){
    compteurs partagés `stats`. Ne touche à AUCUN élément d'écran : c'est à
    l'appelant de rafraîchir l'affichage, par lots, une fois un paquet traité. */
 async function importOneFile(file, csvRowByFileName, stats){
-  if(State.photos.find(p=>p.fileName===file.name)) return; // doublon dans la sélection elle-même
+  if(State.photos.find(p=>p.fileName===file.name)){ importDoneCount++; updateGalleryCounter(); return; } // doublon dans la sélection elle-même
   try{
     const isVideo = isVideoFile(file);
     const deferVideo = isVideo && file.size > VIDEO_INLINE_MAX_BYTES; // grosse vidéo : contenu chargé à la demande, voir plus bas
@@ -2189,6 +2218,12 @@ async function importOneFile(file, csvRowByFileName, stats){
     if(!stats.failedDetails) stats.failedDetails = [];
     if(stats.failedDetails.length < 3) stats.failedDetails.push(`"${file.name}" — ${detail}`);
     if(!stats.firstErrorDetail) stats.firstErrorDetail = detail;
+  } finally {
+    // Compteur "chargées / restantes" (voir updateGalleryCounter) : mis à
+    // jour fichier par fichier, qu'il ait réussi ou échoué, pour un retour
+    // visuel fluide plutôt que par paquets de 15 seulement.
+    importDoneCount++;
+    updateGalleryCounter();
   }
 }
 
@@ -2244,6 +2279,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
       if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
       else setTimeout(step, 0);
     } else {
+      importTotalCount = 0; importDoneCount = 0; updateGalleryCounter(); // import terminé : le compteur revient à l'affichage simple du total
       celebrateImportComplete(
         stats,
         importSummaryMessage(stats),
@@ -2276,6 +2312,9 @@ async function handleFilesSelected(fileList, folderNameOverride){
   const folderName = folderNameOverride || (files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier");
   State.folderName = folderName;
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
+  importTotalCount = files.length;
+  importDoneCount = 0;
+  updateGalleryCounter();
 
   // ---- 1) Catalogue existant : s'il y en a plusieurs candidats (ex. suffixes
   // "(1)", "(2)" laissés par des téléchargements successifs), on ne garde QUE
@@ -2339,6 +2378,7 @@ async function handleFilesSelected(fileList, folderNameOverride){
   openGallery();
   reportImportProgress(folderName, catalogCandidates, stats, restFiles.length>0);
   if(restFiles.length===0){
+    importTotalCount = 0; importDoneCount = 0; updateGalleryCounter(); // import terminé : le compteur revient à l'affichage simple du total
     celebrateImportComplete(
       stats,
       importSummaryMessage(stats),
@@ -3941,6 +3981,18 @@ document.getElementById("btnEdit").addEventListener("click", ()=>{
   document.getElementById("edPersonnage").value = p.personnage || "";
   document.getElementById("edLieu").value = p.lieu || "";
   document.getElementById("edEtiquette").value = p.etiquette || "";
+  const edEtiquetteInput = document.getElementById("edEtiquette");
+  edEtiquetteInput.oninput = null;
+  // Même comportement que le champ Titre de la modale Infos (info-title-input) :
+  // sauvegarde immédiate dès qu'on quitte le champ, indépendamment du bouton
+  // "Enregistrer" du reste de la modale (qui relit de toute façon la même
+  // valeur au moment de sa propre sauvegarde — pas de conflit).
+  edEtiquetteInput.onchange = async ()=>{
+    p.etiquette = edEtiquetteInput.value.trim();
+    await idbPut("photos", p);
+    renderGrid();
+    autoBuildCsv();
+  };
   document.getElementById("edAuteur").value = p.auteur || "Philippe";
   document.getElementById("edOptique").value = p.optique || "";
   document.getElementById("edPoids").value = p.poids || (p.sizeBytes ? Math.round(p.sizeBytes/1024) : "");
@@ -4142,15 +4194,28 @@ function renderInfoModal(p){
   titleInput.onchange = async ()=>{ p.titre = titleInput.value.trim(); await idbPut("photos", p); renderGrid(); autoBuildCsv(); };
 
   const contacts = document.getElementById("infoContacts");
-  if(p.auteur){
-    contacts.innerHTML = `
-      <div class="info-contact">
-        <div class="info-avatar">${escapeHtml(p.auteur.trim().charAt(0).toUpperCase()||"?")}</div>
-        <div><div class="main-line">${escapeHtml(p.auteur)}</div><div class="sub-line">Auteur</div></div>
-      </div>`;
-  } else {
-    contacts.innerHTML = `<p class="drive-note">Aucun auteur renseigné (voir « Modifier » pour en ajouter un).</p>`;
-  }
+  const auteurLetter = (p.auteur||"").trim().charAt(0).toUpperCase() || "?";
+  contacts.innerHTML = `
+    <div class="info-contact">
+      <div class="info-avatar" id="infoAuteurAvatar">${escapeHtml(auteurLetter)}</div>
+      <div style="flex:1;">
+        <input type="text" class="info-auteur-input" id="infoAuteurInput" list="auteurList" placeholder="Ajouter un auteur" value="${escapeHtml(p.auteur||"")}">
+        <div class="sub-line">Auteur</div>
+      </div>
+    </div>`;
+  const auteurInput = document.getElementById("infoAuteurInput");
+  auteurInput.oninput = null;
+  // Même comportement que le champ Titre juste au-dessus (info-title-input) :
+  // saisie libre + suggestions (liste déroulante "auteurList", partagée avec
+  // le champ Auteur de la modale Modification), sauvegarde immédiate dès
+  // qu'on quitte le champ, sans bouton "Enregistrer" séparé.
+  auteurInput.onchange = async ()=>{
+    p.auteur = auteurInput.value.trim();
+    document.getElementById("infoAuteurAvatar").textContent = p.auteur.charAt(0).toUpperCase() || "?";
+    await idbPut("photos", p);
+    renderGrid();
+    autoBuildCsv();
+  };
 
   const rows = document.getElementById("infoRows");
   const exifLines = fmtExif(p.exif);
