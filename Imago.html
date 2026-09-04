@@ -2453,8 +2453,22 @@ async function reverseGeocode(lat, lon){
   if(!res.ok) throw new Error("Service de géolocalisation indisponible (HTTP " + res.status + ").");
   const data = await res.json();
   const a = data.address || {};
-  const label = a.village || a.town || a.city || a.hamlet || a.municipality || a.county || data.name || "";
-  return label || (data.display_name ? data.display_name.split(",")[0] : "");
+  const locality = a.village || a.town || a.city || a.hamlet || a.municipality || a.county || data.name
+    || (data.display_name ? data.display_name.split(",")[0] : "");
+  if(!locality) return "";
+  // Région : abréviation officielle (ex. "QC") quand Nominatim la fournit
+  // via ISO3166-2-lvl4 ("CA-QC"), sinon le nom complet de la région/état/
+  // province (ex. "Île-de-France") — pour reconstituer le même format
+  // "Ville, Région, Pays" que Google Photos (ex. "Sainte-Claire, QC, Canada"),
+  // au lieu de ne renvoyer que le nom de la localité comme auparavant.
+  let region = "";
+  if(a["ISO3166-2-lvl4"] && a["ISO3166-2-lvl4"].includes("-")){
+    region = a["ISO3166-2-lvl4"].split("-")[1];
+  } else if(a.state){
+    region = a.state;
+  }
+  const country = a.country || "";
+  return [locality, region, country].filter(Boolean).join(", ");
 }
 
 /* Lecture d'un fichier en data URL, avec robustesse renforcée pour Android :
