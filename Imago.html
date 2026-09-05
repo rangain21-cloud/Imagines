@@ -2185,6 +2185,59 @@ const VIDEO_INLINE_MAX_BYTES = 5 * 1024 * 1024; // 5 Mo
    photo. */
 const pendingVideoFiles = new Map();
 
+/* Référence au File d'origine des PHOTOS pour lesquelles ni appareil ni GPS
+   n'ont pu être extraits à l'import — uniquement ce sous-ensemble (pas
+   toutes les photos, pour ne pas alourdir la mémoire) — afin de permettre
+   un diagnostic à la demande (voir diagnoseExifFile / bouton "🔍
+   Diagnostiquer" dans la modale Infos) sans avoir à refaire tout un import
+   ni à extraire le fichier par un autre moyen (zip, etc.). Valable pour la
+   session en cours uniquement. */
+const exifDiagnosticFiles = new Map();
+async function diagnoseExifFile(file){
+  const bytes = new Uint8Array(await file.slice(0, 2*1024*1024).arrayBuffer());
+  const view = new DataView(bytes.buffer);
+  const lines = [];
+  lines.push(`Fichier : ${file.name} (${fmtSize(file.size)})`);
+  const hexHead = Array.from(bytes.slice(0,32)).map(b=>b.toString(16).padStart(2,"0")).join(" ");
+  lines.push(`32 premiers octets (hex) : ${hexHead}`);
+  const asciiHead = Array.from(bytes.slice(0,64)).map(b=> (b>=32&&b<127)?String.fromCharCode(b):".").join("");
+  lines.push(`64 premiers octets (ASCII) : ${asciiHead}`);
+  let exifMarkerAt = -1;
+  for(let i=0;i<bytes.length-6;i++){
+    if(bytes[i]===0x45&&bytes[i+1]===0x78&&bytes[i+2]===0x69&&bytes[i+3]===0x66&&bytes[i+4]===0x00&&bytes[i+5]===0x00){ exifMarkerAt=i; break; }
+  }
+  lines.push(`Marqueur "Exif\\0\\0" : ${exifMarkerAt>=0 ? "trouvé à l'octet "+exifMarkerAt : "absent"}`);
+  let tiffAt=-1, tiffLE=null;
+  for(let i=0;i<bytes.length-8;i++){
+    const little = bytes[i]===0x49&&bytes[i+1]===0x49&&bytes[i+2]===0x2A&&bytes[i+3]===0x00;
+    const big = bytes[i]===0x4D&&bytes[i+1]===0x4D&&bytes[i+2]===0x00&&bytes[i+3]===0x2A;
+    if(little||big){ tiffAt=i; tiffLE=little; break; }
+  }
+  lines.push(`Signature TIFF brute (II*/MM*) : ${tiffAt>=0 ? "trouvée à l'octet "+tiffAt+(tiffLE?" (little-endian)":" (big-endian)") : "absente"}`);
+  const tiffStart = findTiffStartBySignature(view);
+  lines.push(`Départ TIFF retenu par l'app : ${tiffStart!=null ? "octet "+tiffStart : "AUCUN — c'est ici que ça bloque"}`);
+  if(tiffStart!=null){
+    try{
+      const exif = readExifFromTiffStart(view, tiffStart);
+      lines.push(`Lu : make=${(exif&&exif.make)||"—"} model=${(exif&&exif.model)||"—"} gps=${(exif&&exif.gpsLat!=null)?exif.gpsLat+","+exif.gpsLon:"—"}`);
+    }catch(e){ lines.push(`Erreur pendant la lecture : ${e.message}`); }
+  }
+  // Recherche des boîtes ISOBMFF usuelles (HEIC/HEIF), pour repérer où se
+  // situe le bloc "meta" contenant l'item Exif, même quand aucune des deux
+  // approches ci-dessus n'aboutit.
+  const boxNames = [];
+  let pos = 0;
+  while(pos < bytes.length-8 && boxNames.length < 25){
+    const size = view.getUint32(pos);
+    const type = String.fromCharCode(bytes[pos+4],bytes[pos+5],bytes[pos+6],bytes[pos+7]);
+    boxNames.push(`${type}(${size})@${pos}`);
+    if(size < 8) break; // taille invalide : structure de boîtes non standard à cet endroit, on arrête d'y descendre
+    pos += size;
+  }
+  lines.push(`Boîtes ISOBMFF de tête : ${boxNames.join(", ") || "aucune reconnue"}`);
+  return lines.join("\n");
+}
+
 /* Estimation RAPIDE (sans lire le contenu du fichier, donc quasi instantanée
    même sur 700 photos) de la date d'une image, utilisée uniquement pour
    décider quelles photos sont "les plus récentes" à afficher en priorité :
@@ -2301,6 +2354,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     // quota…) — mieux vaut afficher la photo pour la session en cours que
     // de la perdre entièrement à cause d'une erreur de stockage.
     if(deferVideo) pendingVideoFiles.set(rec.id, file); // permet la lecture à la demande sans jamais convertir cette vidéo en base64 (voir loadPendingVideoFile)
+    if(!isVideo && !(exif && (exif.make || exif.gpsLat!=null))) exifDiagnosticFiles.set(rec.id, file); // ni appareil ni GPS trouvés : gardé pour un diagnostic à la demande (voir diagnoseExifFile)
     State.photos.push(rec);
     try{
       await idbPut("photos", rec);
@@ -4407,6 +4461,7 @@ function renderInfoModal(p){
         ${exifLines
           ? exifLines.filter((l,i)=> !(i===0 && p.optique)).map(l=>`<div class="${p.optique?'sub-line':'main-line'}">${escapeHtml(l)}</div>`).join("")
           : (p.optique ? "" : `<div class="sub-line">Informations de l'appareil indisponibles pour ce fichier</div>`)}
+        ${(!p.optique && !exifLines && exifDiagnosticFiles.has(p.id)) ? `<button class="btn" id="infoDiagnoseExifBtn" type="button" style="margin-top:6px; padding:6px 10px; font-size:12px;">🔍 Diagnostiquer ce fichier</button>` : ""}
       </div>
     </div>
 
@@ -4488,6 +4543,22 @@ function renderInfoModal(p){
     autoBuildCsv();
     renderInfoModal(p);
   });
+  const diagnoseBtn = document.getElementById("infoDiagnoseExifBtn");
+  if(diagnoseBtn){
+    diagnoseBtn.addEventListener("click", async ()=>{
+      const file = exifDiagnosticFiles.get(p.id);
+      if(!file){ toast("Fichier d'origine plus disponible pour cette session — rouvrez le dossier pour relancer un diagnostic."); return; }
+      diagnoseBtn.textContent = "Analyse…"; diagnoseBtn.disabled = true;
+      try{
+        const report = await diagnoseExifFile(file);
+        alert(report); // volontairement une simple alerte : copiable/capturable d'un coup, sans construire une modale dédiée pour un outil de diagnostic temporaire
+      }catch(e){
+        alert(`Erreur pendant le diagnostic : ${e.message}`);
+      } finally {
+        diagnoseBtn.textContent = "🔍 Diagnostiquer ce fichier"; diagnoseBtn.disabled = false;
+      }
+    });
+  }
   const verifyBtn = document.getElementById("infoVerifyLieuBtn");
   if(verifyBtn){
     verifyBtn.addEventListener("click", async ()=>{
