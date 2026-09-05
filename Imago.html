@@ -2088,6 +2088,32 @@ async function runWithConcurrency(items, worker, concurrency){
   await Promise.all(Array.from({length: Math.min(concurrency, items.length)}, lane));
 }
 
+/* Avertissement automatique "stockage cloud non téléchargé localement" :
+   sur Android, un dossier sélectionné peut en réalité être synchronisé sur
+   Google Drive sans être "disponible hors connexion" — chaque lecture de
+   fichier déclenche alors un aller-retour réseau côté système AVANT que le
+   navigateur ne reçoive les octets, même avec la lecture en parallèle
+   ci-dessus (IMPORT_CONCURRENCY). Mesuré sur le 1er lot (assez de fichiers
+   pour une moyenne fiable, assez tôt pour prévenir avant la fin d'un gros
+   import) : un débit anormalement lent (largement au-dessus de ce qu'une
+   lecture 100% locale peut expliquer) déclenche une seule suggestion par
+   import, pointant vers le réglage Android/Drive à corriger. */
+const SLOW_STORAGE_MS_PER_FILE = 350;
+let slowStorageWarningShown = false;
+function maybeWarnSlowStorage(fileCount, elapsedMs){
+  if(slowStorageWarningShown || fileCount < 8) return; // échantillon trop petit pour une moyenne fiable
+  const msPerFile = elapsedMs / fileCount;
+  if(msPerFile < SLOW_STORAGE_MS_PER_FILE) return;
+  slowStorageWarningShown = true;
+  toast(
+    `⏳ Chargement anormalement lent (~${Math.round(msPerFile)} ms/image en moyenne). ` +
+    `Si ce dossier vient de Google Drive sur Android, il n'est probablement pas téléchargé sur l'appareil : ` +
+    `ouvrez l'app Google Drive → appui long sur le dossier → ⋮ → « Rendre disponible hors connexion », ` +
+    `puis relancez l'import.`,
+    16000
+  );
+}
+
 /* Compteur persistant "images chargées / images restantes", affiché à la
    suite de l'intitulé "l'heuristique — où l'Art de trouver, de découvrir"
    (voir updateGalleryCounter). Mis à jour à chaque fichier traité — pas
@@ -2320,6 +2346,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
 
 async function handleFilesSelected(fileList, folderNameOverride){
   const myImportToken = ++importToken;
+  slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
   const allFiles = [...fileList];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
@@ -2391,11 +2418,13 @@ async function handleFilesSelected(fileList, folderNameOverride){
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
   const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0 };
+  const priorityStart = performance.now();
   await runWithConcurrency(priorityFiles, async (file)=>{
     if(myImportToken !== importToken) return;
     await importOneFile(file, csvRowByFileName, stats);
   }, IMPORT_CONCURRENCY);
   if(myImportToken !== importToken) return;
+  maybeWarnSlowStorage(priorityFiles.length, performance.now() - priorityStart);
 
   // ---- 4) 1er écran affiché dès le lot prioritaire terminé — le reste du
   // dossier (s'il y en a) continue de se charger en arrière-plan sans que
