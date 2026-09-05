@@ -2349,6 +2349,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
 
 async function handleFilesSelected(fileList, folderNameOverride){
   const myImportToken = ++importToken;
+  const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
   slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
   const allFiles = [...fileList];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4)$/i.test(f.name));
@@ -2385,7 +2386,15 @@ async function handleFilesSelected(fileList, folderNameOverride){
     if(catalogCandidates.length > 1){
       console.warn(`${catalogCandidates.length} fichiers catalogue trouvés — seul le plus récent (${chosen.name}) est utilisé.`, catalogCandidates.map(f=>f.name));
     }
+    // Instrumentation temporaire (voir échange utilisateur) : la lecture de
+    // CE fichier passe par le même accès potentiellement lent (Drive/Android)
+    // qu'une photo — on mesure et on l'affiche pour vérifier si c'est elle
+    // qui explique un long silence avant la 1ère image traitée.
+    document.getElementById("folderStatus").textContent = `Lecture du catalogue "${chosen.name}"…`;
+    const catalogReadStart = performance.now();
     const text = await chosen.text();
+    const catalogReadMs = Math.round(performance.now() - catalogReadStart);
+    console.log(`[Imago] Lecture du catalogue "${chosen.name}" (${(chosen.size/1024).toFixed(0)} Ko) : ${catalogReadMs} ms`);
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
     if(lines.length >= 2){
       const header = parseCsvLine(lines[0]);
@@ -2397,6 +2406,12 @@ async function handleFilesSelected(fileList, folderNameOverride){
     }
     const baseMatch = chosen.name.match(/^(Catalogue-\d+)/i);
     State.catalogFileName = baseMatch ? baseMatch[1] + ".csv" : chosen.name;
+    if(catalogReadMs > 3000){
+      // Assez lent pour valoir la peine d'être signalé même sans attendre la
+      // fin de tout l'import (voir checkSlowStorage, basé sur le lot
+      // d'images uniquement et qui ne voyait donc jamais cette phase-ci).
+      toast(`Lecture du catalogue : ${(catalogReadMs/1000).toFixed(1)} s pour "${chosen.name}" (${(chosen.size/1024).toFixed(0)} Ko) — anormalement long pour un fichier aussi petit, signe d'un accès réseau (Drive) plutôt que local.`, 10000);
+    }
   } else {
     State.catalogFileName = nextCatalogFileName();
   }
@@ -2421,6 +2436,8 @@ async function handleFilesSelected(fileList, folderNameOverride){
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
   const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0 };
+  const preImportMs = Math.round(performance.now() - preImportStart);
+  console.log(`[Imago] Préparation avant la 1ère image (sélection du dossier, catalogue, tri) : ${preImportMs} ms pour ${files.length} fichier(s).`);
   const priorityStart = performance.now();
   await runWithConcurrency(priorityFiles, async (file)=>{
     if(myImportToken !== importToken) return;
