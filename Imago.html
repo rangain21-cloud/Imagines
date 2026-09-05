@@ -3319,10 +3319,33 @@ function readExifFromTiffStart(view, tiffStart){
    ensuite exactement comme pour un JPEG. */
 function findTiffStartBySignature(view){
   const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  // 1) Cas le plus courant (JPEG, et beaucoup d'encodeurs HEIC) : la donnée
+  // Exif est précédée du marqueur ASCII "Exif\0\0" juste avant l'en-tête TIFF.
   for(let i=0;i<bytes.length-6;i++){
     if(bytes[i]===0x45 && bytes[i+1]===0x78 && bytes[i+2]===0x69 && bytes[i+3]===0x66 && bytes[i+4]===0x00 && bytes[i+5]===0x00){
       return i+6;
     }
+  }
+  // 2) Repli : plusieurs encodeurs HEIC (dont divers Android/Samsung)
+  // omettent ce marqueur "Exif\0\0" et écrivent l'en-tête TIFF directement
+  // (la norme HEIF ne prévoit qu'un entier de décalage sur 4 octets avant la
+  // donnée réelle, ce marqueur restant optionnel) — sans ce repli, ces
+  // fichiers ne donnaient jamais ni GPS ni infos appareil malgré des
+  // métadonnées bien présentes dans le fichier (cas rapporté : Galaxy A51,
+  // .heic). On cherche alors directement la signature TIFF ("II*\0" ou
+  // "MM\0*"), validée par un nombre d'entrées IFD plausible pour éviter un
+  // faux positif dans des données d'image compressées.
+  for(let i=0;i<bytes.length-8;i++){
+    const little = bytes[i]===0x49 && bytes[i+1]===0x49 && bytes[i+2]===0x2A && bytes[i+3]===0x00;
+    const big = bytes[i]===0x4D && bytes[i+1]===0x4D && bytes[i+2]===0x00 && bytes[i+3]===0x2A;
+    if(!little && !big) continue;
+    try{
+      const testView = new DataView(view.buffer, view.byteOffset + i, view.byteLength - i);
+      const ifdOffset = testView.getUint32(4, little);
+      if(ifdOffset < 8 || ifdOffset > testView.byteLength - 2) continue;
+      const entryCount = testView.getUint16(ifdOffset, little);
+      if(entryCount > 0 && entryCount < 200) return i; // structure plausible : on la retient
+    }catch(e){ /* décalage hors limites : pas une vraie en-tête TIFF, on continue de chercher */ }
   }
   return null;
 }
