@@ -938,6 +938,20 @@ button{font-family:inherit;}
   </aside>
 </div>
 
+<!-- ============== MODAL: CHOIX DU CATALOGUE (.csv) ============== -->
+<div class="modal-overlay" id="modalCatalogPick">
+  <div class="modal">
+    <div class="modal-head"><h2>Quel fichier est le catalogue ?</h2><button class="modal-close" data-close="modalCatalogPick">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" style="margin-bottom:10px;">Plusieurs fichiers .csv ont été trouvés dans ce dossier — choisissez celui à utiliser comme catalogue :</p>
+      <div id="catalogPickList"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" id="btnCatalogPickNone">Aucun (nouveau catalogue)</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============== MODAL: PARTAGER ============== -->
 <div class="modal-overlay" id="modalShare">
   <div class="modal">
@@ -2054,24 +2068,30 @@ document.body.appendChild(folderInput);
 
 document.getElementById("btnPickFolder").addEventListener("click", ()=> folderInput.click());
 
-/* Sélecteur dédié au fichier catalogue (.csv), ouvert manuellement par
-   l'utilisateur juste après avoir choisi le dossier d'images — remplace
-   l'ancienne détection automatique par motif de nom de fichier
-   ("Catalogue-xxxx.csv") dans la liste des fichiers du dossier, qui s'est
-   révélée peu fiable sous Google Drive/Android (voir échange utilisateur).
-   Règle indiquée par l'utilisateur : le fichier catalogue se trouve
-   toujours dans le dossier qui vient d'être choisi — c'est donc à lui d'y
-   naviguer et de le désigner lui-même. */
-const catalogFileInput = document.createElement("input");
-catalogFileInput.type = "file";
-catalogFileInput.accept = ".csv,text/csv";
-catalogFileInput.className = "hidden";
-document.body.appendChild(catalogFileInput);
-function pickCatalogFile(){
+/* Sélection du catalogue parmi les fichiers .csv déjà présents dans le
+   dossier qui vient d'être choisi — "d'une pierre deux coups" comme suggéré
+   par l'utilisateur : pas besoin d'un second sélecteur de fichiers (qui de
+   toute façon ne s'est pas ouvert de façon fiable, probablement bloqué par
+   le navigateur car déclenché après un `await`, hors du geste utilisateur
+   d'origine). Les File des .csv sont déjà dans `allFiles`, gratuitement,
+   depuis le sélecteur de DOSSIER lui-même. */
+function pickCatalogFromCandidates(csvFiles){
   return new Promise(resolve=>{
-    catalogFileInput.value = "";
-    catalogFileInput.onchange = ()=> resolve(catalogFileInput.files[0] || null);
-    catalogFileInput.click();
+    if(csvFiles.length === 0){ resolve(null); return; }
+    if(csvFiles.length === 1){ resolve(csvFiles[0]); return; } // un seul .csv trouvé : pas d'ambiguïté, pas besoin de demander
+    const list = document.getElementById("catalogPickList");
+    list.innerHTML = "";
+    csvFiles.slice().sort((a,b)=> (b.lastModified||0) - (a.lastModified||0)).forEach(f=>{
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn";
+      btn.style.cssText = "display:block; width:100%; text-align:left; margin-bottom:8px;";
+      btn.textContent = `${f.name} (${fmtSize(f.size)})`;
+      btn.addEventListener("click", ()=>{ closeModal("modalCatalogPick"); resolve(f); });
+      list.appendChild(btn);
+    });
+    document.getElementById("btnCatalogPickNone").onclick = ()=>{ closeModal("modalCatalogPick"); resolve(null); };
+    openModal("modalCatalogPick");
   });
 }
 
@@ -2375,16 +2395,6 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const allFiles = [...fileList];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
-  // Sélecteur de catalogue déclenché ICI, tout de suite, SYNCHRONE avec
-  // l'événement "change" du dossier qui vient d'être choisi (voir
-  // pickCatalogFile) — un `.click()` déclenché après un `await` (ex. après
-  // idbClear juste en dessous) risquerait de ne plus être reconnu comme un
-  // geste utilisateur valide par le navigateur, et le sélecteur resterait
-  // silencieusement bloqué. Le résultat n'est attendu (await) que plus bas,
-  // une fois le nécessaire fait entre-temps. Non proposé pour "Sélection
-  // manuelle" (quelques images isolées, sans catalogue à y associer).
-  if(!skipCatalogPrompt) toast("Sélectionnez maintenant le fichier catalogue (.csv) du dossier — Annuler si ce dossier n'en a pas encore.", 6000);
-  const catalogFilePromise = skipCatalogPrompt ? Promise.resolve(null) : pickCatalogFile();
   // Nettoyage préalable : que ce soit via "Choisir un dossier d'images…" ou
   // "Sélectionner des images", chaque nouvel import repart d'une planche-
   // contact et d'un visualiseur VIERGES — pour éviter toute confusion entre
@@ -2405,11 +2415,14 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   importDoneCount = 0;
   updateGalleryCounter();
 
-  // ---- 1) Catalogue existant : choisi MANUELLEMENT par l'utilisateur (voir
-  // pickCatalogFile plus haut) plutôt que deviné automatiquement par motif
-  // de nom de fichier dans la liste du dossier — plus fiable sous Google
-  // Drive/Android, où cette détection s'est révélée peu fiable.
-  const chosen = await catalogFilePromise;
+  // ---- 1) Catalogue existant : choisi parmi les .csv déjà présents dans
+  // `allFiles` (le sélecteur de DOSSIER les a déjà tous en main, aucun accès
+  // fichier supplémentaire nécessaire) — un seul .csv trouvé est utilisé
+  // sans même demander ; plusieurs déclenchent un choix explicite (voir
+  // pickCatalogFromCandidates). Non proposé pour "Sélection manuelle"
+  // (quelques images isolées, sans catalogue à y associer).
+  const csvFiles = skipCatalogPrompt ? [] : allFiles.filter(f=>/\.csv$/i.test(f.name));
+  const chosen = await pickCatalogFromCandidates(csvFiles);
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
   let csvRowByFileName = new Map();
   const catalogCandidates = chosen ? [chosen] : [];
