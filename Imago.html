@@ -2059,7 +2059,34 @@ document.getElementById("btnPickFolder").addEventListener("click", ()=> folderIn
    paquets, sans bloquer l'écran (voir plus bas). */
 const IMPORT_PRIORITY_COUNT = 50;
 const IMPORT_BACKGROUND_CHUNK = 15;
+/* Nombre de fichiers lus EN PARALLÈLE pendant l'import (au lieu d'un par un
+   en série). Sur PC, la lecture d'un fichier local est quasi instantanée et
+   le gain est faible ; sur Android, quand le dossier choisi est en réalité
+   synchronisé/hébergé sur Google Drive (ou tout autre fournisseur de
+   stockage "cloud" exposé via le sélecteur de documents Android), CHAQUE
+   lecture de fichier déclenche un aller-retour réseau côté système
+   d'exploitation avant de rendre la main au navigateur — d'où le ~1
+   seconde/image observé. Lire plusieurs fichiers à la fois recouvre cette
+   latence réseau au lieu de l'accumuler fichier après fichier, ce qui
+   rapproche le temps total d'un import Android-Drive de celui d'un import
+   PC. Valeur modérée (4) pour ne pas non plus saturer un appareil Android
+   plus modeste en decode d'images/vidéos simultané. */
+const IMPORT_CONCURRENCY = 4;
 let importToken = 0; // incrémenté à chaque nouvel import, pour abandonner un import en arrière-plan devenu obsolète (nouveau dossier choisi entre-temps)
+
+/* Traite `items` avec au plus `concurrency` appels à `worker` en vol
+   simultanément (plutôt qu'un `for…await` strictement séquentiel) — voir
+   IMPORT_CONCURRENCY ci-dessus pour le pourquoi. */
+async function runWithConcurrency(items, worker, concurrency){
+  let cursor = 0;
+  async function lane(){
+    while(cursor < items.length){
+      const i = cursor++;
+      await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(concurrency, items.length)}, lane));
+}
 
 /* Compteur persistant "images chargées / images restantes", affiché à la
    suite de l'intitulé "l'heuristique — où l'Art de trouver, de découvrir"
@@ -2266,10 +2293,10 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
   const step = async ()=>{
     if(token !== importToken) return; // un autre import a démarré entre-temps : on abandonne celui-ci
     const chunk = restFiles.slice(offset, offset + IMPORT_BACKGROUND_CHUNK);
-    for(const file of chunk){
+    await runWithConcurrency(chunk, async (file)=>{
       if(token !== importToken) return;
       await importOneFile(file, csvRowByFileName, stats);
-    }
+    }, IMPORT_CONCURRENCY);
     if(token !== importToken) return;
     offset += IMPORT_BACKGROUND_CHUNK;
     const stillLoading = offset < restFiles.length;
@@ -2364,10 +2391,10 @@ async function handleFilesSelected(fileList, folderNameOverride){
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
   const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0 };
-  for(const file of priorityFiles){
+  await runWithConcurrency(priorityFiles, async (file)=>{
     if(myImportToken !== importToken) return;
     await importOneFile(file, csvRowByFileName, stats);
-  }
+  }, IMPORT_CONCURRENCY);
   if(myImportToken !== importToken) return;
 
   // ---- 4) 1er écran affiché dès le lot prioritaire terminé — le reste du
