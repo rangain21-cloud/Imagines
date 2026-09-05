@@ -2100,18 +2100,21 @@ async function runWithConcurrency(items, worker, concurrency){
    import, pointant vers le réglage Android/Drive à corriger. */
 const SLOW_STORAGE_MS_PER_FILE = 350;
 let slowStorageWarningShown = false;
-function maybeWarnSlowStorage(fileCount, elapsedMs){
-  if(slowStorageWarningShown || fileCount < 8) return; // échantillon trop petit pour une moyenne fiable
+/* Ne déclenche PAS le toast elle-même : `toast()` n'affiche qu'un seul
+   message à la fois et un appel juste après (ex. "chargement en arrière-
+   plan…") l'aurait immédiatement écrasé avant même que l'utilisateur ait pu
+   le lire — c'est exactement ce qui s'est produit en pratique. On renvoie
+   donc le texte de l'avertissement pour que l'appelant l'ajoute au PROCHAIN
+   toast affiché plutôt que d'en déclencher un qui serait aussitôt remplacé. */
+function checkSlowStorage(fileCount, elapsedMs){
+  if(slowStorageWarningShown || fileCount < 8) return ""; // échantillon trop petit pour une moyenne fiable
   const msPerFile = elapsedMs / fileCount;
-  if(msPerFile < SLOW_STORAGE_MS_PER_FILE) return;
+  if(msPerFile < SLOW_STORAGE_MS_PER_FILE) return "";
   slowStorageWarningShown = true;
-  toast(
-    `⏳ Chargement anormalement lent (~${Math.round(msPerFile)} ms/image en moyenne). ` +
+  return ` ⏳ Chargement anormalement lent (~${Math.round(msPerFile)} ms/image en moyenne). ` +
     `Si ce dossier vient de Google Drive sur Android, il n'est probablement pas téléchargé sur l'appareil : ` +
     `ouvrez l'app Google Drive → appui long sur le dossier → ⋮ → « Rendre disponible hors connexion », ` +
-    `puis relancez l'import.`,
-    16000
-  );
+    `puis relancez l'import.`;
 }
 
 /* Compteur persistant "images chargées / images restantes", affiché à la
@@ -2424,7 +2427,7 @@ async function handleFilesSelected(fileList, folderNameOverride){
     await importOneFile(file, csvRowByFileName, stats);
   }, IMPORT_CONCURRENCY);
   if(myImportToken !== importToken) return;
-  maybeWarnSlowStorage(priorityFiles.length, performance.now() - priorityStart);
+  const slowStorageNote = checkSlowStorage(priorityFiles.length, performance.now() - priorityStart);
 
   // ---- 4) 1er écran affiché dès le lot prioritaire terminé — le reste du
   // dossier (s'il y en a) continue de se charger en arrière-plan sans que
@@ -2437,12 +2440,19 @@ async function handleFilesSelected(fileList, folderNameOverride){
     importTotalCount = 0; importDoneCount = 0; updateGalleryCounter(); // import terminé : le compteur revient à l'affichage simple du total
     celebrateImportComplete(
       stats,
-      importSummaryMessage(stats),
-      stats.failedFiles.length ? 12000 : undefined
+      importSummaryMessage(stats) + slowStorageNote,
+      (stats.failedFiles.length || slowStorageNote) ? 16000 : undefined
     );
     autoBuildCsv();
   } else {
-    toast(`${priorityFiles.length} photo(s) récente(s) affichée(s) — chargement des ${restFiles.length} autre(s) en arrière-plan…`);
+    // L'avertissement de lenteur (s'il y en a un) est ajouté à CE message-ci
+    // plutôt que déclenché séparément : `toast()` n'affiche qu'un message à
+    // la fois, et un 2e appel juste après aurait aussitôt écrasé le 1er
+    // avant que l'utilisateur ait pu le lire.
+    toast(
+      `${priorityFiles.length} photo(s) récente(s) affichée(s) — chargement des ${restFiles.length} autre(s) en arrière-plan…${slowStorageNote}`,
+      slowStorageNote ? 16000 : undefined
+    );
     importRestInBackground(restFiles, csvRowByFileName, stats, myImportToken, folderName, catalogCandidates);
   }
 }
