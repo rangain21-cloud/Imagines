@@ -2054,6 +2054,27 @@ document.body.appendChild(folderInput);
 
 document.getElementById("btnPickFolder").addEventListener("click", ()=> folderInput.click());
 
+/* Sélecteur dédié au fichier catalogue (.csv), ouvert manuellement par
+   l'utilisateur juste après avoir choisi le dossier d'images — remplace
+   l'ancienne détection automatique par motif de nom de fichier
+   ("Catalogue-xxxx.csv") dans la liste des fichiers du dossier, qui s'est
+   révélée peu fiable sous Google Drive/Android (voir échange utilisateur).
+   Règle indiquée par l'utilisateur : le fichier catalogue se trouve
+   toujours dans le dossier qui vient d'être choisi — c'est donc à lui d'y
+   naviguer et de le désigner lui-même. */
+const catalogFileInput = document.createElement("input");
+catalogFileInput.type = "file";
+catalogFileInput.accept = ".csv,text/csv";
+catalogFileInput.className = "hidden";
+document.body.appendChild(catalogFileInput);
+function pickCatalogFile(){
+  return new Promise(resolve=>{
+    catalogFileInput.value = "";
+    catalogFileInput.onchange = ()=> resolve(catalogFileInput.files[0] || null);
+    catalogFileInput.click();
+  });
+}
+
 /* Nombre d'images les plus récentes traitées et affichées immédiatement ;
    le reste du dossier est traité ensuite en arrière-plan, par petits
    paquets, sans bloquer l'écran (voir plus bas). */
@@ -2347,13 +2368,23 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
   step();
 }
 
-async function handleFilesSelected(fileList, folderNameOverride){
+async function handleFilesSelected(fileList, folderNameOverride, skipCatalogPrompt){
   const myImportToken = ++importToken;
   const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
   slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
   const allFiles = [...fileList];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
+  // Sélecteur de catalogue déclenché ICI, tout de suite, SYNCHRONE avec
+  // l'événement "change" du dossier qui vient d'être choisi (voir
+  // pickCatalogFile) — un `.click()` déclenché après un `await` (ex. après
+  // idbClear juste en dessous) risquerait de ne plus être reconnu comme un
+  // geste utilisateur valide par le navigateur, et le sélecteur resterait
+  // silencieusement bloqué. Le résultat n'est attendu (await) que plus bas,
+  // une fois le nécessaire fait entre-temps. Non proposé pour "Sélection
+  // manuelle" (quelques images isolées, sans catalogue à y associer).
+  if(!skipCatalogPrompt) toast("Sélectionnez maintenant le fichier catalogue (.csv) du dossier — Annuler si ce dossier n'en a pas encore.", 6000);
+  const catalogFilePromise = skipCatalogPrompt ? Promise.resolve(null) : pickCatalogFile();
   // Nettoyage préalable : que ce soit via "Choisir un dossier d'images…" ou
   // "Sélectionner des images", chaque nouvel import repart d'une planche-
   // contact et d'un visualiseur VIERGES — pour éviter toute confusion entre
@@ -2374,18 +2405,15 @@ async function handleFilesSelected(fileList, folderNameOverride){
   importDoneCount = 0;
   updateGalleryCounter();
 
-  // ---- 1) Catalogue existant : s'il y en a plusieurs candidats (ex. suffixes
-  // "(1)", "(2)" laissés par des téléchargements successifs), on ne garde QUE
-  // le plus récent (lastModified), et son nom est normalisé en Catalogue-xxxx.csv
-  // (sans suffixe) pour les sauvegardes suivantes.
-  const catalogCandidates = allFiles.filter(f => /^Catalogue-\d+.*\.csv$/i.test(f.name));
+  // ---- 1) Catalogue existant : choisi MANUELLEMENT par l'utilisateur (voir
+  // pickCatalogFile plus haut) plutôt que deviné automatiquement par motif
+  // de nom de fichier dans la liste du dossier — plus fiable sous Google
+  // Drive/Android, où cette détection s'est révélée peu fiable.
+  const chosen = await catalogFilePromise;
+  if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
   let csvRowByFileName = new Map();
-  if(catalogCandidates.length){
-    catalogCandidates.sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
-    const chosen = catalogCandidates[0];
-    if(catalogCandidates.length > 1){
-      console.warn(`${catalogCandidates.length} fichiers catalogue trouvés — seul le plus récent (${chosen.name}) est utilisé.`, catalogCandidates.map(f=>f.name));
-    }
+  const catalogCandidates = chosen ? [chosen] : [];
+  if(chosen){
     // Instrumentation temporaire (voir échange utilisateur) : la lecture de
     // CE fichier passe par le même accès potentiellement lent (Drive/Android)
     // qu'une photo — on mesure et on l'affiche pour vérifier si c'est elle
@@ -2497,7 +2525,7 @@ filePickerInput.multiple = true;
 filePickerInput.className = "hidden";
 document.body.appendChild(filePickerInput);
 document.getElementById("btnPickFiles").addEventListener("click", ()=> filePickerInput.click());
-filePickerInput.addEventListener("change", ()=> handleFilesSelected(filePickerInput.files, "Sélection manuelle"));
+filePickerInput.addEventListener("change", ()=> handleFilesSelected(filePickerInput.files, "Sélection manuelle", true));
 
 function exifCameraName(exif){
   if(!exif) return "";
