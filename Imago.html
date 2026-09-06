@@ -2472,12 +2472,14 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   updateGalleryCounter();
 
   // ---- 1) Catalogue existant : choisi parmi les .csv déjà présents dans
-  // `allFiles` (le sélecteur de DOSSIER les a déjà tous en main, aucun accès
-  // fichier supplémentaire nécessaire) — un seul .csv trouvé est utilisé
-  // sans même demander ; plusieurs déclenchent un choix explicite (voir
-  // pickCatalogFromCandidates). Non proposé pour "Sélection manuelle"
-  // (quelques images isolées, sans catalogue à y associer).
-  const csvFiles = skipCatalogPrompt ? [] : allFiles.filter(f=>/\.csv$/i.test(f.name));
+  // `allFiles` (le sélecteur les a déjà tous en main, aucun accès fichier
+  // supplémentaire nécessaire) — un seul .csv trouvé est utilisé sans même
+  // demander ; plusieurs déclenchent un choix explicite (voir
+  // pickCatalogFromCandidates). Fonctionne aussi bien pour "Choisir un
+  // dossier…" que pour "Sélectionner des images…" (il suffit d'inclure le
+  // fichier Catalogue-xxxx.csv dans la sélection multiple pour ce 2e cas) —
+  // sans effet si aucun .csv n'est présent dans la sélection.
+  const csvFiles = allFiles.filter(f=>/\.csv$/i.test(f.name));
   const chosen = await pickCatalogFromCandidates(csvFiles);
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
   let csvRowByFileName = new Map();
