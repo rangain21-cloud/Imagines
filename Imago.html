@@ -1196,7 +1196,7 @@ button{font-family:inherit;}
     <div class="modal-body">
       <div class="field-row">
         <label for="neFile">Image</label>
-        <input type="file" id="neFile" accept="image/*,video/mp4">
+        <input type="file" id="neFile" accept="image/*,video/mp4,video/quicktime,.mov">
       </div>
       <div class="field-grid">
         <div class="field-row"><label for="neDate">Date cliché</label><input type="date" id="neDate"></div>
@@ -2461,7 +2461,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
   slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
   const allFiles = [...fileList];
-  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4)$/i.test(f.name));
+  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
   // Nettoyage préalable : que ce soit via "Choisir un dossier d'images…" ou
   // "Sélectionner des images", chaque nouvel import repart d'une planche-
@@ -2603,7 +2603,7 @@ folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.file
    refusé). Le filtre reste donc volontairement restreint aux images. */
 const filePickerInput = document.createElement("input");
 filePickerInput.type = "file";
-filePickerInput.accept = "image/*,video/mp4"; // Photo Picker Android reste déclenché (image/vidéo purs) contrairement à un type générique ajouté par le passé, qui avait cassé la lecture — voir note ci-dessus
+filePickerInput.accept = "image/*,video/mp4,video/quicktime"; // Photo Picker Android reste déclenché (image/vidéo) — .mov ajouté sur demande ; à surveiller si ça reproduit le souci d'accès refusé mentionné ci-dessus avec un filtre trop large
 filePickerInput.multiple = true;
 filePickerInput.className = "hidden";
 document.body.appendChild(filePickerInput);
@@ -2836,7 +2836,7 @@ function loadAndMaybeDownscaleImage(dataUrl){
    galerie/le visualiseur (une balise <img> ne peut pas afficher une vidéo).
    ----------------------------------------------------------------- */
 function isVideoFile(file){
-  return /^video\/mp4/i.test(file.type||"") || /\.mp4$/i.test(file.name||"");
+  return /^video\/(mp4|quicktime)/i.test(file.type||"") || /\.(mp4|mov)$/i.test(file.name||"");
 }
 function getVideoMeta(dataUrl){
   return new Promise((resolve)=>{
@@ -3582,7 +3582,7 @@ viewerImg.addEventListener("dblclick", ()=>{ if(getSelected()) openLoupe(State.s
    ----------------------------------------------------------------- */
 const singleVideoPickerInput = document.createElement("input");
 singleVideoPickerInput.type = "file";
-singleVideoPickerInput.accept = "video/mp4";
+singleVideoPickerInput.accept = "video/mp4,video/quicktime,.mov";
 singleVideoPickerInput.className = "hidden";
 document.body.appendChild(singleVideoPickerInput);
 let singleVideoPickerTargetId = null;
