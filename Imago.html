@@ -2898,15 +2898,35 @@ let heic2anyLoadPromise = null;
 function ensureHeic2anyLoaded(){
   if(window.heic2any) return Promise.resolve();
   if(heic2anyLoadPromise) return heic2anyLoadPromise;
-  heic2anyLoadPromise = new Promise((resolve, reject)=>{
-    const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
-    s.onload = ()=> resolve();
-    s.onerror = ()=>{
-      heic2anyLoadPromise = null; // permet de réessayer plus tard (ex. connexion revenue)
-      reject(new Error("Impossible de charger le convertisseur HEIC (connexion internet requise la 1ère fois)."));
-    };
-    document.head.appendChild(s);
+  // Plusieurs sources CDN en secours l'une de l'autre : les échecs répétés
+  // constatés sur le terrain (Android, connexion mobile) semblaient tenir
+  // à un incident ponctuel sur UNE seule source plutôt qu'à une vraie
+  // absence de réseau — passer à une autre CDN suffit alors à réussir sans
+  // attendre que la connexion "s'améliore".
+  const HEIC2ANY_SOURCES = [
+    "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js",
+    "https://unpkg.com/heic2any@0.0.4/dist/heic2any.min.js"
+  ];
+  function tryLoad(index){
+    return new Promise((resolve, reject)=>{
+      if(index >= HEIC2ANY_SOURCES.length){
+        reject(new Error(`Impossible de charger le convertisseur HEIC après ${HEIC2ANY_SOURCES.length} sources différentes (connexion internet requise).`));
+        return;
+      }
+      const s = document.createElement("script");
+      s.src = HEIC2ANY_SOURCES[index];
+      s.onload = ()=> resolve();
+      s.onerror = ()=>{
+        console.warn(`[Imago] Échec du chargement HEIC depuis ${s.src} — tentative avec la source suivante.`);
+        s.remove();
+        tryLoad(index+1).then(resolve, reject);
+      };
+      document.head.appendChild(s);
+    });
+  }
+  heic2anyLoadPromise = tryLoad(0).catch(err=>{
+    heic2anyLoadPromise = null; // permet de réessayer plus tard (ex. connexion revenue)
+    throw err;
   });
   return heic2anyLoadPromise;
 }
