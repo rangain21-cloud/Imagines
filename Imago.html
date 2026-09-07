@@ -871,6 +871,10 @@ button{font-family:inherit;}
           <div class="viewer-fav-mark" id="viewerFavMark">★</div>
           <img id="viewerImg" src="" alt="">
           <video id="viewerVideo" class="hidden" controls playsinline></video>
+          <div class="viewer-missing hidden" id="viewerVideoError">
+            🎬 Cette vidéo ne peut pas être lue par ce navigateur
+            <div class="sub">Cause la plus fréquente : une piste audio dans un format que les navigateurs web ne savent pas décoder (ex. PCM/audio non compressé, courant dans les exports QuickTime/iMovie), même quand la vidéo elle-même est dans un format compatible (H.264). Convertissez le fichier avec VLC (Média → Convertir/Enregistrer → profil incluant l'audio AAC) sans avoir à retoucher la vidéo, puis réimportez-le.</div>
+          </div>
           <div class="viewer-video-pending hidden" id="viewerVideoPending">
             <button class="btn copper" id="btnLoadPendingVideo">▶ Charger la vidéo (<span id="pendingVideoSize"></span>)</button>
             <div class="sub">Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.</div>
@@ -1625,8 +1629,10 @@ function renderGrid(){
   const video = document.getElementById("viewerVideo");
   const missing = document.getElementById("viewerMissing");
   const videoPending = document.getElementById("viewerVideoPending");
+  const videoError = document.getElementById("viewerVideoError");
   video.pause();
   videoPending.classList.add("hidden");
+  videoError.classList.add("hidden"); // état d'erreur réinitialisé à chaque changement de photo — voir viewerVideo.onerror plus bas
   if(p.isVideo && p.videoPending){
     // Grosse vidéo (>5 Mo) pas encore chargée : on affiche sa vignette avec
     // un bouton pour charger le contenu complet à la demande — voir
@@ -3566,6 +3572,20 @@ window.addEventListener("mousemove", (e)=>{
 window.addEventListener("mouseup", ()=>{ dragging=false; viewerStage.classList.remove("dragging"); });
 
 viewerImg.addEventListener("dblclick", ()=>{ if(getSelected()) openLoupe(State.selectedId); });
+
+/* Une vidéo peut être dans un conteneur compatible (H.264) mais avec une
+   piste AUDIO que les navigateurs web ne savent pas décoder (ex. PCM non
+   compressé "sowt", courant dans des exports QuickTime/iMovie) — le
+   <video> échoue alors entièrement, y compris pour la partie image,
+   contrairement à un lecteur de bureau qui s'appuie sur les codecs du
+   système. Sans ce message, ça ressemblait à un bug silencieux plutôt qu'à
+   une limite de format compréhensible. */
+document.getElementById("viewerVideo").addEventListener("error", ()=>{
+  const p = getSelected();
+  if(!p || !p.isVideo || p.videoPending) return; // pas d'erreur pertinente à afficher (rien n'était en cours de lecture)
+  document.getElementById("viewerVideo").classList.add("hidden");
+  document.getElementById("viewerVideoError").classList.remove("hidden");
+});
 
 /* -----------------------------------------------------------------
    Chargement à la demande des grosses vidéos (>5 Mo) différées à l'import
