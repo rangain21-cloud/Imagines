@@ -769,10 +769,10 @@ button{font-family:inherit;}
     <button class="tool-btn" id="btnShare" title="Partager"><span class="ic">⇪</span><span>Partager</span></button>
     <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
     <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
-    <button class="tool-btn" id="btnInfo" title="Information"><span class="ic">ⓘ</span><span>Information</span></button>
     <button class="tool-btn" id="btnPersonnages" title="Personnages"><span class="ic">🧑</span><span>Personnages</span></button>
     <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
     <button class="tool-btn" id="btnTrash" title="Corbeille"><span class="ic">🗑</span><span>Corbeille</span></button>
+    <button class="tool-btn" id="btnInfo" title="Information"><span class="ic">ⓘ</span><span>Information</span></button>
     <button class="tool-btn" id="btnMore" title="Plus d'info"><span class="ic">⋯</span><span>Plus d'info</span></button>
   </div>
 
@@ -837,11 +837,7 @@ button{font-family:inherit;}
   </div>
 
   <div class="pave">
-    <h3>Sauvegarde CSV</h3>
-    <button class="btn" id="btnExportCsv" style="width:100%; margin-bottom:8px;">Exporter le catalogue (.csv)</button>
-    <button class="btn" id="btnImportCsv" style="width:100%;">Importer un catalogue (.csv)</button>
-    <input type="file" id="csvFileInput" accept=".csv" class="hidden">
-    <p class="drive-note">Le CSV se régénère automatiquement à chaque image consultée ou modifiée.</p>
+    <button class="btn" id="btnExportCsv" style="width:100%;">Exporter le catalogue (.csv)</button>
   </div>
 </nav>
 
@@ -5354,14 +5350,6 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   // plus besoin de fichiers annexes lieu.csv / map.csv.
   markCsvClean();
   toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.`);
-});
-
-document.getElementById("btnImportCsv").addEventListener("click", ()=> document.getElementById("csvFileInput").click());
-document.getElementById("csvFileInput").addEventListener("change", async (e)=>{
-  const file = e.target.files[0]; if(!file) return;
-  const text = await file.text();
-  await mergeCsvIntoCatalog(text);
-  e.target.value = "";
 });
 
 async function mergeCsvIntoCatalog(text){
