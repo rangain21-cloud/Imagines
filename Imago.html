@@ -914,8 +914,12 @@ button{font-family:inherit;}
       <select id="fLieu"><option value="">— Tous —</option></select>
     </div>
     <div class="search-field">
-      <label for="fSupport">Liste par Support</label>
-      <select id="fSupport"><option value="">— Tous —</option></select>
+      <label for="fFavori">Favori (O/N)</label>
+      <select id="fFavori">
+        <option value="">— Tous —</option>
+        <option value="oui">Oui</option>
+        <option value="non">Non</option>
+      </select>
     </div>
     <div class="search-field">
       <label for="fType">Type de fichier</label>
@@ -1349,7 +1353,7 @@ const State = {
   photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, corbeille, rotation, albums:[]}
   albums: [],         // {id, name}
   auteurs: [],         // {id, name, note}
-  filters: {auteur:"", personnage:"", lieu:"", support:"", type:"", titre:""},
+  filters: {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""},
   sortOrder: localStorage.getItem("imago_sort_order") || "antichrono", // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien) — "antichrono" par défaut pour rester cohérent avec le tri historique de l'écran d'accueil (planche-contact triée du plus récent au plus ancien)
   selectedId: null,
   viewIndex: 0,
@@ -1563,7 +1567,8 @@ function activePhotos(){
     if(f.type && fileTypeOf(p) !== f.type) return false;
     if(f.personnage && !personnageTokens(p.personnage).includes(f.personnage)) return false;
     if(f.lieu && p.lieu !== f.lieu) return false;
-    if(f.support && p.support !== f.support) return false;
+    if(f.favori === "oui" && !p.favori) return false;
+    if(f.favori === "non" && p.favori) return false;
     if(f.titre){
       const kw = f.titre.toLowerCase();
       if(!(p.titre||"").toLowerCase().includes(kw)) return false;
@@ -1952,11 +1957,22 @@ function uniquePersonnageTokens(){
   });
   return [...set].sort((a,b)=>a.localeCompare(b, "fr"));
 }
+/* Liste par Auteur (bandeau Recherches) : combine le référentiel persistant
+   State.auteurs (créés via "Nouvel Auteur", valable même sans aucune photo
+   chargée cette session) ET les valeurs effectivement utilisées par les
+   photos en cours — sans cette union, un auteur du référentiel qui
+   n'apparaît sur aucune photo DÉJÀ chargée cette session-ci restait invisible
+   dans le filtre (cause du bug : seul "Philippe" apparaissait, celui-ci
+   étant le seul réellement présent parmi les photos du dernier import). */
+function uniqueAuteurValues(){
+  const set = new Set(State.auteurs.map(a=>a.name).filter(Boolean));
+  State.photos.filter(p=>!p.corbeille).forEach(p=>{ if(p.auteur) set.add(p.auteur); });
+  return [...set].sort((a,b)=>a.localeCompare(b, "fr"));
+}
 function populateFilterOptions(){
-  fillSelect("fAuteur", uniqueValues("auteur"), State.filters.auteur);
+  fillSelect("fAuteur", uniqueAuteurValues(), State.filters.auteur);
   fillSelect("fPersonnage", uniquePersonnageTokens(), State.filters.personnage);
   fillSelect("fLieu", uniqueValues("lieu"), State.filters.lieu);
-  fillSelect("fSupport", uniqueValues("support"), State.filters.support);
   fillSelect("fType", uniqueFileTypes(), State.filters.type);
 }
 function fillSelect(id, values, current){
@@ -1972,7 +1988,7 @@ function populateAuteurDatalist(){
 document.getElementById("fAuteur").addEventListener("change", e=>{State.filters.auteur=e.target.value; renderGrid();});
 document.getElementById("fPersonnage").addEventListener("change", e=>{State.filters.personnage=e.target.value; renderGrid();});
 document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; renderGrid();});
-document.getElementById("fSupport").addEventListener("change", e=>{State.filters.support=e.target.value; renderGrid();});
+document.getElementById("fFavori").addEventListener("change", e=>{State.filters.favori=e.target.value; renderGrid();});
 document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; renderGrid();});
 document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.titre=e.target.value; renderGrid();});
 /* Bouton "Tri chronologique" / "Tri anti-chronologique" — présent à deux
@@ -2003,11 +2019,11 @@ document.getElementById("btnSortOrder").addEventListener("click", toggleSortOrde
 document.getElementById("btnSortOrderGallery").addEventListener("click", toggleSortOrder);
 updateSortOrderBtn();
 function resetFilters(){
-  State.filters = {auteur:"", personnage:"", lieu:"", support:"", type:"", titre:""};
+  State.filters = {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""};
   document.getElementById("fAuteur").value="";
   document.getElementById("fPersonnage").value="";
   document.getElementById("fLieu").value="";
-  document.getElementById("fSupport").value="";
+  document.getElementById("fFavori").value="";
   document.getElementById("fType").value="";
   document.getElementById("fEtiquette").value="";
 }
