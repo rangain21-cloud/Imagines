@@ -954,7 +954,7 @@ button{font-family:inherit;}
     <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
     <div class="modal-body">
       <p class="drive-note">
-        <b>1) Générer</b> — construit un fichier « Album.csv » en recopiant, depuis les fichiers Catalogue-AAAA.csv de chaque année, uniquement les lignes marquées Favori. Aucune image/vidéo n'est relue, seulement du texte (rapide même sur un gros historique). Choisissez le dossier racine (ex. « PHOTO ») contenant vos sous-dossiers Année.
+        <b>1) Générer</b> — construit (ou récupère) un fichier « Album.csv » en intégrant les images/vidéos marquées "Favori"  dans les fichiers Catalogue-AAAA.csv de chaque année.
       </p>
       <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
 
@@ -2163,13 +2163,18 @@ function pickCatalogFromCandidates(csvFiles){
 
 /* -----------------------------------------------------------------
    "Hall of fame" — deux actions bien distinctes :
-   1) GÉNÉRER : construit Album.csv à partir des favoris de plusieurs
-      Catalogue-AAAA.csv (un par année), SANS jamais relire les images/
-      vidéos elles-mêmes — uniquement du texte, donc rapide même sur
+   1) GÉNÉRER : construit (ou met à jour) Album.csv à partir des favoris de
+      plusieurs Catalogue-AAAA.csv (un par année), SANS jamais relire les
+      images/vidéos elles-mêmes — uniquement du texte, donc rapide même sur
       plusieurs années d'historique. Chaque ligne Favori est recopiée telle
       quelle depuis son catalogue d'origine (pas de reformatage), en
       confiance sur le fait que tous les Catalogue-xxxx.csv partagent le
       même schéma de colonnes (généré par cette même application).
+      Si un fichier « Album.csv » existe déjà dans le dossier racine choisi,
+      il est récupéré et MODIFIÉ (et non écrasé à l'aveugle) : ses lignes
+      existantes sont conservées comme base, les favoris retrouvés dans les
+      catalogues sélectionnés sont ajoutés/mis à jour, et toute ligne dont
+      le catalogue d'origine indique désormais "non favori" en est retirée.
    2) AFFICHER : une fois Album.csv généré et déposé par l'utilisateur dans
       le dossier de ses photos, un sélecteur de DOSSIER (même mécanisme que
       "📁 Choisir un dossier d'images…" du menu ☰, donc récursif) repère ce
@@ -2202,22 +2207,54 @@ document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofDi
 hofGenerateFolderInput.addEventListener("change", async ()=>{
   const allFiles = [...hofGenerateFolderInput.files];
   hofGenerateFolderInput.value = "";
-  // "Catalogue-AAAA.csv" uniquement — exclut volontairement un éventuel
-  // "Album.csv" déjà présent dans le même dossier (ce n'est pas une source,
-  // c'est le résultat d'une génération précédente).
+  // "Catalogue-AAAA.csv" pour les sources ; un éventuel "Album.csv" déjà
+  // présent à la racine du dossier choisi n'est pas une source de favoris
+  // mais LA BASE à récupérer et mettre à jour (voir generateAlbumFromCsvFiles).
   const csvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
+  const existingAlbumFile = allFiles.find(f=>/^Album\.csv$/i.test(f.name));
   if(!csvFiles.length){
     document.getElementById("hofStatus").textContent = "Aucun fichier Catalogue-AAAA.csv trouvé dans ce dossier ni ses sous-dossiers.";
     return;
   }
-  await generateAlbumFromCsvFiles(csvFiles);
+  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile);
 });
 
-async function generateAlbumFromCsvFiles(files){
+async function generateAlbumFromCsvFiles(files, existingAlbumFile){
   const statusEl = document.getElementById("hofStatus");
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
-  let header = null, favIdx = -1;
-  const outLines = [];
+  // rowsByFileName : fileName -> ligne CSV brute. Sert à la fois de base
+  // (pré-remplie depuis l'Album.csv existant, s'il y en a un) et de résultat
+  // final après passage des catalogues : ainsi, un Album.csv déjà présent
+  // dans le dossier racine est récupéré et MODIFIÉ plutôt que remplacé à
+  // l'aveugle par un fichier reconstruit de zéro.
+  const rowsByFileName = new Map();
+  let header = null, fileNameIdx = -1;
+  let recoveredCount = 0;
+
+  if(existingAlbumFile){
+    try{
+      const text = await existingAlbumFile.text();
+      const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+      if(lines.length){
+        const cols = parseCsvLine(lines[0]);
+        header = lines[0];
+        fileNameIdx = cols.indexOf("fileName");
+        if(fileNameIdx >= 0){
+          for(let i=1;i<lines.length;i++){
+            const cells = parseCsvLine(lines[i]);
+            if(cells[fileNameIdx]) rowsByFileName.set(cells[fileNameIdx], lines[i]);
+          }
+          recoveredCount = rowsByFileName.size;
+        } else {
+          console.warn(`« ${existingAlbumFile.name} » existant ignoré : pas de colonne "fileName" reconnue.`);
+          header = null;
+        }
+      }
+    }catch(e){
+      console.warn(`Lecture impossible pour l'« Album.csv » existant.`, e);
+    }
+  }
+
   let totalFav = 0, skippedFiles = 0;
   for(const file of files){
     try{
@@ -2225,21 +2262,26 @@ async function generateAlbumFromCsvFiles(files){
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
       if(lines.length < 1) continue;
       const cols = parseCsvLine(lines[0]);
+      const favIdx = cols.indexOf("favori");
+      const nameIdx = cols.indexOf("fileName");
       if(!header){
         header = lines[0];
-        favIdx = cols.indexOf("favori");
-        outLines.push(header);
+        fileNameIdx = nameIdx;
       }
-      if(favIdx < 0){
-        console.warn(`"${file.name}" ignoré : pas de colonne "favori" reconnue (fichier non généré par Imago ?).`);
+      if(favIdx < 0 || nameIdx < 0){
+        console.warn(`"${file.name}" ignoré : colonne "favori" ou "fileName" non reconnue (fichier non généré par Imago ?).`);
         skippedFiles++;
         continue;
       }
       for(let i=1;i<lines.length;i++){
         const cells = parseCsvLine(lines[i]);
+        const name = cells[nameIdx];
+        if(!name) continue;
         if(cells[favIdx] === "true"){
-          outLines.push(lines[i]); // recopie telle quelle, pas de reparsing/reformatage
+          rowsByFileName.set(name, lines[i]); // ajoute, ou met à jour si déjà présent depuis l'Album.csv existant
           totalFav++;
+        } else if(rowsByFileName.has(name)){
+          rowsByFileName.delete(name); // n'est plus Favori dans son catalogue d'origine : retiré de l'album
         }
       }
     }catch(e){
@@ -2251,9 +2293,16 @@ async function generateAlbumFromCsvFiles(files){
     statusEl.textContent = "Aucun catalogue lisible n'a été sélectionné.";
     return;
   }
-  const csvText = outLines.join("\r\n");
+  const csvText = [header, ...rowsByFileName.values()].join("\r\n");
   downloadCsvFile(csvText, "Album.csv");
-  statusEl.textContent = `« Album.csv » généré : ${totalFav} favori(s) repris depuis ${files.length - skippedFiles} catalogue(s)` + (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : "") + " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
+  const totalOut = rowsByFileName.size;
+  statusEl.textContent =
+    (existingAlbumFile
+      ? `« Album.csv » existant récupéré (${recoveredCount} entrée(s)) et mis à jour`
+      : `« Album.csv » généré`) +
+    ` : ${totalOut} favori(s) au total, ${totalFav} favori(s) repris depuis ${files.length - skippedFiles} catalogue(s)` +
+    (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : "") +
+    " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
 }
 
 // ---- 2) AFFICHER (seulement les favoris référencés par Album.csv) --
