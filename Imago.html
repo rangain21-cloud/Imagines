@@ -88,6 +88,9 @@ button{font-family:inherit;}
 .tool-btn.active{background:var(--copper); border-color:var(--copper); color:#171008;}
 .tool-btn[disabled]{opacity:.35; cursor:not-allowed;}
 .tool-btn[disabled]:hover{background:var(--bg-panel-2); border-color:var(--line);}
+#btnInfo{background:#14432b; border-color:#1f5c3c;}
+#btnInfo:hover{background:#1a5636; border-color:var(--copper);}
+#btnInfo[disabled]{background:var(--bg-panel-2); border-color:var(--line);}
 
 .topbar-spacer{flex:1;}
 .selection-hint{font-size:12px; color:var(--ink-dim); margin-right:6px;}
@@ -1474,7 +1477,8 @@ function importSummaryMessage(stats){
   return `${stats.added} nouvelle(s) image(s) importée(s), ${stats.reused} déjà cataloguée(s) réutilisée(s) sans modification.` +
     (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : "") +
     (stats.heicFailed && stats.heicFailed.length ? ` ⚠ ${stats.heicFailed.length} photo(s) HEIC non converties (bibliothèque de conversion indisponible — vérifiez votre connexion internet puis réimportez ce dossier) : elles restent illisibles pour l'instant.` : "") +
-    (stats.videoDeferred ? ` 🎬 ${stats.videoDeferred} vidéo(s) de plus de 5 Mo importée(s) en vignette seulement — ouvrez-les pour charger leur contenu à la demande.` : "");
+    (stats.videoDeferred ? ` 🎬 ${stats.videoDeferred} vidéo(s) de plus de 5 Mo importée(s) en vignette seulement — ouvrez-les pour charger leur contenu à la demande.` : "") +
+    (stats.orphaned ? ` 🗑 ${stats.orphaned} fiche(s) du catalogue dont le fichier est introuvable dans ce dossier ont été mises à la corbeille.` : "");
 }
 function celebrateImportComplete(stats, message, durationMs){
   celebrate((stats.added||0) + (stats.reused||0) > 0, message, durationMs);
@@ -2462,6 +2466,40 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
   step();
 }
 
+/* Construit une fiche "orpheline" pour une ligne du catalogue dont le
+   fichier n'a pas été retrouvé dans le dossier/la sélection en cours —
+   voir la règle appliquée juste après la lecture du catalogue dans
+   handleFilesSelected. dataUrl reste null (rien à afficher, le fichier est
+   introuvable) ; corbeille est forcé à true quel que soit ce que disait le
+   catalogue, conformément à la règle demandée. */
+function buildOrphanRecordFromCsvRow(row, fileName){
+  const isVideo = /\.(mp4|mov)$/i.test(fileName);
+  const lieu = row.lieu || "";
+  return {
+    id: uid("ph"), fileName, dataUrl: null,
+    isVideo, posterDataUrl: null, durationSec: 0,
+    videoPending: false, videoSizeBytes: 0,
+    titre: row.titre || buildTitre(lieu, row.personnage || ""),
+    dateAchat: row.dateAchat || "",
+    personnage: row.personnage || "",
+    lieu, lieuCandidate: "",
+    support: row.support || "numérique",
+    etiquette: row.etiquette || "",
+    auteur: row.auteur || "Philippe",
+    favori: row.favori === "true",
+    corbeille: true, // règle : fichier introuvable dans le dossier → corbeille
+    rotation: Number(row.rotation)||0,
+    albums: row.albums ? row.albums.split("|").filter(Boolean) : [],
+    sharedWith: [],
+    filterKey: row.filterKey || null,
+    filterCss: row.filterKey ? (FILTER_PRESETS.find(f=>f.key===row.filterKey)||{}).css || "" : "",
+    optique: row.optique || "",
+    poids: row.poids ? Number(row.poids) : 0,
+    map: isValidMapUrl(row.map) ? row.map : mapUrlFromLieu(lieu),
+    sizeBytes: 0, width:0, height:0, exif:null,
+    gpsLat: null, gpsLon: null
+  };
+}
 async function handleFilesSelected(fileList, folderNameOverride, skipCatalogPrompt){
   const myImportToken = ++importToken;
   const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
@@ -2534,6 +2572,26 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   }
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant la lecture du catalogue
 
+  // Règle demandée : une ligne du catalogue dont le fichier (JPG/HEIC/MP4/MOV…)
+  // n'est PAS retrouvé dans cette sélection est conservée (pas de perte
+  // silencieuse de métadonnées lors du prochain export) mais basculée en
+  // corbeille — un fichier disparu du dossier ne doit plus apparaître comme
+  // une photo active dans la planche-contact.
+  let orphanedCount = 0;
+  if(csvRowByFileName.size){
+    const foundFileNames = new Set(files.map(f=>f.name));
+    for(const [fileName, row] of csvRowByFileName){
+      if(foundFileNames.has(fileName)) continue;
+      if(State.photos.find(p=>p.fileName===fileName)) continue; // déjà présent (sécurité ; improbable juste après la purge de session)
+      const rec = buildOrphanRecordFromCsvRow(row, fileName);
+      State.photos.push(rec);
+      try{ await idbPut("photos", rec); }
+      catch(e){ console.warn(`Sauvegarde impossible pour la ligne orpheline "${fileName}".`, e); }
+      orphanedCount++;
+    }
+    if(orphanedCount) renderGrid();
+  }
+
   // ---- 2) Tri par date estimée décroissante (sans lire le contenu des
   // fichiers, donc quasi instantané même sur 700 photos), pour isoler les
   // IMPORT_PRIORITY_COUNT images les plus récentes : ce sont elles qui sont
@@ -2552,7 +2610,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
-  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0 };
+  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0, orphaned:orphanedCount };
   const preImportMs = Math.round(performance.now() - preImportStart);
   console.log(`[Imago] Préparation avant la 1ère image (sélection du dossier, catalogue, tri) : ${preImportMs} ms pour ${files.length} fichier(s).`);
   const priorityStart = performance.now();
