@@ -2230,13 +2230,18 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
 async function generateAlbumFromCsvFiles(files, existingAlbumFile){
   const statusEl = document.getElementById("hofStatus");
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
-  // rowsByFileName : fileName -> ligne CSV brute. Sert à la fois de base
-  // (pré-remplie depuis l'Album.csv existant, s'il y en a un) et de résultat
-  // final après passage des catalogues : ainsi, un Album.csv déjà présent
-  // dans le dossier racine est récupéré et MODIFIÉ plutôt que remplacé à
-  // l'aveugle par un fichier reconstruit de zéro.
-  const rowsByFileName = new Map();
-  let header = null, fileNameIdx = -1;
+  // rowsById : id (identifiant UNIQUE de chaque photo dans le catalogue,
+  // colonne "id") -> ligne CSV brute. Sert de base (pré-remplie depuis
+  // l'Album.csv existant, s'il y en a un) puis de résultat final après
+  // passage des catalogues.
+  // IMPORTANT : la clé est "id", volontairement PAS "fileName" — un même
+  // nom de fichier (ex. "IMG_0001.JPG") peut désigner deux photos
+  // complètement différentes d'une année à l'autre (numérotation d'appareil
+  // remise à zéro). Fusionner par fileName mélangeait ces photos entre
+  // elles : retirer le Favori d'une photo pouvait supprimer par erreur une
+  // AUTRE photo de même nom, ou en laisser une en double.
+  const rowsById = new Map();
+  let header = null, idIdx = -1;
   let recoveredCount = 0;
 
   if(existingAlbumFile){
@@ -2246,15 +2251,15 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile){
       if(lines.length){
         const cols = parseCsvLine(lines[0]);
         header = lines[0];
-        fileNameIdx = cols.indexOf("fileName");
-        if(fileNameIdx >= 0){
+        idIdx = cols.indexOf("id");
+        if(idIdx >= 0){
           for(let i=1;i<lines.length;i++){
             const cells = parseCsvLine(lines[i]);
-            if(cells[fileNameIdx]) rowsByFileName.set(cells[fileNameIdx], lines[i]);
+            if(cells[idIdx]) rowsById.set(cells[idIdx], lines[i]);
           }
-          recoveredCount = rowsByFileName.size;
+          recoveredCount = rowsById.size;
         } else {
-          console.warn(`« ${existingAlbumFile.name} » existant ignoré : pas de colonne "fileName" reconnue.`);
+          console.warn(`« ${existingAlbumFile.name} » existant ignoré : pas de colonne "id" reconnue.`);
           header = null;
         }
       }
@@ -2271,25 +2276,40 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile){
       if(lines.length < 1) continue;
       const cols = parseCsvLine(lines[0]);
       const favIdx = cols.indexOf("favori");
-      const nameIdx = cols.indexOf("fileName");
+      const idColIdx = cols.indexOf("id");
+      const sousDossierIdx = cols.indexOf("sousDossier");
       if(!header){
         header = lines[0];
-        fileNameIdx = nameIdx;
+        idIdx = idColIdx;
       }
-      if(favIdx < 0 || nameIdx < 0){
-        console.warn(`"${file.name}" ignoré : colonne "favori" ou "fileName" non reconnue (fichier non généré par Imago ?).`);
+      if(favIdx < 0 || idColIdx < 0){
+        console.warn(`"${file.name}" ignoré : colonne "favori" ou "id" non reconnue (fichier non généré par Imago ?).`);
         skippedFiles++;
         continue;
       }
+      // Nom du sous-dossier Année d'origine, déduit du nom du fichier
+      // "Catalogue-AAAA.csv" — reporté dans "sousDossier" pour que celui-ci
+      // devienne un chemin complet ET SANS AMBIGUÏTÉ depuis le dossier
+      // racine (ex. "2022/Été"), utilisable tel quel par "Afficher" pour
+      // retrouver la bonne photo même en cas de nom de fichier dupliqué
+      // d'une année à l'autre.
+      const yearMatch = /^Catalogue-(.+)\.csv$/i.exec(file.name);
+      const yearLabel = yearMatch ? yearMatch[1] : "";
       for(let i=1;i<lines.length;i++){
         const cells = parseCsvLine(lines[i]);
-        const name = cells[nameIdx];
-        if(!name) continue;
+        const id = cells[idColIdx];
+        if(!id) continue;
         if(cells[favIdx] === "true"){
-          rowsByFileName.set(name, lines[i]); // ajoute, ou met à jour si déjà présent depuis l'Album.csv existant
+          let outCells = cells;
+          if(sousDossierIdx >= 0 && yearLabel){
+            outCells = cells.slice();
+            const orig = outCells[sousDossierIdx] || "";
+            outCells[sousDossierIdx] = orig ? `${yearLabel}/${orig}` : yearLabel;
+          }
+          rowsById.set(id, outCells.map(csvEscape).join(";")); // ajoute, ou met à jour si déjà présent depuis l'Album.csv existant
           totalFav++;
-        } else if(rowsByFileName.has(name)){
-          rowsByFileName.delete(name); // n'est plus Favori dans son catalogue d'origine : retiré de l'album
+        } else if(rowsById.has(id)){
+          rowsById.delete(id); // n'est plus Favori dans son catalogue d'origine : retiré de l'album
         }
       }
     }catch(e){
@@ -2301,10 +2321,10 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile){
     statusEl.textContent = "Aucun catalogue lisible n'a été sélectionné.";
     return;
   }
-  const csvText = [header, ...rowsByFileName.values()].join("\r\n");
+  const csvText = [header, ...rowsById.values()].join("\r\n");
   downloadCsvFile(csvText, "Album.csv");
   document.getElementById("btnHOFGenerate").classList.add("done"); // fond vert : étape 1 terminée avec succès
-  const totalOut = rowsByFileName.size;
+  const totalOut = rowsById.size;
   statusEl.textContent =
     (existingAlbumFile
       ? `« Album.csv » existant récupéré (${recoveredCount} entrée(s)) et mis à jour`
@@ -2326,18 +2346,33 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     return;
   }
   statusEl.textContent = "Lecture d'Album.csv…";
-  let wantedNames;
+  let wantedPaths, wantedNamesOnly, hasSousDossier;
   try{
     const text = await albumFile.text();
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
     if(lines.length < 2){ statusEl.textContent = "« Album.csv » ne contient aucun favori."; return; }
     const header = parseCsvLine(lines[0]);
     const fileNameIdx = header.indexOf("fileName");
+    const sousDossierIdx = header.indexOf("sousDossier");
     if(fileNameIdx < 0){ statusEl.textContent = "« Album.csv » n'a pas le format attendu (colonne fileName manquante)."; return; }
-    wantedNames = new Set();
+    hasSousDossier = sousDossierIdx >= 0;
+    // Le nom de fichier seul ne suffit pas à identifier une photo de façon
+    // fiable — un même nom peut désigner des photos différentes d'une année
+    // à l'autre. On privilégie donc le CHEMIN complet "sousDossier/fileName"
+    // (déjà reconstitué depuis le dossier racine lors de la génération, voir
+    // generateAlbumFromCsvFiles) ; le nom seul ne sert que de repli pour un
+    // ancien Album.csv généré avant cette correction.
+    wantedPaths = new Set();
+    wantedNamesOnly = new Set();
     for(let i=1;i<lines.length;i++){
       const cells = parseCsvLine(lines[i]);
-      if(cells[fileNameIdx]) wantedNames.add(cells[fileNameIdx]);
+      const name = cells[fileNameIdx];
+      if(!name) continue;
+      wantedNamesOnly.add(name);
+      if(hasSousDossier){
+        const sousDossier = (cells[sousDossierIdx]||"").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"");
+        wantedPaths.add(sousDossier ? `${sousDossier}/${name}` : name);
+      }
     }
   }catch(e){
     statusEl.textContent = `Lecture d'Album.csv impossible : ${e.message}`;
@@ -2345,15 +2380,25 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   }
   // Seuls les fichiers réellement référencés par Album.csv sont conservés —
   // c'est ici que "pas tout le dossier" est appliqué, AVANT tout import.
-  const matchedFiles = allFiles.filter(f => wantedNames.has(f.name));
+  // Comparaison par CHEMIN (sous-dossier + nom) en priorité, pour éviter de
+  // charger deux photos différentes qui porteraient le même nom de fichier
+  // dans deux sous-dossiers/années distincts.
+  const matchedFiles = allFiles.filter(f=>{
+    if(!hasSousDossier) return wantedNamesOnly.has(f.name);
+    const relPath = f.webkitRelativePath
+      ? f.webkitRelativePath.split("/").slice(1).join("/") // retire le nom du dossier racine choisi (ex. "PHOTO/2022/x.jpg" -> "2022/x.jpg")
+      : f.name;
+    return wantedPaths.has(relPath);
+  });
+  const wantedCount = hasSousDossier ? wantedPaths.size : wantedNamesOnly.size;
   if(!matchedFiles.length){
-    statusEl.textContent = `« Album.csv » référence ${wantedNames.size} fichier(s), mais aucun n'a été retrouvé dans ce dossier.`;
+    statusEl.textContent = `« Album.csv » référence ${wantedCount} fichier(s), mais aucun n'a été retrouvé dans ce dossier.`;
     return;
   }
   document.getElementById("btnHOFPickFolder").classList.add("done"); // fond vert : étape 2 terminée avec succès (visible à la réouverture de la modale, celle-ci se fermant juste après)
   closeModal("modalHOF");
   await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
-  toast(`🏆 Hall of fame : ${matchedFiles.length} favori(s) chargé(s) sur ${wantedNames.size} référencé(s) dans Album.csv.`);
+  toast(`🏆 Hall of fame : ${matchedFiles.length} favori(s) chargé(s) sur ${wantedCount} référencé(s) dans Album.csv.`);
 });
 
 /* -----------------------------------------------------------------
