@@ -954,10 +954,15 @@ button{font-family:inherit;}
     <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
     <div class="modal-body">
       <p class="drive-note">
-        Construit un fichier « Album.csv » en recopiant, depuis les fichiers Catalogue-AAAA.csv de chaque année, uniquement les lignes marquées Favori — sans jamais relire les images/vidéos elles-mêmes (rapide même sur un très gros historique de plusieurs années).
+        <b>1) Générer</b> — construit un fichier « Album.csv » en recopiant, depuis les fichiers Catalogue-AAAA.csv de chaque année, uniquement les lignes marquées Favori. Aucune image/vidéo n'est relue, seulement du texte (rapide même sur un gros historique). Choisissez le dossier racine (ex. « PHOTO ») contenant vos sous-dossiers Année.
       </p>
-      <button class="btn copper" id="btnHOFPickFolder" style="width:100%; margin-top:6px;">📁 Choisir un dossier d'images…</button>
-      <button class="btn" id="btnHOFGenerate" style="width:100%; margin-top:8px;">Choisir des fichiers Catalogue (.csv)…</button>
+      <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
+
+      <p class="drive-note" style="margin-top:18px;">
+        <b>2) Afficher</b> — une fois « Album.csv » généré et déposé dans le dossier de vos photos, choisissez ce même dossier : seules les images/vidéos qu'il référence seront chargées, pas tout le dossier.
+      </p>
+      <button class="btn" id="btnHOFPickFolder" style="width:100%; margin-top:4px;">📁 Choisir un dossier d'images…</button>
+
       <p class="drive-note" id="hofStatus" style="margin-top:10px;"></p>
     </div>
   </div>
@@ -2157,59 +2162,55 @@ function pickCatalogFromCandidates(csvFiles){
 }
 
 /* -----------------------------------------------------------------
-   "Hall of fame" : construit un fichier Album.csv à partir des favoris de
-   plusieurs fichiers Catalogue-AAAA.csv (un par année), SANS jamais relire
-   les images/vidéos elles-mêmes — uniquement du texte, donc rapide même
-   sur plusieurs années d'historique. Chaque ligne Favori est recopiée
-   telle quelle depuis son catalogue d'origine (pas de reformatage), en
-   confiance sur le fait que tous les Catalogue-xxxx.csv partagent le même
-   schéma de colonnes (généré par cette même application).
+   "Hall of fame" — deux actions bien distinctes :
+   1) GÉNÉRER : construit Album.csv à partir des favoris de plusieurs
+      Catalogue-AAAA.csv (un par année), SANS jamais relire les images/
+      vidéos elles-mêmes — uniquement du texte, donc rapide même sur
+      plusieurs années d'historique. Chaque ligne Favori est recopiée telle
+      quelle depuis son catalogue d'origine (pas de reformatage), en
+      confiance sur le fait que tous les Catalogue-xxxx.csv partagent le
+      même schéma de colonnes (généré par cette même application).
+   2) AFFICHER : une fois Album.csv généré et déposé par l'utilisateur dans
+      le dossier de ses photos, un sélecteur de DOSSIER (même mécanisme que
+      "📁 Choisir un dossier d'images…" du menu ☰, donc récursif) repère ce
+      fichier Album.csv dans la sélection, en lit la liste des fichiers
+      référencés, et ne charge QUE ceux-là via le pipeline d'import habituel
+      — jamais tout le dossier.
    ----------------------------------------------------------------- */
-const hofCsvInput = document.createElement("input");
-hofCsvInput.type = "file";
-hofCsvInput.accept = ".csv,text/csv";
-hofCsvInput.multiple = true;
-hofCsvInput.className = "hidden";
-document.body.appendChild(hofCsvInput);
+const hofGenerateFolderInput = document.createElement("input");
+hofGenerateFolderInput.type = "file";
+hofGenerateFolderInput.webkitdirectory = true;
+hofGenerateFolderInput.multiple = true;
+hofGenerateFolderInput.className = "hidden";
+document.body.appendChild(hofGenerateFolderInput);
 
-/* Sélecteur de DOSSIER pour le Hall of fame — mêmes réglages que le
-   sélecteur "📁 Choisir un dossier d'images…" du menu ☰ (webkitdirectory +
-   multiple, donc récursif sur les sous-dossiers du navigateur) : en
-   choisissant le dossier racine "PHOTO" (qui contient 2024, 2025, 2026…),
-   TOUS les fichiers de toutes les années remontent en une seule fois — il
-   suffit ensuite d'en garder les .csv. Évite d'avoir à sélectionner les
-   catalogues un par un, et contourne le souci de fichiers grisés/inacces-
-   sibles déjà rencontré avec un sélecteur de fichiers multiple sur Google
-   Drive Android (un sélecteur de DOSSIER passe par un mécanisme différent,
-   plus fiable dans ce cas — voir échanges précédents). */
-const hofFolderInput = document.createElement("input");
-hofFolderInput.type = "file";
-hofFolderInput.webkitdirectory = true;
-hofFolderInput.multiple = true;
-hofFolderInput.className = "hidden";
-document.body.appendChild(hofFolderInput);
+const hofDisplayFolderInput = document.createElement("input");
+hofDisplayFolderInput.type = "file";
+hofDisplayFolderInput.webkitdirectory = true;
+hofDisplayFolderInput.multiple = true;
+hofDisplayFolderInput.className = "hidden";
+document.body.appendChild(hofDisplayFolderInput);
 
 document.getElementById("btnHOF").addEventListener("click", ()=>{
   document.getElementById("hofStatus").textContent = "";
   openModal("modalHOF");
 });
-document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofFolderInput.click());
-document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofCsvInput.click());
+document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofGenerateFolderInput.click());
+document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofDisplayFolderInput.click());
 
-hofFolderInput.addEventListener("change", async ()=>{
-  const allFiles = [...hofFolderInput.files];
-  hofFolderInput.value = "";
-  const csvFiles = allFiles.filter(f=>/\.csv$/i.test(f.name));
+// ---- 1) GÉNÉRER ----------------------------------------------------
+hofGenerateFolderInput.addEventListener("change", async ()=>{
+  const allFiles = [...hofGenerateFolderInput.files];
+  hofGenerateFolderInput.value = "";
+  // "Catalogue-AAAA.csv" uniquement — exclut volontairement un éventuel
+  // "Album.csv" déjà présent dans le même dossier (ce n'est pas une source,
+  // c'est le résultat d'une génération précédente).
+  const csvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
   if(!csvFiles.length){
-    document.getElementById("hofStatus").textContent = "Aucun fichier .csv trouvé dans ce dossier ni ses sous-dossiers.";
+    document.getElementById("hofStatus").textContent = "Aucun fichier Catalogue-AAAA.csv trouvé dans ce dossier ni ses sous-dossiers.";
     return;
   }
   await generateAlbumFromCsvFiles(csvFiles);
-});
-hofCsvInput.addEventListener("change", async ()=>{
-  const files = [...hofCsvInput.files];
-  hofCsvInput.value = "";
-  if(files.length) await generateAlbumFromCsvFiles(files);
 });
 
 async function generateAlbumFromCsvFiles(files){
@@ -2252,8 +2253,48 @@ async function generateAlbumFromCsvFiles(files){
   }
   const csvText = outLines.join("\r\n");
   downloadCsvFile(csvText, "Album.csv");
-  statusEl.textContent = `« Album.csv » généré : ${totalFav} favori(s) repris depuis ${files.length - skippedFiles} catalogue(s)` + (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : ".");
+  statusEl.textContent = `« Album.csv » généré : ${totalFav} favori(s) repris depuis ${files.length - skippedFiles} catalogue(s)` + (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : "") + " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
 }
+
+// ---- 2) AFFICHER (seulement les favoris référencés par Album.csv) --
+hofDisplayFolderInput.addEventListener("change", async ()=>{
+  const allFiles = [...hofDisplayFolderInput.files];
+  hofDisplayFolderInput.value = "";
+  const statusEl = document.getElementById("hofStatus");
+  const albumFile = allFiles.find(f=>/^Album\.csv$/i.test(f.name));
+  if(!albumFile){
+    statusEl.textContent = "Aucun fichier « Album.csv » trouvé dans ce dossier — générez-le d'abord (bouton « Générer » ci-dessus), déposez-le dans ce dossier, puis réessayez.";
+    return;
+  }
+  statusEl.textContent = "Lecture d'Album.csv…";
+  let wantedNames;
+  try{
+    const text = await albumFile.text();
+    const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+    if(lines.length < 2){ statusEl.textContent = "« Album.csv » ne contient aucun favori."; return; }
+    const header = parseCsvLine(lines[0]);
+    const fileNameIdx = header.indexOf("fileName");
+    if(fileNameIdx < 0){ statusEl.textContent = "« Album.csv » n'a pas le format attendu (colonne fileName manquante)."; return; }
+    wantedNames = new Set();
+    for(let i=1;i<lines.length;i++){
+      const cells = parseCsvLine(lines[i]);
+      if(cells[fileNameIdx]) wantedNames.add(cells[fileNameIdx]);
+    }
+  }catch(e){
+    statusEl.textContent = `Lecture d'Album.csv impossible : ${e.message}`;
+    return;
+  }
+  // Seuls les fichiers réellement référencés par Album.csv sont conservés —
+  // c'est ici que "pas tout le dossier" est appliqué, AVANT tout import.
+  const matchedFiles = allFiles.filter(f => wantedNames.has(f.name));
+  if(!matchedFiles.length){
+    statusEl.textContent = `« Album.csv » référence ${wantedNames.size} fichier(s), mais aucun n'a été retrouvé dans ce dossier.`;
+    return;
+  }
+  closeModal("modalHOF");
+  await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
+  toast(`🏆 Hall of fame : ${matchedFiles.length} favori(s) chargé(s) sur ${wantedNames.size} référencé(s) dans Album.csv.`);
+});
 
 /* Nombre d'images les plus récentes traitées et affichées immédiatement ;
    le reste du dossier est traité ensuite en arrière-plan, par petits
