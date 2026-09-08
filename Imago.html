@@ -987,6 +987,11 @@ button{font-family:inherit;}
       <p class="drive-note" id="driveFolderPickerPath" style="margin-bottom:8px;"></p>
       <div id="driveFolderPickerList" style="max-height:280px; overflow:auto; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2);"></div>
       <button class="btn" id="btnDriveFolderNewSubfolder" style="width:100%; margin-top:10px;">➕ Nouveau dossier ici…</button>
+      <div id="driveFolderPickerProgressWrap" class="hidden" style="margin-top:12px;">
+        <div style="height:8px; border-radius:4px; background:var(--bg-panel); border:1px solid var(--line); overflow:hidden;">
+          <div id="driveFolderPickerProgressBar" style="height:100%; width:0%; background:var(--copper); transition:width .15s ease;"></div>
+        </div>
+      </div>
       <p class="drive-note" id="driveFolderPickerStatus" style="margin-top:10px;"></p>
     </div>
     <div class="modal-foot">
@@ -2525,6 +2530,8 @@ let driveFolderPicker = { path: [{id:"root", name:"Mon Drive"}] };
 function openDriveFolderPicker(){
   driveFolderPicker.path = [{id:"root", name:"Mon Drive"}];
   document.getElementById("driveFolderPickerStatus").textContent = "";
+  document.getElementById("driveFolderPickerProgressWrap").classList.add("hidden");
+  document.getElementById("driveFolderPickerProgressBar").style.width = "0%";
   openModal("modalDriveFolderPicker");
   renderDriveFolderPicker();
 }
@@ -2618,12 +2625,19 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
   const hofStatusEl = document.getElementById("hofStatus");
   const shareBtn = document.getElementById("btnHOFShare");
   const confirmBtn = document.getElementById("btnDriveFolderPickerConfirm");
+  const progressWrap = document.getElementById("driveFolderPickerProgressWrap");
+  const progressBar = document.getElementById("driveFolderPickerProgressBar");
   if(!hofShareData){ statusEl.textContent = "Faites d'abord « Afficher » (étape 2)."; return; }
   const current = driveFolderPicker.path[driveFolderPicker.path.length - 1];
   const { albumFile, mediaFiles } = hofShareData;
   confirmBtn.disabled = true;
+  progressWrap.classList.remove("hidden");
+  progressBar.style.width = "0%";
   try{
     statusEl.textContent = `Préparation du dossier « ${current.name} »…`;
+    // Fichiers déjà présents dans ce dossier Drive (même nom) : servira à la
+    // fois à mettre à jour Album.csv (toujours) et à REPÉRER, pour les
+    // photos/vidéos, celles à ne pas réenvoyer (déjà là = inutile).
     const existingIds = await listDriveFolderFileIdsByName(current.id);
 
     statusEl.textContent = `Envoi de « Album.csv »…`;
@@ -2637,25 +2651,40 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
       isBase64: false
     });
 
-    let sent = 0;
+    const total = mediaFiles.length;
+    let done = 0, uploaded = 0, skipped = 0;
+    const updateProgress = (label)=>{
+      progressBar.style.width = total ? `${Math.round((done/total)*100)}%` : "0%";
+      statusEl.textContent = `${done}/${total} — ${label}${skipped ? ` (${skipped} déjà présent(s), ignoré(s))` : ""}`;
+    };
     for(const file of mediaFiles){
-      sent++;
-      statusEl.textContent = `Envoi de ${sent}/${mediaFiles.length} : ${file.name}…`;
+      if(existingIds.has(file.name)){
+        // Déjà sur Drive sous ce nom, dans ce dossier : pas besoin de le
+        // retéléverser (ni même le mettre à jour) — on l'ignore simplement.
+        skipped++;
+        done++;
+        updateProgress(`${file.name} — déjà présent, ignoré`);
+        continue;
+      }
       const base64 = await fileToBase64(file);
       await uploadOrUpdateToDriveFolder({
-        fileId: existingIds.get(file.name),
+        fileId: null,
         name: file.name,
         mimeType: guessMimeType(file),
         folderId: current.id,
         content: base64,
         isBase64: true
       });
+      uploaded++;
+      done++;
+      updateProgress(file.name);
     }
+    progressBar.style.width = "100%";
     shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès
-    const msg = `« ${current.name} » partagé sur Drive : « Album.csv » + ${mediaFiles.length} fichier(s) jpg/mp4 envoyés.`;
+    const msg = `« ${current.name} » : « Album.csv » à jour, ${uploaded} fichier(s) envoyé(s)${skipped ? `, ${skipped} déjà présent(s) ignoré(s)` : ""} sur ${total}.`;
     statusEl.textContent = msg;
     hofStatusEl.textContent = msg;
-    toast(`☁️ « ${current.name} » téléversé sur Drive : Album.csv + ${mediaFiles.length} fichier(s).`);
+    toast(`☁️ ${msg}`);
     closeModal("modalDriveFolderPicker");
   }catch(err){
     statusEl.textContent = `Partage impossible : ${err.message}`;
