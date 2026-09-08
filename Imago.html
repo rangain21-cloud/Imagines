@@ -1126,7 +1126,10 @@ button{font-family:inherit;}
   <div class="modal">
     <div class="modal-head"><h2>ⓘ Infos</h2><button class="modal-close" data-close="modalInfo">×</button></div>
     <div class="modal-body">
-      <input type="text" class="info-title-input" id="infoTitle" placeholder="Ajouter un titre">
+      <input type="text" class="info-title-input" id="infoTitle" placeholder="Ajouter un titre" list="titreList">
+      <datalist id="titreList"></datalist>
+      <datalist id="personnageList"></datalist>
+      <datalist id="lieuList"></datalist>
       <div id="infoContacts"></div>
       <div class="info-divider"></div>
       <div class="info-rows" id="infoRows"></div>
@@ -1984,6 +1987,23 @@ function populateFilterOptions(){
   fillSelect("fPersonnage", uniquePersonnageTokens(), State.filters.personnage);
   fillSelect("fLieu", uniqueValues("lieu"), State.filters.lieu);
   fillSelect("fType", uniqueFileTypes(), State.filters.type);
+  populateInfoModalDatalists(); // suggestions de saisie (Titre/Personnage/Lieu) de la modale Infos — voir plus bas
+}
+/* Suggestions de saisie ("tapez les 1ères lettres") pour les champs texte de
+   la modale Infos, à partir des valeurs déjà utilisées ailleurs dans le
+   catalogue — même principe que le datalist Auteur déjà en place.
+   Rafraîchi à chaque appel de populateFilterOptions() (import, édition…),
+   donc toujours à jour. */
+function populateInfoModalDatalists(){
+  const titreDl = document.getElementById("titreList");
+  if(titreDl){
+    const titres = [...new Set(State.photos.filter(p=>!p.corbeille).map(p=>p.titre).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"fr"));
+    titreDl.innerHTML = titres.map(t=>`<option value="${escapeHtml(t)}">`).join("");
+  }
+  const personnageDl = document.getElementById("personnageList");
+  if(personnageDl) personnageDl.innerHTML = uniquePersonnageTokens().map(t=>`<option value="${escapeHtml(t)}">`).join("");
+  const lieuDl = document.getElementById("lieuList");
+  if(lieuDl) lieuDl.innerHTML = uniqueValues("lieu").map(t=>`<option value="${escapeHtml(t)}">`).join("");
 }
 function fillSelect(id, values, current){
   const sel = document.getElementById(id);
@@ -4521,6 +4541,7 @@ function renderInfoModal(p){
   const titleInput = document.getElementById("infoTitle");
   titleInput.value = p.titre || "";
   titleInput.oninput = null;
+  titleInput.onfocus = function(){ this.select(); }; // présélectionne le texte existant : remplaçable directement sans effacer caractère par caractère
   titleInput.onchange = async ()=>{ p.titre = titleInput.value.trim(); await idbPut("photos", p); renderGrid(); autoBuildCsv(); };
 
   const contacts = document.getElementById("infoContacts");
@@ -4535,6 +4556,7 @@ function renderInfoModal(p){
     </div>`;
   const auteurInput = document.getElementById("infoAuteurInput");
   auteurInput.oninput = null;
+  auteurInput.onfocus = function(){ this.select(); }; // présélectionne le texte existant : remplaçable directement sans effacer caractère par caractère pour choisir un autre auteur dans les suggestions
   // Même comportement que le champ Titre juste au-dessus (info-title-input) :
   // saisie libre + suggestions (liste déroulante "auteurList", partagée avec
   // le champ Auteur de la modale Modification), sauvegarde immédiate dès
@@ -4739,12 +4761,17 @@ function startInlineEdit(containerId, field, p){
   const container = document.getElementById(containerId);
   if(!container || container.querySelector("input")) return;
   const current = field==="date" ? (p.dateAchat||"") : field==="personnage" ? (p.personnage||"") : (p.lieu||"");
+  // Suggestions de saisie ("tapez les 1ères lettres") à partir des valeurs
+  // déjà utilisées dans le catalogue — aucun datalist pertinent pour une
+  // date (valeur propre à chaque photo).
+  const listAttr = field==="personnage" ? ' list="personnageList"' : field==="lieu" ? ' list="lieuList"' : "";
   const wrap = document.createElement("div");
   wrap.className = "info-inline-edit";
-  wrap.innerHTML = `<input type="${field==='date'?'date':'text'}" value="${escapeHtml(current)}"><button class="btn copper" style="padding:5px 10px;">OK</button>`;
+  wrap.innerHTML = `<input type="${field==='date'?'date':'text'}" value="${escapeHtml(current)}"${listAttr}><button class="btn copper" style="padding:5px 10px;">OK</button>`;
   container.appendChild(wrap);
   const input = wrap.querySelector("input");
   input.focus();
+  input.select(); // tout le texte existant est présélectionné : taper une nouvelle valeur la remplace directement, sans avoir à effacer caractère par caractère pour choisir un autre auteur/lieu/personnage dans les suggestions
   wrap.querySelector("button").addEventListener("click", async ()=>{
     if(field==="date") p.dateAchat = input.value || p.dateAchat;
     else if(field==="personnage") p.personnage = input.value.trim();
