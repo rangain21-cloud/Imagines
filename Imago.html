@@ -954,9 +954,10 @@ button{font-family:inherit;}
     <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
     <div class="modal-body">
       <p class="drive-note">
-        Construit un fichier « Album.csv » en recopiant, depuis les fichiers Catalogue-AAAA.csv de chaque année que vous sélectionnez, uniquement les lignes marquées Favori — sans jamais relire les images/vidéos elles-mêmes (rapide même sur un très gros historique de plusieurs années).
+        Construit un fichier « Album.csv » en recopiant, depuis les fichiers Catalogue-AAAA.csv de chaque année, uniquement les lignes marquées Favori — sans jamais relire les images/vidéos elles-mêmes (rapide même sur un très gros historique de plusieurs années).
       </p>
-      <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:6px;">Générer</button>
+      <button class="btn copper" id="btnHOFPickFolder" style="width:100%; margin-top:6px;">📁 Choisir un dossier d'images…</button>
+      <button class="btn" id="btnHOFGenerate" style="width:100%; margin-top:8px;">Choisir des fichiers Catalogue (.csv)…</button>
       <p class="drive-note" id="hofStatus" style="margin-top:10px;"></p>
     </div>
   </div>
@@ -2171,19 +2172,50 @@ hofCsvInput.multiple = true;
 hofCsvInput.className = "hidden";
 document.body.appendChild(hofCsvInput);
 
+/* Sélecteur de DOSSIER pour le Hall of fame — mêmes réglages que le
+   sélecteur "📁 Choisir un dossier d'images…" du menu ☰ (webkitdirectory +
+   multiple, donc récursif sur les sous-dossiers du navigateur) : en
+   choisissant le dossier racine "PHOTO" (qui contient 2024, 2025, 2026…),
+   TOUS les fichiers de toutes les années remontent en une seule fois — il
+   suffit ensuite d'en garder les .csv. Évite d'avoir à sélectionner les
+   catalogues un par un, et contourne le souci de fichiers grisés/inacces-
+   sibles déjà rencontré avec un sélecteur de fichiers multiple sur Google
+   Drive Android (un sélecteur de DOSSIER passe par un mécanisme différent,
+   plus fiable dans ce cas — voir échanges précédents). */
+const hofFolderInput = document.createElement("input");
+hofFolderInput.type = "file";
+hofFolderInput.webkitdirectory = true;
+hofFolderInput.multiple = true;
+hofFolderInput.className = "hidden";
+document.body.appendChild(hofFolderInput);
+
 document.getElementById("btnHOF").addEventListener("click", ()=>{
   document.getElementById("hofStatus").textContent = "";
   openModal("modalHOF");
 });
+document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofFolderInput.click());
 document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofCsvInput.click());
 
+hofFolderInput.addEventListener("change", async ()=>{
+  const allFiles = [...hofFolderInput.files];
+  hofFolderInput.value = "";
+  const csvFiles = allFiles.filter(f=>/\.csv$/i.test(f.name));
+  if(!csvFiles.length){
+    document.getElementById("hofStatus").textContent = "Aucun fichier .csv trouvé dans ce dossier ni ses sous-dossiers.";
+    return;
+  }
+  await generateAlbumFromCsvFiles(csvFiles);
+});
 hofCsvInput.addEventListener("change", async ()=>{
   const files = [...hofCsvInput.files];
   hofCsvInput.value = "";
-  if(!files.length) return;
+  if(files.length) await generateAlbumFromCsvFiles(files);
+});
+
+async function generateAlbumFromCsvFiles(files){
   const statusEl = document.getElementById("hofStatus");
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
-  let header = null, favIdx = -1, sourceIdx = -1;
+  let header = null, favIdx = -1;
   const outLines = [];
   let totalFav = 0, skippedFiles = 0;
   for(const file of files){
@@ -2195,7 +2227,6 @@ hofCsvInput.addEventListener("change", async ()=>{
       if(!header){
         header = lines[0];
         favIdx = cols.indexOf("favori");
-        sourceIdx = cols.indexOf("sousDossier");
         outLines.push(header);
       }
       if(favIdx < 0){
@@ -2222,7 +2253,7 @@ hofCsvInput.addEventListener("change", async ()=>{
   const csvText = outLines.join("\r\n");
   downloadCsvFile(csvText, "Album.csv");
   statusEl.textContent = `« Album.csv » généré : ${totalFav} favori(s) repris depuis ${files.length - skippedFiles} catalogue(s)` + (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : ".");
-});
+}
 
 /* Nombre d'images les plus récentes traitées et affichées immédiatement ;
    le reste du dossier est traité ensuite en arrière-plan, par petits
