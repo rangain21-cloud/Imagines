@@ -91,6 +91,8 @@ button{font-family:inherit;}
 #btnInfo{background:#14432b; border-color:#1f5c3c;}
 #btnInfo:hover{background:#1a5636; border-color:var(--copper);}
 #btnInfo[disabled]{background:var(--bg-panel-2); border-color:var(--line);}
+#btnHOF:hover{background:#5c3794; border-color:#8a5ee0;}
+#btnHOF[disabled]{background:var(--bg-panel-2); border-color:var(--line);}
 
 .topbar-spacer{flex:1;}
 .selection-hint{font-size:12px; color:var(--ink-dim); margin-right:6px;}
@@ -770,6 +772,7 @@ button{font-family:inherit;}
   <div class="topbar-tools">
     <button class="tool-btn" id="btnBackToGallery" title="Retour galerie"><span class="ic">▦</span><span>Retour galerie</span></button>
     <button class="tool-btn" id="btnShare" title="Partager"><span class="ic">⇪</span><span>Partager</span></button>
+    <button class="tool-btn" id="btnHOF" title="Hall of fame" style="background:#4a2a7a; border-color:#6b3fb0;"><span>HOF</span></button>
     <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
     <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
     <button class="tool-btn" id="btnPersonnages" title="Personnages"><span class="ic">🧑</span><span>Personnages</span></button>
@@ -943,6 +946,20 @@ button{font-family:inherit;}
       <button class="btn" id="btnNewAuteur">Nouvel Auteur</button>
     </div>
   </aside>
+</div>
+
+<!-- ============== MODAL: HALL OF FAME ============== -->
+<div class="modal-overlay" id="modalHOF">
+  <div class="modal">
+    <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note">
+        Construit un fichier « Album.csv » en recopiant, depuis les fichiers Catalogue-AAAA.csv de chaque année que vous sélectionnez, uniquement les lignes marquées Favori — sans jamais relire les images/vidéos elles-mêmes (rapide même sur un très gros historique de plusieurs années).
+      </p>
+      <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:6px;">Générer</button>
+      <p class="drive-note" id="hofStatus" style="margin-top:10px;"></p>
+    </div>
+  </div>
 </div>
 
 <!-- ============== MODAL: CHOIX DU CATALOGUE (.csv) ============== -->
@@ -2138,6 +2155,75 @@ function pickCatalogFromCandidates(csvFiles){
   });
 }
 
+/* -----------------------------------------------------------------
+   "Hall of fame" : construit un fichier Album.csv à partir des favoris de
+   plusieurs fichiers Catalogue-AAAA.csv (un par année), SANS jamais relire
+   les images/vidéos elles-mêmes — uniquement du texte, donc rapide même
+   sur plusieurs années d'historique. Chaque ligne Favori est recopiée
+   telle quelle depuis son catalogue d'origine (pas de reformatage), en
+   confiance sur le fait que tous les Catalogue-xxxx.csv partagent le même
+   schéma de colonnes (généré par cette même application).
+   ----------------------------------------------------------------- */
+const hofCsvInput = document.createElement("input");
+hofCsvInput.type = "file";
+hofCsvInput.accept = ".csv,text/csv";
+hofCsvInput.multiple = true;
+hofCsvInput.className = "hidden";
+document.body.appendChild(hofCsvInput);
+
+document.getElementById("btnHOF").addEventListener("click", ()=>{
+  document.getElementById("hofStatus").textContent = "";
+  openModal("modalHOF");
+});
+document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofCsvInput.click());
+
+hofCsvInput.addEventListener("change", async ()=>{
+  const files = [...hofCsvInput.files];
+  hofCsvInput.value = "";
+  if(!files.length) return;
+  const statusEl = document.getElementById("hofStatus");
+  statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
+  let header = null, favIdx = -1, sourceIdx = -1;
+  const outLines = [];
+  let totalFav = 0, skippedFiles = 0;
+  for(const file of files){
+    try{
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+      if(lines.length < 1) continue;
+      const cols = parseCsvLine(lines[0]);
+      if(!header){
+        header = lines[0];
+        favIdx = cols.indexOf("favori");
+        sourceIdx = cols.indexOf("sousDossier");
+        outLines.push(header);
+      }
+      if(favIdx < 0){
+        console.warn(`"${file.name}" ignoré : pas de colonne "favori" reconnue (fichier non généré par Imago ?).`);
+        skippedFiles++;
+        continue;
+      }
+      for(let i=1;i<lines.length;i++){
+        const cells = parseCsvLine(lines[i]);
+        if(cells[favIdx] === "true"){
+          outLines.push(lines[i]); // recopie telle quelle, pas de reparsing/reformatage
+          totalFav++;
+        }
+      }
+    }catch(e){
+      console.warn(`Lecture impossible pour "${file.name}".`, e);
+      skippedFiles++;
+    }
+  }
+  if(!header){
+    statusEl.textContent = "Aucun catalogue lisible n'a été sélectionné.";
+    return;
+  }
+  const csvText = outLines.join("\r\n");
+  downloadCsvFile(csvText, "Album.csv");
+  statusEl.textContent = `« Album.csv » généré : ${totalFav} favori(s) repris depuis ${files.length - skippedFiles} catalogue(s)` + (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : ".");
+});
+
 /* Nombre d'images les plus récentes traitées et affichées immédiatement ;
    le reste du dossier est traité ensuite en arrière-plan, par petits
    paquets, sans bloquer l'écran (voir plus bas). */
@@ -2301,6 +2387,16 @@ function estimateFileDate(file, existingRow){
    l'appelant de rafraîchir l'affichage, par lots, une fois un paquet traité. */
 async function importOneFile(file, csvRowByFileName, stats){
   if(State.photos.find(p=>p.fileName===file.name)){ importDoneCount++; updateGalleryCounter(); return; } // doublon dans la sélection elle-même
+  // Sous-dossier de provenance (ex. "2024\Vidéo") : disponible via
+  // webkitRelativePath UNIQUEMENT quand le fichier vient du sélecteur de
+  // DOSSIER (vide pour "Sélectionner des images…"/"Nouvelle entrée", qui ne
+  // fournissent pas cette information). Consigné dans le catalogue pour
+  // pouvoir relocaliser un fichier plus tard (voir "Hall of fame", qui
+  // combine les favoris de plusieurs catalogues Année sans jamais relire
+  // les images elles-mêmes).
+  const sousDossier = file.webkitRelativePath
+    ? file.webkitRelativePath.slice(0, file.webkitRelativePath.length - file.name.length - 1)
+    : "";
   try{
     const isVideo = isVideoFile(file);
     const deferVideo = isVideo && file.size > VIDEO_INLINE_MAX_BYTES; // grosse vidéo : contenu chargé à la demande, voir plus bas
@@ -2344,7 +2440,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     if(existingRow){
       // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
       rec = {
-        id: uid("ph"), fileName: file.name, dataUrl: finalDataUrl,
+        id: uid("ph"), fileName: file.name, sousDossier, dataUrl: finalDataUrl,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         titre: existingRow.titre || "",
@@ -2379,7 +2475,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       const lieu = "";
       const personnage = meta.personnage;
       rec = {
-        id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl, dateAchat,
+        id: uid("ph"), fileName: file.name, sousDossier, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
@@ -2496,7 +2592,7 @@ function buildOrphanRecordFromCsvRow(row, fileName){
   const isVideo = /\.(mp4|mov)$/i.test(fileName);
   const lieu = row.lieu || "";
   return {
-    id: uid("ph"), fileName, dataUrl: null,
+    id: uid("ph"), fileName, sousDossier: row.sousDossier || "", dataUrl: null,
     isVideo, posterDataUrl: null, durationSec: 0,
     videoPending: false, videoSizeBytes: 0,
     titre: row.titre || buildTitre(lieu, row.personnage || ""),
@@ -5418,7 +5514,7 @@ document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
 /* ---------------------------------------------------------------
    15. CSV — génération automatique, export, import
    --------------------------------------------------------------- */
-const CSV_COLUMNS = ["id","fileName","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","corbeille","rotation","albums","filterKey","optique","poids","map"];
+const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","corbeille","rotation","albums","filterKey","optique","poids","map"];
 /* Titre auto-construit à partir de Lieu + Personnage : AUCUNE ponctuation,
    AUCUN chiffre — uniquement des lettres et des espaces, sans le mot de
    liaison "et". Reste éditable dans la modale Information : si
