@@ -966,11 +966,32 @@ button{font-family:inherit;}
       <button class="btn" id="btnHOFPickFolder" style="width:100%; margin-top:4px;">📁 Choisir un dossier d'images…</button>
 
       <p class="drive-note" style="margin-top:18px;">
-        <b>3) Partager</b> — sur Google Drive (dans IMAGINES), crée ou retrouve un dossier au nom du dossier choisi, puis y téléverse « Album.csv » ainsi que toutes ses images/vidéos (jpg, mp4). Nécessite d'être connecté à Drive (menu ☰).
+        <b>3) Partager</b> — téléverse « Album.csv » ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers le dossier Google Drive de votre choix (vous choisissez la destination). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).
       </p>
-      <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Partager…</button>
+      <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Choisir le dossier Drive et partager…</button>
 
       <p class="drive-note" id="hofStatus" style="margin-top:10px;"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: CHOIX DU DOSSIER DRIVE (Hall of fame → Partager) ============== -->
+<div class="modal-overlay" id="modalDriveFolderPicker">
+  <div class="modal">
+    <div class="modal-head"><h2>Dossier Drive de destination</h2><button class="modal-close" data-close="modalDriveFolderPicker">×</button></div>
+    <div class="modal-body">
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <button class="btn" id="btnDriveFolderRoot" style="flex:1;">🏠 Mon Drive</button>
+        <button class="btn" id="btnDriveFolderImagines" style="flex:1;">📷 IMAGINES</button>
+      </div>
+      <p class="drive-note" id="driveFolderPickerPath" style="margin-bottom:8px;"></p>
+      <div id="driveFolderPickerList" style="max-height:280px; overflow:auto; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2);"></div>
+      <button class="btn" id="btnDriveFolderNewSubfolder" style="width:100%; margin-top:10px;">➕ Nouveau dossier ici…</button>
+      <p class="drive-note" id="driveFolderPickerStatus" style="margin-top:10px;"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalDriveFolderPicker">Annuler</button>
+      <button class="btn copper" id="btnDriveFolderPickerConfirm">Téléverser ici</button>
     </div>
   </div>
 </div>
@@ -2335,6 +2356,9 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile){
 }
 
 // ---- 2) AFFICHER (seulement les favoris référencés par Album.csv) --
+// Rempli à la fin de cette étape ; réutilisé par l'étape 3) Partager plus bas
+// ({albumFile, mediaFiles}). Vidé au rechargement de la page.
+let hofShareData = null;
 hofDisplayFolderInput.addEventListener("change", async ()=>{
   const allFiles = [...hofDisplayFolderInput.files];
   hofDisplayFolderInput.value = "";
@@ -2396,26 +2420,37 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     return;
   }
   document.getElementById("btnHOFPickFolder").classList.add("done"); // fond vert : étape 2 terminée avec succès (visible à la réouverture de la modale, celle-ci se fermant juste après)
+  // Mémorisé pour l'étape 3) Partager, qui réutilise ces mêmes fichiers
+  // (déjà en mémoire, inutile de refaire sélectionner un dossier local) :
+  // seuls Album.csv et les fichiers jpg/mp4 effectivement chargés sont gardés.
+  hofShareData = {
+    albumFile,
+    mediaFiles: matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name))
+  };
+  document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
   closeModal("modalHOF");
   await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
   toast(`🏆 Hall of fame : ${matchedFiles.length} favori(s) chargé(s) sur ${wantedCount} référencé(s) dans Album.csv.`);
 });
 
 /* -----------------------------------------------------------------
-   3) PARTAGER : crée/retrouve, dans IMAGINES sur Drive, un sous-dossier
-   au nom du dossier local choisi, puis y téléverse « Album.csv » ainsi
-   que toutes les images/vidéos jpg/mp4 qu'il contient. Les fichiers déjà
-   présents (même nom) dans ce sous-dossier Drive sont mis à jour (PATCH)
-   plutôt que dupliqués, ce qui rend l'action rejouable sans accumuler de
-   doublons d'un partage à l'autre.
+   3) PARTAGER : téléverse « Album.csv » ainsi que les images/vidéos
+   chargées à l'étape 2) — déjà en mémoire, aucune resélection de dossier
+   local — vers un dossier Google Drive choisi par l'utilisateur au moyen
+   d'un petit navigateur de dossiers Drive (modalDriveFolderPicker). Les
+   fichiers déjà présents (même nom) dans le dossier Drive choisi sont mis
+   à jour (PATCH) plutôt que dupliqués, ce qui rend l'action rejouable sans
+   accumuler de doublons d'un partage à l'autre.
    ----------------------------------------------------------------- */
-const hofShareFolderInput = document.createElement("input");
-hofShareFolderInput.type = "file";
-hofShareFolderInput.webkitdirectory = true;
-hofShareFolderInput.multiple = true;
-hofShareFolderInput.className = "hidden";
-document.body.appendChild(hofShareFolderInput);
-document.getElementById("btnHOFShare").addEventListener("click", ()=> hofShareFolderInput.click());
+document.getElementById("btnHOFShare").addEventListener("click", ()=>{
+  const statusEl = document.getElementById("hofStatus");
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (menu ☰ → Connexion)."); return; }
+  if(!hofShareData || !hofShareData.mediaFiles.length){
+    statusEl.textContent = "Faites d'abord « Afficher » (étape 2 ci-dessus) dans cette session : c'est ce qu'elle charge qui sera partagé.";
+    return;
+  }
+  openDriveFolderPicker();
+});
 
 function fileToBase64(file){
   return new Promise((resolve, reject)=>{
@@ -2483,26 +2518,113 @@ async function uploadOrUpdateToDriveFolder({fileId, name, mimeType, folderId, co
   const data = await res.json();
   return data.id;
 }
-hofShareFolderInput.addEventListener("change", async ()=>{
-  const allFiles = [...hofShareFolderInput.files];
-  hofShareFolderInput.value = "";
-  const statusEl = document.getElementById("hofStatus");
-  const shareBtn = document.getElementById("btnHOFShare");
-  shareBtn.classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
-  if(!allFiles.length) return;
-  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (menu ☰ → Connexion)."); return; }
-  const albumFile = allFiles.find(f=>/^Album\.csv$/i.test(f.name));
-  if(!albumFile){
-    statusEl.textContent = "Aucun fichier « Album.csv » trouvé dans ce dossier — générez-le d'abord (bouton « Générer » ci-dessus).";
-    return;
-  }
-  const mediaFiles = allFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name));
-  const folderName = (allFiles[0].webkitRelativePath || "").split("/")[0] || "Partage Imago";
+/* ---- Navigateur de dossiers Drive (choix de la destination) ---- */
+// path : pile des dossiers traversés, du plus haut (racine) au courant.
+let driveFolderPicker = { path: [{id:"root", name:"Mon Drive"}] };
+
+function openDriveFolderPicker(){
+  driveFolderPicker.path = [{id:"root", name:"Mon Drive"}];
+  document.getElementById("driveFolderPickerStatus").textContent = "";
+  openModal("modalDriveFolderPicker");
+  renderDriveFolderPicker();
+}
+
+async function driveListSubfolders(folderId){
+  const q = encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&orderBy=name&pageSize=200&spaces=drive`);
+  const data = await res.json();
+  return (data.files||[]).sort((a,b)=> a.name.localeCompare(b.name, "fr"));
+}
+
+async function renderDriveFolderPicker(){
+  const pathEl = document.getElementById("driveFolderPickerPath");
+  const listEl = document.getElementById("driveFolderPickerList");
+  const current = driveFolderPicker.path[driveFolderPicker.path.length - 1];
+
+  // Fil d'Ariane cliquable pour remonter directement à un niveau parcouru.
+  pathEl.innerHTML = "";
+  driveFolderPicker.path.forEach((p, idx)=>{
+    const span = document.createElement("span");
+    span.textContent = p.name;
+    span.style.cursor = "pointer";
+    span.style.textDecoration = "underline";
+    span.addEventListener("click", ()=>{
+      driveFolderPicker.path = driveFolderPicker.path.slice(0, idx+1);
+      renderDriveFolderPicker();
+    });
+    pathEl.appendChild(span);
+    if(idx < driveFolderPicker.path.length - 1) pathEl.appendChild(document.createTextNode(" / "));
+  });
+
+  listEl.innerHTML = "<div style='padding:10px; color:var(--ink-dim);'>Chargement…</div>";
   try{
-    statusEl.textContent = `Préparation du dossier « ${folderName} » sur Drive…`;
-    const imaginesId = await ensureImaginesFolder();
-    const targetFolderId = await ensureNamedDriveSubfolder(folderName, imaginesId);
-    const existingIds = await listDriveFolderFileIdsByName(targetFolderId);
+    const folders = await driveListSubfolders(current.id);
+    listEl.innerHTML = "";
+    if(!folders.length){
+      listEl.innerHTML = "<div style='padding:10px; color:var(--ink-dim);'>Aucun sous-dossier ici.</div>";
+      return;
+    }
+    folders.forEach(f=>{
+      const row = document.createElement("div");
+      row.textContent = "📁 " + f.name;
+      row.style.cssText = "padding:8px 10px; cursor:pointer; border-bottom:1px solid var(--line);";
+      row.addEventListener("mouseenter", ()=> row.style.background = "var(--bg-panel)");
+      row.addEventListener("mouseleave", ()=> row.style.background = "");
+      row.addEventListener("click", ()=>{
+        driveFolderPicker.path.push({id:f.id, name:f.name});
+        renderDriveFolderPicker();
+      });
+      listEl.appendChild(row);
+    });
+  }catch(e){
+    listEl.innerHTML = `<div style="padding:10px; color:var(--ink-dim);">Erreur : ${e.message}</div>`;
+  }
+}
+
+document.getElementById("btnDriveFolderRoot").addEventListener("click", ()=>{
+  driveFolderPicker.path = [{id:"root", name:"Mon Drive"}];
+  renderDriveFolderPicker();
+});
+document.getElementById("btnDriveFolderImagines").addEventListener("click", async ()=>{
+  const statusEl = document.getElementById("driveFolderPickerStatus");
+  try{
+    statusEl.textContent = "Recherche du dossier IMAGINES…";
+    const id = await ensureImaginesFolder();
+    driveFolderPicker.path = [{id:"root", name:"Mon Drive"}, {id, name:"IMAGINES"}];
+    statusEl.textContent = "";
+    renderDriveFolderPicker();
+  }catch(e){
+    statusEl.textContent = `Impossible d'accéder à IMAGINES : ${e.message}`;
+  }
+});
+document.getElementById("btnDriveFolderNewSubfolder").addEventListener("click", async ()=>{
+  const current = driveFolderPicker.path[driveFolderPicker.path.length - 1];
+  const name = prompt(`Nom du nouveau dossier dans « ${current.name} » :`, "");
+  if(!name || !name.trim()) return;
+  const statusEl = document.getElementById("driveFolderPickerStatus");
+  try{
+    statusEl.textContent = "Création du dossier…";
+    const id = await ensureNamedDriveSubfolder(name.trim(), current.id);
+    driveFolderPicker.path.push({id, name: name.trim()});
+    statusEl.textContent = "";
+    renderDriveFolderPicker();
+  }catch(e){
+    statusEl.textContent = `Création impossible : ${e.message}`;
+  }
+});
+
+document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click", async ()=>{
+  const statusEl = document.getElementById("driveFolderPickerStatus");
+  const hofStatusEl = document.getElementById("hofStatus");
+  const shareBtn = document.getElementById("btnHOFShare");
+  const confirmBtn = document.getElementById("btnDriveFolderPickerConfirm");
+  if(!hofShareData){ statusEl.textContent = "Faites d'abord « Afficher » (étape 2)."; return; }
+  const current = driveFolderPicker.path[driveFolderPicker.path.length - 1];
+  const { albumFile, mediaFiles } = hofShareData;
+  confirmBtn.disabled = true;
+  try{
+    statusEl.textContent = `Préparation du dossier « ${current.name} »…`;
+    const existingIds = await listDriveFolderFileIdsByName(current.id);
 
     statusEl.textContent = `Envoi de « Album.csv »…`;
     const albumText = await albumFile.text();
@@ -2510,7 +2632,7 @@ hofShareFolderInput.addEventListener("change", async ()=>{
       fileId: existingIds.get(albumFile.name),
       name: albumFile.name,
       mimeType: "text/csv",
-      folderId: targetFolderId,
+      folderId: current.id,
       content: albumText,
       isBase64: false
     });
@@ -2524,16 +2646,21 @@ hofShareFolderInput.addEventListener("change", async ()=>{
         fileId: existingIds.get(file.name),
         name: file.name,
         mimeType: guessMimeType(file),
-        folderId: targetFolderId,
+        folderId: current.id,
         content: base64,
         isBase64: true
       });
     }
     shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès
-    statusEl.textContent = `« ${folderName} » partagé sur Drive (dossier IMAGINES/${folderName}) : « Album.csv » + ${mediaFiles.length} fichier(s) jpg/mp4 envoyés.`;
-    toast(`☁️ « ${folderName} » téléversé sur Drive : Album.csv + ${mediaFiles.length} fichier(s).`);
+    const msg = `« ${current.name} » partagé sur Drive : « Album.csv » + ${mediaFiles.length} fichier(s) jpg/mp4 envoyés.`;
+    statusEl.textContent = msg;
+    hofStatusEl.textContent = msg;
+    toast(`☁️ « ${current.name} » téléversé sur Drive : Album.csv + ${mediaFiles.length} fichier(s).`);
+    closeModal("modalDriveFolderPicker");
   }catch(err){
     statusEl.textContent = `Partage impossible : ${err.message}`;
+  }finally{
+    confirmBtn.disabled = false;
   }
 });
 
