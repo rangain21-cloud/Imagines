@@ -969,6 +969,11 @@ button{font-family:inherit;}
         <b>2) Afficher</b> — une fois « Album-Favori.csv » ou « Album-Art.csv » (selon la rubrique choisie ci-dessus) généré et déposé dans le dossier de vos photos, choisissez ce même dossier : seules les images/vidéos qu'il référence seront chargées, pas tout le dossier.
       </p>
       <button class="btn" id="btnHOFPickFolder" style="width:100%; margin-top:4px;">📁 Choisir un dossier d'images…</button>
+      <div id="hofProgressWrap" class="hidden" style="margin-top:10px;">
+        <div style="height:8px; border-radius:4px; background:var(--bg-panel); border:1px solid var(--line); overflow:hidden;">
+          <div id="hofProgressBar" style="height:100%; width:0%; background:var(--copper); transition:width .15s ease;"></div>
+        </div>
+      </div>
 
       <p class="drive-note" style="margin-top:18px;">
         <b>3) Partager</b> — téléverse le fichier Album généré ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers le dossier Google Drive de votre choix (vous choisissez la destination). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).
@@ -2476,10 +2481,51 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     mediaFiles: matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name))
   };
   document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
+  await runHofImportWithProgress(matchedFiles, statusEl);
   closeModal("modalHOF");
-  await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
   toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`);
 });
+
+/* Lance le pipeline d'import habituel (handleFilesSelected) SANS fermer la
+   modale HOF au préalable, en affichant sa progression (compteur + barre)
+   dans la modale elle-même — via les compteurs globaux importTotalCount/
+   importDoneCount déjà tenus à jour par ce pipeline (voir updateGalleryCounter
+   plus haut, même principe). Comme le lot prioritaire seulement peut être
+   traité avant que handleFilesSelected() ne redonne la main (le reste continue
+   alors en arrière-plan, voir importRestInBackground), on continue à sonder
+   ces compteurs après son retour jusqu'à ce qu'ils repassent à 0 (convention
+   du pipeline pour signaler un import totalement terminé). */
+async function runHofImportWithProgress(matchedFiles, statusEl){
+  const progressWrap = document.getElementById("hofProgressWrap");
+  const progressBar = document.getElementById("hofProgressBar");
+  const pickBtn = document.getElementById("btnHOFPickFolder");
+  progressWrap.classList.remove("hidden");
+  progressBar.style.width = "0%";
+  pickBtn.disabled = true;
+  statusEl.textContent = `Préparation de l'import de ${matchedFiles.length} fichier(s)…`;
+  const tick = ()=>{
+    if(importTotalCount > 0){
+      const pct = Math.round((importDoneCount / importTotalCount) * 100);
+      progressBar.style.width = pct + "%";
+      statusEl.textContent = `Chargement en cours : ${importDoneCount}/${importTotalCount} fichier(s)…`;
+    }
+  };
+  const interval = setInterval(tick, 150);
+  try{
+    await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
+    // Le lot prioritaire est affiché dès ce retour, mais le reste (s'il y en
+    // a) continue en arrière-plan : on attend sa fin réelle avant de conclure.
+    while(importTotalCount > 0){
+      tick();
+      await new Promise(r=> setTimeout(r, 150));
+    }
+  }finally{
+    clearInterval(interval);
+    progressBar.style.width = "100%";
+    pickBtn.disabled = false;
+    progressWrap.classList.add("hidden");
+  }
+}
 
 /* -----------------------------------------------------------------
    3) PARTAGER : téléverse le fichier Album (Favori ou Art) ainsi que les images/vidéos
