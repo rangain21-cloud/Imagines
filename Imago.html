@@ -779,6 +779,7 @@ button{font-family:inherit;}
     <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
     <button class="tool-btn" id="btnPersonnages" title="Personnages"><span class="ic">🧑</span><span>Personnages</span></button>
     <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
+    <button class="tool-btn" id="btnArt" title="Art"><span class="ic">🎨</span><span>Art</span></button>
     <button class="tool-btn" id="btnTrash" title="Corbeille"><span class="ic">🗑</span><span>Corbeille</span></button>
     <button class="tool-btn" id="btnInfo" title="Information"><span class="ic">ⓘ</span><span>Information</span></button>
     <button class="tool-btn" id="btnMore" title="Plus d'info"><span class="ic">⋯</span><span>Plus d'info</span></button>
@@ -956,8 +957,12 @@ button{font-family:inherit;}
     <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
     <div class="modal-body">
       <p class="drive-note">
-        <b>1) Générer</b> — construit (ou récupère) un fichier « Album.csv » en intégrant les images/vidéos marquées "Favori"  dans les fichiers Catalogue-AAAA.csv de chaque année.
+        <b>1) Générer</b> — construit (ou récupère) un fichier « Album.csv » en intégrant les images/vidéos marquées selon la rubrique choisie ci-dessous, dans les fichiers Catalogue-AAAA.csv de chaque année.
       </p>
+      <div style="display:flex; gap:16px; margin:6px 0 4px; font-size:13px;">
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="favori" checked> ★ Favori</label>
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="art"> 🎨 Art</label>
+      </div>
       <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
 
       <p class="drive-note" style="margin-top:18px;">
@@ -1416,7 +1421,7 @@ async function idbSetMeta(key, value){ return idbPut("meta", {key, value}); }
    1. État applicatif
    --------------------------------------------------------------- */
 const State = {
-  photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, corbeille, rotation, albums:[]}
+  photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, art, corbeille, rotation, albums:[]}
   albums: [],         // {id, name}
   auteurs: [],         // {id, name, note}
   filters: {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""},
@@ -1985,13 +1990,16 @@ function getSelected(){ return State.photos.find(p=>p.id===State.selectedId) || 
 
 function updateToolbarState(){
   const has = !!getSelected();
-  ["btnShare","btnEdit","btnZoomToggle","btnInfo","btnFav","btnTrash","btnMore"].forEach(id=>{
+  ["btnShare","btnEdit","btnZoomToggle","btnInfo","btnFav","btnArt","btnTrash","btnMore"].forEach(id=>{
     document.getElementById(id).disabled = !has;
   });
   document.getElementById("selHint").textContent = has ? `Sélection : ${getSelected().fileName}` : "Aucune image sélectionnée";
   const favBtn = document.getElementById("btnFav");
   if(has) favBtn.classList.toggle("active", !!getSelected().favori);
   else favBtn.classList.remove("active");
+  const artBtn = document.getElementById("btnArt");
+  if(has) artBtn.classList.toggle("active", !!getSelected().art);
+  else artBtn.classList.remove("active");
 }
 
 /* ---------------------------------------------------------------
@@ -2196,18 +2204,20 @@ function pickCatalogFromCandidates(csvFiles){
 
 /* -----------------------------------------------------------------
    "Hall of fame" — deux actions bien distinctes :
-   1) GÉNÉRER : construit (ou met à jour) Album.csv à partir des favoris de
-      plusieurs Catalogue-AAAA.csv (un par année), SANS jamais relire les
+   1) GÉNÉRER : construit (ou met à jour) Album.csv à partir de la rubrique
+      choisie par l'utilisateur ("favori" ou "art") dans plusieurs
+      Catalogue-AAAA.csv (un par année), SANS jamais relire les
       images/vidéos elles-mêmes — uniquement du texte, donc rapide même sur
-      plusieurs années d'historique. Chaque ligne Favori est recopiée telle
+      plusieurs années d'historique. Chaque ligne retenue est recopiée telle
       quelle depuis son catalogue d'origine (pas de reformatage), en
       confiance sur le fait que tous les Catalogue-xxxx.csv partagent le
       même schéma de colonnes (généré par cette même application).
       Si un fichier « Album.csv » existe déjà dans le dossier racine choisi,
       il est récupéré et MODIFIÉ (et non écrasé à l'aveugle) : ses lignes
-      existantes sont conservées comme base, les favoris retrouvés dans les
-      catalogues sélectionnés sont ajoutés/mis à jour, et toute ligne dont
-      le catalogue d'origine indique désormais "non favori" en est retirée.
+      existantes sont conservées comme base, les entrées retrouvées dans les
+      catalogues sélectionnés (selon la rubrique choisie) sont ajoutées/mises
+      à jour, et toute ligne dont le catalogue d'origine indique désormais
+      "non" pour cette même rubrique en est retirée.
    2) AFFICHER : une fois Album.csv généré et déposé par l'utilisateur dans
       le dossier de ses photos, un sélecteur de DOSSIER (même mécanisme que
       "📁 Choisir un dossier d'images…" du menu ☰, donc récursif) repère ce
@@ -2242,7 +2252,7 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   hofGenerateFolderInput.value = "";
   document.getElementById("btnHOFGenerate").classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
   // "Catalogue-AAAA.csv" pour les sources ; un éventuel "Album.csv" déjà
-  // présent à la racine du dossier choisi n'est pas une source de favoris
+  // présent à la racine du dossier choisi n'est pas une source d'entrées
   // mais LA BASE à récupérer et mettre à jour (voir generateAlbumFromCsvFiles).
   const csvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
   const existingAlbumFile = allFiles.find(f=>/^Album\.csv$/i.test(f.name));
@@ -2250,10 +2260,13 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
     document.getElementById("hofStatus").textContent = "Aucun fichier Catalogue-AAAA.csv trouvé dans ce dossier ni ses sous-dossiers.";
     return;
   }
-  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile);
+  // Rubrique choisie par l'utilisateur (bouton radio) : "favori" ou "art".
+  const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
+  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion);
 });
 
-async function generateAlbumFromCsvFiles(files, existingAlbumFile){
+async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
+  const criterionLabel = criterion === "art" ? "Art" : "Favori";
   const statusEl = document.getElementById("hofStatus");
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
   // rowsById : id (identifiant UNIQUE de chaque photo dans le catalogue,
@@ -2301,7 +2314,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile){
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
       if(lines.length < 1) continue;
       const cols = parseCsvLine(lines[0]);
-      const favIdx = cols.indexOf("favori");
+      const favIdx = cols.indexOf(criterion);
       const idColIdx = cols.indexOf("id");
       const sousDossierIdx = cols.indexOf("sousDossier");
       if(!header){
@@ -2309,7 +2322,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile){
         idIdx = idColIdx;
       }
       if(favIdx < 0 || idColIdx < 0){
-        console.warn(`"${file.name}" ignoré : colonne "favori" ou "id" non reconnue (fichier non généré par Imago ?).`);
+        console.warn(`"${file.name}" ignoré : colonne "${criterion}" ou "id" non reconnue (fichier non généré par Imago, ou généré avant l'ajout de la rubrique "${criterion}" ?).`);
         skippedFiles++;
         continue;
       }
@@ -2355,12 +2368,12 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile){
     (existingAlbumFile
       ? `« Album.csv » existant récupéré (${recoveredCount} entrée(s)) et mis à jour`
       : `« Album.csv » généré`) +
-    ` : ${totalOut} favori(s) au total, ${totalFav} favori(s) repris depuis ${files.length - skippedFiles} catalogue(s)` +
+    ` : ${totalOut} entrée(s) au total, ${totalFav} « ${criterionLabel} » repris depuis ${files.length - skippedFiles} catalogue(s)` +
     (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : "") +
     " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
 }
 
-// ---- 2) AFFICHER (seulement les favoris référencés par Album.csv) --
+// ---- 2) AFFICHER (seulement les entrées référencées par Album.csv) --
 // Rempli à la fin de cette étape ; réutilisé par l'étape 3) Partager plus bas
 // ({albumFile, mediaFiles}). Vidé au rechargement de la page.
 let hofShareData = null;
@@ -2379,7 +2392,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   try{
     const text = await albumFile.text();
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
-    if(lines.length < 2){ statusEl.textContent = "« Album.csv » ne contient aucun favori."; return; }
+    if(lines.length < 2){ statusEl.textContent = "« Album.csv » ne contient aucune entrée."; return; }
     const header = parseCsvLine(lines[0]);
     const fileNameIdx = header.indexOf("fileName");
     const sousDossierIdx = header.indexOf("sousDossier");
@@ -2435,7 +2448,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
   closeModal("modalHOF");
   await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
-  toast(`🏆 Hall of fame : ${matchedFiles.length} favori(s) chargé(s) sur ${wantedCount} référencé(s) dans Album.csv.`);
+  toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans Album.csv.`);
 });
 
 /* -----------------------------------------------------------------
@@ -2921,6 +2934,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         etiquette: existingRow.etiquette || "",
         auteur: existingRow.auteur || "Philippe",
         favori: existingRow.favori === "true",
+        art: existingRow.art === "true",
         corbeille: existingRow.corbeille === "true",
         rotation: Number(existingRow.rotation)||0,
         albums: existingRow.albums ? existingRow.albums.split("|").filter(Boolean) : [],
@@ -2948,7 +2962,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
-        favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
+        favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
         sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
         optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
         gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
@@ -3072,6 +3086,7 @@ function buildOrphanRecordFromCsvRow(row, fileName){
     etiquette: row.etiquette || "",
     auteur: row.auteur || "Philippe",
     favori: row.favori === "true",
+    art: row.art === "true",
     corbeille: true, // règle : fichier introuvable dans le dossier → corbeille
     rotation: Number(row.rotation)||0,
     albums: row.albums ? row.albums.split("|").filter(Boolean) : [],
@@ -5354,7 +5369,19 @@ document.getElementById("btnFav").addEventListener("click", async ()=>{
   p.favori = !p.favori;
   await idbPut("photos", p);
   renderGrid();
+  updateToolbarState();
+  autoBuildCsv();
   toast(p.favori ? "Ajouté aux favoris." : "Retiré des favoris.");
+});
+
+document.getElementById("btnArt").addEventListener("click", async ()=>{
+  const p = getSelected(); if(!p) return;
+  p.art = !p.art;
+  await idbPut("photos", p);
+  renderGrid();
+  updateToolbarState();
+  autoBuildCsv();
+  toast(p.art ? "Marqué « Art »." : "Retiré de « Art ».");
 });
 
 document.getElementById("btnTrash").addEventListener("click", async ()=>{
@@ -5947,7 +5974,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
     support: document.getElementById("neSupport").value.trim(),
     etiquette: document.getElementById("neEtiquette").value.trim(),
     auteur: document.getElementById("neAuteur").value.trim() || "Philippe",
-    favori:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
+    favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
     sizeBytes:encodedSize, width:dims.width, height:dims.height, exif,
     optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
     gpsLat: exif && exif.gpsLat!=null ? exif.gpsLat : null,
@@ -5983,7 +6010,7 @@ document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
 /* ---------------------------------------------------------------
    15. CSV — génération automatique, export, import
    --------------------------------------------------------------- */
-const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","corbeille","rotation","albums","filterKey","optique","poids","map"];
+const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","art","corbeille","rotation","albums","filterKey","optique","poids","map"];
 /* Titre auto-construit à partir de Lieu + Personnage : AUCUNE ponctuation,
    AUCUN chiffre — uniquement des lettres et des espaces, sans le mot de
    liaison "et". Reste éditable dans la modale Information : si
@@ -6049,7 +6076,7 @@ async function mergeCsvIntoCatalog(text){
     if(!row.fileName) continue;
     let rec = State.photos.find(p=>p.fileName===row.fileName);
     if(!rec){
-      rec = {id: uid("ph"), fileName:row.fileName, dataUrl:"", favori:false, corbeille:false, rotation:0, albums:[]};
+      rec = {id: uid("ph"), fileName:row.fileName, dataUrl:"", favori:false, art:false, corbeille:false, rotation:0, albums:[]};
       State.photos.push(rec); created++;
     } else updated++;
     rec.dateAchat = row.dateAchat || rec.dateAchat;
@@ -6059,6 +6086,7 @@ async function mergeCsvIntoCatalog(text){
     rec.etiquette = row.etiquette || "";
     rec.auteur = row.auteur || "Philippe";
     rec.favori = row.favori === "true";
+    rec.art = row.art === "true";
     rec.corbeille = row.corbeille === "true";
     rec.rotation = Number(row.rotation)||0;
     rec.albums = row.albums ? row.albums.split("|").filter(Boolean) : [];
