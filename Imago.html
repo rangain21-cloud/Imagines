@@ -957,7 +957,7 @@ button{font-family:inherit;}
     <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
     <div class="modal-body">
       <p class="drive-note">
-        <b>1) Générer</b> — construit (ou récupère) un fichier « Album.csv » en intégrant les images/vidéos marquées selon la rubrique choisie ci-dessous, dans les fichiers Catalogue-AAAA.csv de chaque année.
+        <b>1) Générer</b> — construit (ou récupère) un fichier « Album-Favori.csv » ou « Album-Art.csv » (selon la rubrique choisie ci-dessous) en intégrant les images/vidéos marquées dans les fichiers Catalogue-AAAA.csv de chaque année.
       </p>
       <div style="display:flex; gap:16px; margin:6px 0 4px; font-size:13px;">
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="favori" checked> ★ Favori</label>
@@ -966,12 +966,12 @@ button{font-family:inherit;}
       <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
 
       <p class="drive-note" style="margin-top:18px;">
-        <b>2) Afficher</b> — une fois « Album.csv » généré et déposé dans le dossier de vos photos, choisissez ce même dossier : seules les images/vidéos qu'il référence seront chargées, pas tout le dossier.
+        <b>2) Afficher</b> — une fois « Album-Favori.csv » ou « Album-Art.csv » (selon la rubrique choisie ci-dessus) généré et déposé dans le dossier de vos photos, choisissez ce même dossier : seules les images/vidéos qu'il référence seront chargées, pas tout le dossier.
       </p>
       <button class="btn" id="btnHOFPickFolder" style="width:100%; margin-top:4px;">📁 Choisir un dossier d'images…</button>
 
       <p class="drive-note" style="margin-top:18px;">
-        <b>3) Partager</b> — téléverse « Album.csv » ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers le dossier Google Drive de votre choix (vous choisissez la destination). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).
+        <b>3) Partager</b> — téléverse le fichier Album généré ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers le dossier Google Drive de votre choix (vous choisissez la destination). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).
       </p>
       <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Choisir le dossier Drive et partager…</button>
 
@@ -2057,12 +2057,21 @@ function populateFilterOptions(){
    la modale Infos, à partir des valeurs déjà utilisées ailleurs dans le
    catalogue — même principe que le datalist Auteur déjà en place.
    Rafraîchi à chaque appel de populateFilterOptions() (import, édition…),
-   donc toujours à jour. */
+   donc toujours à jour.
+   sessionTitleSuggestions : titres tapés pendant la session en cours,
+   conservés comme suggestions même s'ils ne se retrouvent plus, à l'instant,
+   dans la rubrique "titre" d'aucune photo du catalogue (ex. : titre tapé
+   puis remplacé sur cette même photo, ou plus aucune photo ne le portant
+   actuellement) — pratique pour retaper rapidement un titre déjà utilisé
+   plus tôt dans la session sans avoir à le retaper en entier. */
+const sessionTitleSuggestions = new Set();
 function populateInfoModalDatalists(){
   const titreDl = document.getElementById("titreList");
   if(titreDl){
-    const titres = [...new Set(State.photos.filter(p=>!p.corbeille).map(p=>p.titre).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"fr"));
-    titreDl.innerHTML = titres.map(t=>`<option value="${escapeHtml(t)}">`).join("");
+    const titres = new Set(State.photos.filter(p=>!p.corbeille).map(p=>p.titre).filter(Boolean));
+    sessionTitleSuggestions.forEach(t=> titres.add(t));
+    const sorted = [...titres].sort((a,b)=>a.localeCompare(b,"fr"));
+    titreDl.innerHTML = sorted.map(t=>`<option value="${escapeHtml(t)}">`).join("");
   }
   const personnageDl = document.getElementById("personnageList");
   if(personnageDl) personnageDl.innerHTML = uniquePersonnageTokens().map(t=>`<option value="${escapeHtml(t)}">`).join("");
@@ -2204,26 +2213,29 @@ function pickCatalogFromCandidates(csvFiles){
 
 /* -----------------------------------------------------------------
    "Hall of fame" — deux actions bien distinctes :
-   1) GÉNÉRER : construit (ou met à jour) Album.csv à partir de la rubrique
-      choisie par l'utilisateur ("favori" ou "art") dans plusieurs
+   1) GÉNÉRER : construit (ou met à jour) « Album-Favori.csv » ou
+      « Album-Art.csv » (selon la rubrique choisie par l'utilisateur —
+      bouton radio "favori" ou "art") à partir de plusieurs
       Catalogue-AAAA.csv (un par année), SANS jamais relire les
       images/vidéos elles-mêmes — uniquement du texte, donc rapide même sur
       plusieurs années d'historique. Chaque ligne retenue est recopiée telle
       quelle depuis son catalogue d'origine (pas de reformatage), en
       confiance sur le fait que tous les Catalogue-xxxx.csv partagent le
       même schéma de colonnes (généré par cette même application).
-      Si un fichier « Album.csv » existe déjà dans le dossier racine choisi,
-      il est récupéré et MODIFIÉ (et non écrasé à l'aveugle) : ses lignes
-      existantes sont conservées comme base, les entrées retrouvées dans les
-      catalogues sélectionnés (selon la rubrique choisie) sont ajoutées/mises
-      à jour, et toute ligne dont le catalogue d'origine indique désormais
-      "non" pour cette même rubrique en est retirée.
-   2) AFFICHER : une fois Album.csv généré et déposé par l'utilisateur dans
-      le dossier de ses photos, un sélecteur de DOSSIER (même mécanisme que
+      Si le fichier Album correspondant à la rubrique choisie existe déjà
+      dans le dossier racine choisi, il est récupéré et MODIFIÉ (et non
+      écrasé à l'aveugle) : ses lignes existantes sont conservées comme
+      base, les entrées retrouvées dans les catalogues sélectionnés (selon
+      la rubrique choisie) sont ajoutées/mises à jour, et toute ligne dont
+      le catalogue d'origine indique désormais "non" pour cette même
+      rubrique en est retirée.
+   2) AFFICHER : une fois le fichier Album (Favori ou Art selon la rubrique
+      choisie ci-dessus) généré et déposé par l'utilisateur dans le dossier
+      de ses photos, un sélecteur de DOSSIER (même mécanisme que
       "📁 Choisir un dossier d'images…" du menu ☰, donc récursif) repère ce
-      fichier Album.csv dans la sélection, en lit la liste des fichiers
-      référencés, et ne charge QUE ceux-là via le pipeline d'import habituel
-      — jamais tout le dossier.
+      fichier dans la sélection, en lit la liste des fichiers référencés, et
+      ne charge QUE ceux-là via le pipeline d'import habituel — jamais tout
+      le dossier.
    ----------------------------------------------------------------- */
 const hofGenerateFolderInput = document.createElement("input");
 hofGenerateFolderInput.type = "file";
@@ -2246,27 +2258,38 @@ document.getElementById("btnHOF").addEventListener("click", ()=>{
 document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofGenerateFolderInput.click());
 document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofDisplayFolderInput.click());
 
+// Nom du fichier Album selon la rubrique choisie (radio Favori/Art) —
+// utilisé à la fois pour l'écrire (étape 1) et pour le rechercher (étape 2).
+function hofAlbumFileName(criterion){
+  return criterion === "art" ? "Album-Art.csv" : "Album-Favori.csv";
+}
+
 // ---- 1) GÉNÉRER ----------------------------------------------------
 hofGenerateFolderInput.addEventListener("change", async ()=>{
   const allFiles = [...hofGenerateFolderInput.files];
   hofGenerateFolderInput.value = "";
   document.getElementById("btnHOFGenerate").classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
-  // "Catalogue-AAAA.csv" pour les sources ; un éventuel "Album.csv" déjà
-  // présent à la racine du dossier choisi n'est pas une source d'entrées
-  // mais LA BASE à récupérer et mettre à jour (voir generateAlbumFromCsvFiles).
+  // Rubrique choisie par l'utilisateur (bouton radio) : "favori" ou "art".
+  const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
+  const targetName = hofAlbumFileName(criterion);
+  // "Catalogue-AAAA.csv" pour les sources ; un éventuel fichier Album déjà
+  // présent à la racine du dossier choisi (sous le nom correspondant à la
+  // rubrique choisie — ou encore "Album.csv", ancien nom, pour "Favori")
+  // n'est pas une source d'entrées mais LA BASE à récupérer et mettre à
+  // jour (voir generateAlbumFromCsvFiles).
   const csvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
-  const existingAlbumFile = allFiles.find(f=>/^Album\.csv$/i.test(f.name));
+  const existingAlbumFile = allFiles.find(f=> f.name.toLowerCase() === targetName.toLowerCase())
+    || (criterion === "favori" ? allFiles.find(f=>/^Album\.csv$/i.test(f.name)) : null);
   if(!csvFiles.length){
     document.getElementById("hofStatus").textContent = "Aucun fichier Catalogue-AAAA.csv trouvé dans ce dossier ni ses sous-dossiers.";
     return;
   }
-  // Rubrique choisie par l'utilisateur (bouton radio) : "favori" ou "art".
-  const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
   await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion);
 });
 
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
   const criterionLabel = criterion === "art" ? "Art" : "Favori";
+  const targetName = hofAlbumFileName(criterion);
   const statusEl = document.getElementById("hofStatus");
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
   // rowsById : id (identifiant UNIQUE de chaque photo dans le catalogue,
@@ -2361,13 +2384,13 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
     return;
   }
   const csvText = [header, ...rowsById.values()].join("\r\n");
-  downloadCsvFile(csvText, "Album.csv");
+  downloadCsvFile(csvText, targetName);
   document.getElementById("btnHOFGenerate").classList.add("done"); // fond vert : étape 1 terminée avec succès
   const totalOut = rowsById.size;
   statusEl.textContent =
     (existingAlbumFile
-      ? `« Album.csv » existant récupéré (${recoveredCount} entrée(s)) et mis à jour`
-      : `« Album.csv » généré`) +
+      ? `« ${targetName} » existant récupéré (${recoveredCount} entrée(s)) et mis à jour`
+      : `« ${targetName} » généré`) +
     ` : ${totalOut} entrée(s) au total, ${totalFav} « ${criterionLabel} » repris depuis ${files.length - skippedFiles} catalogue(s)` +
     (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : "") +
     " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
@@ -2382,21 +2405,28 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   hofDisplayFolderInput.value = "";
   document.getElementById("btnHOFPickFolder").classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
   const statusEl = document.getElementById("hofStatus");
-  const albumFile = allFiles.find(f=>/^Album\.csv$/i.test(f.name));
+  // Rubrique choisie (bouton radio, partagée avec l'étape 1) : détermine le
+  // nom de fichier Album recherché ("Album.csv" en repli pour "Favori",
+  // pour les fichiers générés avant l'introduction de ce nommage distinct).
+  const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
+  const criterionLabel = criterion === "art" ? "Art" : "Favori";
+  const targetName = hofAlbumFileName(criterion);
+  const albumFile = allFiles.find(f=> f.name.toLowerCase() === targetName.toLowerCase())
+    || (criterion === "favori" ? allFiles.find(f=>/^Album\.csv$/i.test(f.name)) : null);
   if(!albumFile){
-    statusEl.textContent = "Aucun fichier « Album.csv » trouvé dans ce dossier — générez-le d'abord (bouton « Générer » ci-dessus), déposez-le dans ce dossier, puis réessayez.";
+    statusEl.textContent = `Aucun fichier « ${targetName} » trouvé dans ce dossier — générez-le d'abord (bouton « Générer » ci-dessus, rubrique « ${criterionLabel} »), déposez-le dans ce dossier, puis réessayez.`;
     return;
   }
-  statusEl.textContent = "Lecture d'Album.csv…";
+  statusEl.textContent = `Lecture de « ${albumFile.name} »…`;
   let wantedPaths, wantedNamesOnly, hasSousDossier;
   try{
     const text = await albumFile.text();
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
-    if(lines.length < 2){ statusEl.textContent = "« Album.csv » ne contient aucune entrée."; return; }
+    if(lines.length < 2){ statusEl.textContent = `« ${albumFile.name} » ne contient aucune entrée.`; return; }
     const header = parseCsvLine(lines[0]);
     const fileNameIdx = header.indexOf("fileName");
     const sousDossierIdx = header.indexOf("sousDossier");
-    if(fileNameIdx < 0){ statusEl.textContent = "« Album.csv » n'a pas le format attendu (colonne fileName manquante)."; return; }
+    if(fileNameIdx < 0){ statusEl.textContent = `« ${albumFile.name} » n'a pas le format attendu (colonne fileName manquante).`; return; }
     hasSousDossier = sousDossierIdx >= 0;
     // Le nom de fichier seul ne suffit pas à identifier une photo de façon
     // fiable — un même nom peut désigner des photos différentes d'une année
@@ -2417,10 +2447,10 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
       }
     }
   }catch(e){
-    statusEl.textContent = `Lecture d'Album.csv impossible : ${e.message}`;
+    statusEl.textContent = `Lecture de « ${albumFile.name} » impossible : ${e.message}`;
     return;
   }
-  // Seuls les fichiers réellement référencés par Album.csv sont conservés —
+  // Seuls les fichiers réellement référencés par le fichier Album sont conservés —
   // c'est ici que "pas tout le dossier" est appliqué, AVANT tout import.
   // Comparaison par CHEMIN (sous-dossier + nom) en priorité, pour éviter de
   // charger deux photos différentes qui porteraient le même nom de fichier
@@ -2434,13 +2464,13 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   });
   const wantedCount = hasSousDossier ? wantedPaths.size : wantedNamesOnly.size;
   if(!matchedFiles.length){
-    statusEl.textContent = `« Album.csv » référence ${wantedCount} fichier(s), mais aucun n'a été retrouvé dans ce dossier.`;
+    statusEl.textContent = `« ${albumFile.name} » référence ${wantedCount} fichier(s), mais aucun n'a été retrouvé dans ce dossier.`;
     return;
   }
   document.getElementById("btnHOFPickFolder").classList.add("done"); // fond vert : étape 2 terminée avec succès (visible à la réouverture de la modale, celle-ci se fermant juste après)
   // Mémorisé pour l'étape 3) Partager, qui réutilise ces mêmes fichiers
   // (déjà en mémoire, inutile de refaire sélectionner un dossier local) :
-  // seuls Album.csv et les fichiers jpg/mp4 effectivement chargés sont gardés.
+  // seuls le fichier Album et les fichiers jpg/mp4 effectivement chargés sont gardés.
   hofShareData = {
     albumFile,
     mediaFiles: matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name))
@@ -2448,11 +2478,11 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
   closeModal("modalHOF");
   await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
-  toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans Album.csv.`);
+  toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`);
 });
 
 /* -----------------------------------------------------------------
-   3) PARTAGER : téléverse « Album.csv » ainsi que les images/vidéos
+   3) PARTAGER : téléverse le fichier Album (Favori ou Art) ainsi que les images/vidéos
    chargées à l'étape 2) — déjà en mémoire, aucune resélection de dossier
    local — vers un dossier Google Drive choisi par l'utilisateur au moyen
    d'un petit navigateur de dossiers Drive (modalDriveFolderPicker). Les
@@ -2653,7 +2683,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
     // photos/vidéos, celles à ne pas réenvoyer (déjà là = inutile).
     const existingIds = await listDriveFolderFileIdsByName(current.id);
 
-    statusEl.textContent = `Envoi de « Album.csv »…`;
+    statusEl.textContent = `Envoi de « ${albumFile.name} »…`;
     const albumText = await albumFile.text();
     await uploadOrUpdateToDriveFolder({
       fileId: existingIds.get(albumFile.name),
@@ -2694,7 +2724,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
     }
     progressBar.style.width = "100%";
     shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès
-    const msg = `« ${current.name} » : « Album.csv » à jour, ${uploaded} fichier(s) envoyé(s)${skipped ? `, ${skipped} déjà présent(s) ignoré(s)` : ""} sur ${total}.`;
+    const msg = `« ${current.name} » : « ${albumFile.name} » à jour, ${uploaded} fichier(s) envoyé(s)${skipped ? `, ${skipped} déjà présent(s) ignoré(s)` : ""} sur ${total}.`;
     statusEl.textContent = msg;
     hofStatusEl.textContent = msg;
     toast(`☁️ ${msg}`);
@@ -4725,7 +4755,8 @@ const FILTER_PRESETS = [
   {key:"luminous",     icon:"☀",  label:"Luminous",     css:"brightness(1.15) contrast(1.05)"},
   {key:"radiant",      icon:"☀",  label:"Radiant",      css:"brightness(1.1) saturate(1.25) contrast(1.05)"},
   {key:"ember",        icon:"☀",  label:"Ember",        css:"sepia(0.25) saturate(1.3) hue-rotate(-8deg) brightness(1.02)"},
-  {key:"airy",         icon:"☀",  label:"Airy",         css:"brightness(1.12) saturate(0.85) contrast(0.95)"}
+  {key:"airy",         icon:"☀",  label:"Airy",         css:"brightness(1.12) saturate(0.85) contrast(0.95)"},
+  {key:"noirblanc",    icon:"◑",  label:"Noir et Blanc", css:"grayscale(1) contrast(1.08)"}
 ];
 let editDraft = null; // copie de travail de la photo en cours d'édition
 
@@ -5122,7 +5153,13 @@ function renderInfoModal(p){
   titleInput.value = p.titre || "";
   titleInput.oninput = null;
   titleInput.onfocus = function(){ this.select(); }; // présélectionne le texte existant : remplaçable directement sans effacer caractère par caractère
-  titleInput.onchange = async ()=>{ p.titre = titleInput.value.trim(); await idbPut("photos", p); renderGrid(); autoBuildCsv(); };
+  titleInput.onchange = async ()=>{
+    p.titre = titleInput.value.trim();
+    if(p.titre){ sessionTitleSuggestions.add(p.titre); populateInfoModalDatalists(); } // dispo immédiatement en suggestion pour les prochaines photos de la session
+    await idbPut("photos", p);
+    renderGrid();
+    autoBuildCsv();
+  };
 
   const contacts = document.getElementById("infoContacts");
   const auteurLetter = (p.auteur||"").trim().charAt(0).toUpperCase() || "?";
