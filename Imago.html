@@ -2371,7 +2371,12 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
           if(sousDossierIdx >= 0 && yearLabel){
             outCells = cells.slice();
             const orig = outCells[sousDossierIdx] || "";
-            outCells[sousDossierIdx] = orig ? `${yearLabel}/${orig}` : yearLabel;
+            // Évite le double préfixage (ex. "2022/2022/Été") quand le
+            // dossier racine utilisé pour importer CE catalogue à l'époque
+            // portait déjà le nom de l'année (cas le plus courant) : "orig"
+            // commence alors déjà par yearLabel, inutile de le rajouter.
+            const alreadyPrefixed = orig === yearLabel || orig.startsWith(`${yearLabel}/`);
+            outCells[sousDossierIdx] = alreadyPrefixed ? orig : (orig ? `${yearLabel}/${orig}` : yearLabel);
           }
           rowsById.set(id, outCells.map(csvEscape).join(";")); // ajoute, ou met à jour si déjà présent depuis l'Album.csv existant
           totalFav++;
@@ -2423,7 +2428,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     return;
   }
   statusEl.textContent = `Lecture de « ${albumFile.name} »…`;
-  let wantedPaths, wantedNamesOnly, hasSousDossier;
+  let wantedPathsByName, wantedNamesOnly, hasSousDossier;
   try{
     const text = await albumFile.text();
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
@@ -2439,7 +2444,13 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     // (déjà reconstitué depuis le dossier racine lors de la génération, voir
     // generateAlbumFromCsvFiles) ; le nom seul ne sert que de repli pour un
     // ancien Album.csv généré avant cette correction.
-    wantedPaths = new Set();
+    // wantedPathsByName : fileName -> [chemin(s) complet(s) attendu(s)] —
+    // indexé par nom pour une comparaison rapide (voir matchedFiles), la
+    // comparaison stricte "chemin entier" étant remplacée plus bas par une
+    // comparaison PAR SUFFIXE (voir pathsLooselyMatch), tolérante à un nom de
+    // dossier racine différent entre l'import d'origine (sousDossier stocké
+    // dans le catalogue) et le dossier choisi ici pour "Afficher".
+    wantedPathsByName = new Map();
     wantedNamesOnly = new Set();
     for(let i=1;i<lines.length;i++){
       const cells = parseCsvLine(lines[i]);
@@ -2448,7 +2459,9 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
       wantedNamesOnly.add(name);
       if(hasSousDossier){
         const sousDossier = (cells[sousDossierIdx]||"").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"");
-        wantedPaths.add(sousDossier ? `${sousDossier}/${name}` : name);
+        const fullPath = sousDossier ? `${sousDossier}/${name}` : name;
+        if(!wantedPathsByName.has(name)) wantedPathsByName.set(name, []);
+        wantedPathsByName.get(name).push(fullPath);
       }
     }
   }catch(e){
@@ -2459,15 +2472,23 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // c'est ici que "pas tout le dossier" est appliqué, AVANT tout import.
   // Comparaison par CHEMIN (sous-dossier + nom) en priorité, pour éviter de
   // charger deux photos différentes qui porteraient le même nom de fichier
-  // dans deux sous-dossiers/années distincts.
+  // dans deux sous-dossiers/années distincts — mais en SUFFIXE plutôt qu'en
+  // égalité stricte : si le dossier racine choisi ici porte un nom différent
+  // de celui utilisé lors de l'import d'origine (ou si celui-ci apparaît en
+  // double dans le chemin stocké), les deux chemins ne coïncident plus
+  // exactement bout à bout, mais leur fin (sous-dossiers réels + nom de
+  // fichier) reste identique — c'est cette fin qui est comparée ici.
+  const pathsLooselyMatch = (a, b)=> a===b || a.endsWith("/"+b) || b.endsWith("/"+a);
   const matchedFiles = allFiles.filter(f=>{
     if(!hasSousDossier) return wantedNamesOnly.has(f.name);
+    const candidates = wantedPathsByName.get(f.name);
+    if(!candidates) return false;
     const relPath = f.webkitRelativePath
       ? f.webkitRelativePath.split("/").slice(1).join("/") // retire le nom du dossier racine choisi (ex. "PHOTO/2022/x.jpg" -> "2022/x.jpg")
       : f.name;
-    return wantedPaths.has(relPath);
+    return candidates.some(wp=> pathsLooselyMatch(relPath, wp));
   });
-  const wantedCount = hasSousDossier ? wantedPaths.size : wantedNamesOnly.size;
+  const wantedCount = hasSousDossier ? new Set([].concat(...wantedPathsByName.values())).size : wantedNamesOnly.size;
   if(!matchedFiles.length){
     statusEl.textContent = `« ${albumFile.name} » référence ${wantedCount} fichier(s), mais aucun n'a été retrouvé dans ce dossier.`;
     return;
