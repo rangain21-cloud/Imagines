@@ -178,6 +178,13 @@ button{font-family:inherit;}
 }
 .viewer-stage{
   min-height:100%; min-width:100%;
+  height:100%; /* hauteur RÉELLE (pas seulement min-height) : nécessaire pour que
+    #viewerVideo puisse ensuite se limiter à max-height:100% de cette zone —
+    une valeur en % n'est résolue par le navigateur que si un ancêtre a une
+    hauteur définie, pas seulement une min-height. Sans effet sur le zoom
+    des photos (leur propre débordement continue de faire défiler
+    .viewer-scroll normalement, "height" n'empêchant pas un enfant plus
+    grand de déborder visuellement). */
   display:flex; align-items:center; justify-content:center;
   position:relative;
   cursor:grab;
@@ -193,7 +200,14 @@ button{font-family:inherit;}
 }
 #viewerVideo{
   display:block;
-  max-width:94vw; max-height:80vh;
+  /* Bornées à 100% de .viewer-stage (donc de la zone visible de
+     .viewer-wrap) plutôt qu'à 94vw/80vh : ces unités "viewport" ignoraient
+     la place déjà prise par la barre d'outils et les panneaux latéraux, si
+     bien qu'une vidéo portrait (haute et étroite) pouvait dépasser la
+     hauteur réellement visible — ses contrôles natifs (bouton lecture en
+     bas de la vidéo) se retrouvaient alors hors champ, accessibles
+     seulement en faisant défiler .viewer-scroll ("l'ascenseur"). */
+  max-width:100%; max-height:100%;
   box-shadow:0 12px 34px rgba(0,0,0,.5);
   border-radius:2px;
 }
