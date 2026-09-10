@@ -549,6 +549,7 @@ button{font-family:inherit;}
 .crop-overlay{
   position:absolute; cursor:crosshair; z-index:5;
   background:rgba(0,0,0,.35);
+  touch-action:none; /* laisse le glisser piloter entièrement la sélection (pointer events), sans que le navigateur l'interprète comme un défilement/zoom tactile — condition nécessaire pour un cadre libre fiable jusqu'aux bords sur mobile/tablette */
 }
 .crop-rect{
   position:absolute; border:2px dashed var(--copper-hi);
@@ -4936,18 +4937,28 @@ document.getElementById("cropCancelBtn").addEventListener("click", exitCropMode)
 
 const cropOverlayEl = document.getElementById("cropOverlay");
 const cropRectEl = document.getElementById("cropRect");
-cropOverlayEl.addEventListener("mousedown", (e)=>{
+/* Pointer Events + setPointerCapture (plutôt que mousedown/mousemove/mouseup
+   sur window) : le glisser reste piloté par cropOverlayEl même si le
+   pointeur sort de ses limites en cours de route (survitesse de la souris,
+   petite modale, etc.) — c'est ce qui garantit d'atteindre EXACTEMENT le
+   bord de l'image en fin de course (haut/bas/gauche/droite) au lieu de
+   perdre le suivi du glisser juste avant. Fonctionne aussi au doigt
+   (tactile), ce que mousedown/mousemove ne couvraient pas du tout. */
+cropOverlayEl.addEventListener("pointerdown", (e)=>{
+  cropOverlayEl.setPointerCapture(e.pointerId);
   const bounds = cropOverlayEl.getBoundingClientRect();
-  cropState = {startX: e.clientX - bounds.left, startY: e.clientY - bounds.top};
+  const startX = Math.max(0, Math.min(e.clientX - bounds.left, bounds.width));
+  const startY = Math.max(0, Math.min(e.clientY - bounds.top, bounds.height));
+  cropState = {pointerId: e.pointerId, bounds, startX, startY};
   cropRectEl.classList.remove("hidden");
-  cropRectEl.style.left = cropState.startX + "px";
-  cropRectEl.style.top = cropState.startY + "px";
+  cropRectEl.style.left = startX + "px";
+  cropRectEl.style.top = startY + "px";
   cropRectEl.style.width = "0px";
   cropRectEl.style.height = "0px";
 });
-window.addEventListener("mousemove", (e)=>{
-  if(!cropState) return;
-  const bounds = cropOverlayEl.getBoundingClientRect();
+cropOverlayEl.addEventListener("pointermove", (e)=>{
+  if(!cropState || cropState.pointerId !== e.pointerId) return;
+  const bounds = cropState.bounds; // figées au pointerdown : stables même si le pointeur ressort de l'overlay pendant le glisser
   let x = e.clientX - bounds.left, y = e.clientY - bounds.top;
   x = Math.max(0, Math.min(x, bounds.width));
   y = Math.max(0, Math.min(y, bounds.height));
@@ -4960,9 +4971,13 @@ window.addEventListener("mousemove", (e)=>{
   cropRectEl.style.width = w + "px";
   cropRectEl.style.height = h + "px";
 });
-window.addEventListener("mouseup", ()=>{
-  if(cropState) cropState = "done"; // fige le rectangle, l'utilisateur clique ensuite sur "Appliquer"
-});
+function endCropDrag(e){
+  if(!cropState || cropState.pointerId !== e.pointerId) return;
+  cropOverlayEl.releasePointerCapture(e.pointerId);
+  cropState = null; // le rectangle reste affiché (cropRectEl), figé, prêt pour "Appliquer le recadrage"
+}
+cropOverlayEl.addEventListener("pointerup", endCropDrag);
+cropOverlayEl.addEventListener("pointercancel", endCropDrag);
 
 document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
   const img = document.getElementById("edPreviewImg");
