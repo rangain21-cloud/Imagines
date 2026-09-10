@@ -2438,6 +2438,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
   }
 
   let totalFav = 0, skippedFiles = 0;
+  const seenIds = new Set(); // tout id rencontré dans un catalogue LU cette fois-ci, Favori ou pas — sert à purger les entrées périmées ci-dessous
   for(const file of files){
     try{
       const text = await file.text();
@@ -2468,6 +2469,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
         const cells = parseCsvLine(lines[i]);
         const id = cells[idColIdx];
         if(!id) continue;
+        seenIds.add(id);
         if(cells[favIdx] === "true"){
           let outCells = cells;
           if(sousDossierIdx >= 0 && yearLabel){
@@ -2495,6 +2497,24 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
     statusEl.textContent = "Aucun catalogue lisible n'a été sélectionné.";
     return;
   }
+  // Purge des entrées périmées : un id présent dans l'Album récupéré mais
+  // qui n'a été rencontré dans AUCUN des catalogues relus cette fois (photo
+  // supprimée/renommée, catalogue de cette année-là absent du dossier
+  // choisi, id changé après ré-import…) reste sinon indéfiniment dans
+  // l'Album d'une génération à l'autre — c'est cette accumulation qui a fait
+  // gonfler le compteur bien au-delà du nombre réel de Favoris actuels.
+  // ATTENTION : nécessite d'avoir bien sélectionné TOUS les Catalogue-AAAA.csv
+  // (le dossier racine complet) — une sélection partielle ferait purger à
+  // tort les années non incluses cette fois-ci.
+  let staleCount = 0;
+  if(skippedFiles === 0){
+    for(const id of [...rowsById.keys()]){
+      if(!seenIds.has(id)){
+        rowsById.delete(id);
+        staleCount++;
+      }
+    }
+  }
   const csvText = [header, ...rowsById.values()].join("\r\n");
   downloadCsvFile(csvText, targetName);
   document.getElementById("btnHOFGenerate").classList.add("done"); // fond vert : étape 1 terminée avec succès
@@ -2505,6 +2525,8 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
       : `« ${targetName} » généré`) +
     ` : ${totalOut} entrée(s) au total, ${totalFav} « ${criterionLabel} » repris depuis ${files.length - skippedFiles} catalogue(s)` +
     (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : "") +
+    (staleCount ? ` — ${staleCount} entrée(s) périmée(s) de l'ancien Album purgée(s) (assurez-vous d'avoir choisi le dossier racine complet, avec TOUS les Catalogue-AAAA.csv, sans quoi les années absentes de cette sélection auraient été purgées à tort).` : "") +
+    (skippedFiles ? ` Purge des entrées périmées désactivée cette fois (catalogue(s) ignoré(s) ci-dessus : on ne peut pas garantir que leurs entrées manquantes correspondent à de vrais retraits).` : "") +
     " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
 }
 
@@ -2595,6 +2617,41 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     statusEl.textContent = `« ${albumFile.name} » référence ${wantedCount} fichier(s), mais aucun n'a été retrouvé dans ce dossier.`;
     return;
   }
+  // Diagnostic (uniquement si correspondance PARTIELLE) : un simple compte
+  // "X sur Y" ne dit pas OÙ chercher le problème. On liste ici précisément
+  // les chemins référencés par l'Album mais non retrouvés dans le dossier
+  // choisi, et on les regroupe par 1er segment de chemin (le sous-dossier
+  // Année dans la grande majorité des cas) — un dossier entier manquant
+  // (mauvaise racine choisie, année non incluse…) saute alors immédiatement
+  // aux yeux dans la console, plutôt qu'une liste de 200 fichiers isolés.
+  if(matchedFiles.length < wantedCount){
+    const foundRelPaths = new Set(allFiles.map(f=> f.webkitRelativePath
+      ? f.webkitRelativePath.split("/").slice(1).join("/")
+      : f.name));
+    let missing;
+    if(hasSousDossier){
+      missing = [];
+      for(const paths of wantedPathsByName.values()){
+        paths.forEach(wp=>{
+          const found = [...foundRelPaths].some(fp=> pathsLooselyMatch(fp, wp));
+          if(!found) missing.push(wp);
+        });
+      }
+    } else {
+      const foundNames = new Set(allFiles.map(f=>f.name));
+      missing = [...wantedNamesOnly].filter(n=> !foundNames.has(n));
+    }
+    const byPrefix = {};
+    missing.forEach(p=>{
+      const prefix = p.includes("/") ? p.split("/")[0] : "(racine, sans sous-dossier)";
+      byPrefix[prefix] = (byPrefix[prefix]||0) + 1;
+    });
+    console.warn(
+      `[Imago/HOF] « ${albumFile.name} » : ${missing.length} fichier(s) référencé(s) introuvable(s) dans le dossier choisi ` +
+      `(sur ${wantedCount}). Répartition par dossier :`, byPrefix,
+      "\nListe complète des chemins manquants :", missing
+    );
+  }
   document.getElementById("btnHOFPickFolder").classList.add("done"); // fond vert : étape 2 terminée avec succès (visible à la réouverture de la modale, celle-ci se fermant juste après)
   // Mémorisé pour l'étape 3) Partager, qui réutilise ces mêmes fichiers
   // (déjà en mémoire, inutile de refaire sélectionner un dossier local) :
@@ -2606,7 +2663,8 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
   await runHofImportWithProgress(matchedFiles, statusEl);
   closeModal("modalHOF");
-  toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`);
+  toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`
+    + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : ""));
 });
 
 /* Lance le pipeline d'import habituel (handleFilesSelected) SANS fermer la
