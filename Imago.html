@@ -858,6 +858,13 @@ button{font-family:inherit;}
     <h3>Photothèque locale</h3>
     <button class="btn copper" id="btnPickFolder" style="width:100%; margin-bottom:8px;">📁 Choisir un dossier d'images…</button>
     <button class="btn" id="btnPickFiles" style="width:100%; margin-bottom:8px;">🖼️ Sélectionner des images (si le dossier échoue)…</button>
+    <button class="btn" id="btnPickCatalog" style="width:100%; margin-bottom:8px;">📄 Choisir le catalogue (.csv)…</button>
+    <p class="drive-note">
+      Sur Google Drive, le sélecteur d'images n'affiche que les photos/vidéos
+      : utilisez ce bouton pour choisir vous-même le fichier catalogue
+      (.csv) de référence — plusieurs fichiers trouvés vous seront proposés
+      au choix, comme pour « Choisir un dossier… ».
+    </p>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
   </div>
 
@@ -869,11 +876,18 @@ button{font-family:inherit;}
     <div class="search-field">
       <label for="agencementSelect">Agencement</label>
       <select id="agencementSelect">
-        <option value="ultracompact">Ultra-compact</option>
-        <option value="laptop1366">Laptop 1366</option>
-        <option value="bureau1920" selected>Bureau standard 1920</option>
-        <option value="bureau2560">Bureau large 2560</option>
-        <option value="tablette1024">Tablette 1024</option>
+        <optgroup label="Ordinateur">
+          <option value="ultracompact">Ultra-compact</option>
+          <option value="laptop1366">Laptop 1366</option>
+          <option value="bureau1920" selected>Bureau standard 1920</option>
+          <option value="bureau2560">Bureau large 2560</option>
+        </optgroup>
+        <optgroup label="Tablette & mobile">
+          <option value="tablette1024">Tablette 1024</option>
+          <option value="smartphoneGrand">Smartphone grand (Pro Max/Ultra)</option>
+          <option value="smartphoneStandard">Smartphone standard</option>
+          <option value="smartphonePetit">Smartphone petit (SE/mini)</option>
+        </optgroup>
         <option value="lisibilite">Lisibilité max</option>
         <option value="custom">Custom</option>
       </select>
@@ -1175,7 +1189,7 @@ button{font-family:inherit;}
           <div class="sub-line" style="margin-top:5px;">Ce nom identifie l'image dans le dossier : après un renommage, utilisez « 💾 Enregistrer + télécharger » puis remplacez l'ancien fichier par celui téléchargé dans votre dossier d'images (sinon l'ancien nom sera retrouvé au prochain import).</div>
         </div>
         <div class="field-grid">
-          <div class="field-row"><label for="edDate">Date cliché</label><input type="date" id="edDate"></div>
+          <div class="field-row"><label for="edDate">Date cliché</label><input type="datetime-local" id="edDate"></div>
           <div class="field-row"><label for="edSupport">Support</label><input type="text" id="edSupport" placeholder="tirage, négatif, numérique…"></div>
           <div class="field-row"><label for="edPersonnage">Personnage</label><input type="text" id="edPersonnage"></div>
           <div class="field-row">
@@ -1306,7 +1320,7 @@ button{font-family:inherit;}
         <input type="file" id="neFile" accept="image/*,video/mp4,video/quicktime,.mov">
       </div>
       <div class="field-grid">
-        <div class="field-row"><label for="neDate">Date cliché</label><input type="date" id="neDate"></div>
+        <div class="field-row"><label for="neDate">Date cliché</label><input type="datetime-local" id="neDate"></div>
         <div class="field-row"><label for="neSupport">Support</label><input type="text" id="neSupport" placeholder="tirage, négatif, numérique…"></div>
         <div class="field-row"><label for="nePersonnage">Personnage</label><input type="text" id="nePersonnage"></div>
         <div class="field-row"><label for="neLieu">Lieu</label><input type="text" id="neLieu"></div>
@@ -2209,12 +2223,20 @@ function applyUiScale(key){
    n'écrase rien, on se contente de mémoriser l'état "sur mesure".
    --------------------------------------------------------------- */
 const AGENCEMENT_PRESETS = {
-  ultracompact:  {uiScale:"compact",     sidePanelW:260, thumbMin:120},
-  laptop1366:    {uiScale:"compact",     sidePanelW:280, thumbMin:140},
-  bureau1920:    {uiScale:"standard",    sidePanelW:320, thumbMin:150},
-  bureau2560:    {uiScale:"comfortable", sidePanelW:380, thumbMin:170},
-  tablette1024:  {uiScale:"compact",     sidePanelW:260, thumbMin:130},
-  lisibilite:    {uiScale:"xl",          sidePanelW:340, thumbMin:190},
+  ultracompact:      {uiScale:"compact",     sidePanelW:260, thumbMin:120},
+  laptop1366:        {uiScale:"compact",     sidePanelW:280, thumbMin:140},
+  bureau1920:        {uiScale:"standard",    sidePanelW:320, thumbMin:150},
+  bureau2560:        {uiScale:"comfortable", sidePanelW:380, thumbMin:170},
+  tablette1024:      {uiScale:"compact",     sidePanelW:260, thumbMin:130},
+  // Presets smartphone : --side-panel-w est sans effet réel sur mobile (le
+  // panneau latéral devient un tiroir plein écran, voir @media max-width:760px)
+  // — seuls uiScale (taille du texte/boutons) et thumbMin (densité de la
+  // planche-contact, qui elle reste une grille sur mobile) font une
+  // différence visible selon la taille de l'écran du téléphone.
+  smartphonePetit:    {uiScale:"compact",  sidePanelW:260, thumbMin:105}, // iPhone SE/mini, petits Android (~360-375px) : grille dense, UI resserrée
+  smartphoneStandard: {uiScale:"compact",  sidePanelW:260, thumbMin:125}, // gabarit le plus courant (~376-414px)
+  smartphoneGrand:    {uiScale:"standard", sidePanelW:280, thumbMin:145}, // phablets (Pro Max, Ultra…, ≥415px) : assez de place pour une échelle standard
+  lisibilite:        {uiScale:"xl",          sidePanelW:340, thumbMin:190},
 };
 const AGENCEMENT_KEY = "imago_agencement";
 function markAgencementCustom(){
@@ -3036,7 +3058,7 @@ function estimateFileDate(file, existingRow){
   if(existingRow && existingRow.dateAchat) return existingRow.dateAchat;
   const meta = parseFileNameMeta(file.name);
   if(meta.dateAchat) return meta.dateAchat;
-  if(file.lastModified) return new Date(file.lastModified).toISOString().slice(0,10);
+  if(file.lastModified) return localDateTimeFromTimestamp(file.lastModified).slice(0,10);
   return "";
 }
 
@@ -3094,6 +3116,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       encodedSize = Math.round(finalDataUrl.length * 0.75); // taille réellement conservée (proche de l'originale si aucun redimensionnement n'a eu lieu)
     }
     const existingRow = csvRowByFileName.get(file.name);
+    const meta = parseFileNameMeta(file.name);
 
     let rec;
     if(existingRow){
@@ -3103,7 +3126,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         titre: existingRow.titre || "",
-        dateAchat: existingRow.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
+        dateAchat: existingRow.dateAchat || resolveDateAchat(file, exif, meta),
         personnage: existingRow.personnage || "",
         lieu: existingRow.lieu || "",
         lieuCandidate: "",
@@ -3130,8 +3153,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     } else {
       // Image absente du catalogue : nouvelle entrée, métadonnées proposées
       // depuis le nom de fichier (à vérifier/compléter par l'utilisateur).
-      const meta = parseFileNameMeta(file.name);
-      const dateAchat = meta.dateAchat || (file.lastModified ? new Date(file.lastModified).toISOString().slice(0,10) : new Date().toISOString().slice(0,10));
+      const dateAchat = resolveDateAchat(file, exif, meta);
       const lieu = "";
       const personnage = meta.personnage;
       rec = {
@@ -3311,8 +3333,12 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // pickCatalogFromCandidates). Fonctionne aussi bien pour "Choisir un
   // dossier…" que pour "Sélectionner des images…" (il suffit d'inclure le
   // fichier Catalogue-xxxx.csv dans la sélection multiple pour ce 2e cas) —
-  // sans effet si aucun .csv n'est présent dans la sélection.
-  const csvFiles = allFiles.filter(f=>/\.csv$/i.test(f.name));
+  // sans effet si aucun .csv n'est présent dans la sélection. On y ajoute
+  // les catalogues choisis explicitement via « Choisir le catalogue (.csv)… »
+  // (voir pendingCatalogFiles), seul moyen d'en fournir un pour "Sélectionner
+  // des images…" puisque son propre sélecteur filtre les .csv.
+  const csvFiles = [...pendingCatalogFiles, ...allFiles.filter(f=>/\.csv$/i.test(f.name))];
+  pendingCatalogFiles = []; // usage unique : ne pas les réappliquer silencieusement à un import ultérieur
   const chosen = await pickCatalogFromCandidates(csvFiles);
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
   let csvRowByFileName = new Map();
@@ -3451,9 +3477,89 @@ document.body.appendChild(filePickerInput);
 document.getElementById("btnPickFiles").addEventListener("click", ()=> filePickerInput.click());
 filePickerInput.addEventListener("change", ()=> handleFilesSelected(filePickerInput.files, "Sélection manuelle", true));
 
+/* Sélecteur dédié au fichier catalogue (.csv) : contrairement au filtre
+   accept="image/*,video/…" de filePickerInput ci-dessus (volontairement
+   restreint aux photos/vidéos pour préserver le Photo Picker Android — voir
+   commentaire plus haut), celui-ci ne filtre QUE les .csv. Il permet donc de
+   choisir un catalogue existant même quand on parcourt Google Drive via
+   « Sélectionner des images… », où le .csv n'apparaît jamais dans ce
+   sélecteur-là faute d'être une image. Les fichiers choisis ici sont
+   mémorisés et proposés (avec choix explicite si plusieurs) au prochain
+   import — voir leur usage dans handleFilesSelected(). */
+let pendingCatalogFiles = [];
+const csvPickerInput = document.createElement("input");
+csvPickerInput.type = "file";
+csvPickerInput.accept = ".csv,text/csv";
+csvPickerInput.multiple = true;
+csvPickerInput.className = "hidden";
+document.body.appendChild(csvPickerInput);
+document.getElementById("btnPickCatalog").addEventListener("click", ()=> csvPickerInput.click());
+csvPickerInput.addEventListener("change", ()=>{
+  pendingCatalogFiles = [...csvPickerInput.files];
+  csvPickerInput.value = ""; // permet de resélectionner le(s) même(s) fichier(s) plus tard si besoin
+  if(pendingCatalogFiles.length){
+    toast(pendingCatalogFiles.length > 1
+      ? `${pendingCatalogFiles.length} fichiers catalogue retenus — un choix vous sera proposé au prochain import d'images.`
+      : `Catalogue « ${pendingCatalogFiles[0].name} » retenu — il sera proposé au prochain import d'images.`);
+  }
+});
+
 function exifCameraName(exif){
   if(!exif) return "";
   return [exif.make, exif.model].filter(Boolean).join(" ").trim();
+}
+/* -----------------------------------------------------------------
+   Horodatage (date + heure) de la rubrique "dateAchat" (« Date cliché »).
+   Format de stockage : "AAAA-MM-JJ" (rétrocompatible, ancien format sans
+   heure) ou "AAAA-MM-JJTHH:MM" (avec heure), ce dernier étant directement
+   la valeur attendue par un <input type="datetime-local">.
+   ----------------------------------------------------------------- */
+// EXIF DateTimeOriginal/DateTime : "AAAA:MM:JJ HH:MM:SS" -> "AAAA-MM-JJTHH:MM"
+function exifDateTimeToDateAchat(str){
+  if(!str) return null;
+  const m = String(str).match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2})/);
+  if(!m) return null;
+  const [, yyyy, mm, dd, hh, mi] = m;
+  if(yyyy==="0000" || (yyyy==="0000"&&mm==="00")) return null; // horodatage EXIF parfois vide/placeholder sur certains appareils
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+// Horodatage fichier (file.lastModified, ms) -> "AAAA-MM-JJTHH:MM" en heure LOCALE
+// (et non UTC comme le ferait toISOString(), pour ne pas décaler le jour/l'heure affichés).
+function localDateTimeFromTimestamp(ms){
+  if(!ms) return "";
+  const d = new Date(ms);
+  if(isNaN(d)) return "";
+  const pad = n=> String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+// Détermine le meilleur horodatage disponible pour un fichier importé, par
+// ordre de fiabilité décroissant : date/heure de prise de vue EXIF (photo
+// uniquement — c'est l'instant exact du déclenchement) > date déduite du nom
+// de fichier (heuristique, jour seul) > date de dernière modification du
+// fichier (heure locale) > maintenant.
+function resolveDateAchat(file, exif, meta){
+  const fromExif = exif && exifDateTimeToDateAchat(exif.dateTimeOriginal || exif.dateTime);
+  if(fromExif) return fromExif;
+  if(meta && meta.dateAchat) return meta.dateAchat;
+  if(file && file.lastModified) return localDateTimeFromTimestamp(file.lastModified);
+  return localDateTimeFromTimestamp(Date.now());
+}
+// Valeur à injecter dans un <input type="datetime-local"> : ce type de champ
+// refuse une valeur "date seule" (AAAA-MM-JJ), il faut donc compléter avec
+// une heure par défaut (00:00) quand la fiche n'a pas encore d'horodatage
+// précis — voir normalizeDateAchatInput() pour la logique symétrique au
+// moment de l'enregistrement.
+function toDateTimeLocalValue(v){
+  if(!v) return "";
+  return v.includes("T") ? v : v + "T00:00";
+}
+// Symétrique de toDateTimeLocalValue() : si l'heure du champ est restée à sa
+// valeur par défaut 00:00 (jamais touchée par l'utilisateur), on ne
+// l'enregistre pas — mieux vaut garder une "date seule" honnête qu'un
+// minuit fictif que personne n'a réellement saisi.
+function normalizeDateAchatInput(value){
+  if(!value) return value;
+  return value.endsWith("T00:00") ? value.slice(0,10) : value;
 }
 /* Priorité au GPS embarqué dans le fichier (comme Google Photos) — plus
    précis qu'une recherche texte sur le champ Lieu, qui peut être erroné. */
@@ -4203,6 +4309,7 @@ function readExifFromTiffStart(view, tiffStart){
       const valOffset = entry+8;
       if(tag===0x010F && type===2) exif.make = readAscii(view, tiffStart+get32(valOffset), count);
       if(tag===0x0110 && type===2) exif.model = readAscii(view, tiffStart+get32(valOffset), count);
+      if(tag===0x0132 && type===2) exif.dateTime = readAscii(view, tiffStart+get32(valOffset), count);
       if(tag===0x8769) exifPointer = tiffStart + get32(valOffset);
       if(tag===0x8825) gpsPointer = tiffStart + get32(valOffset);
     }
@@ -4218,6 +4325,7 @@ function readExifFromTiffStart(view, tiffStart){
       if(tag===0x829A) exif.exposureTime = readRationalAt(valOffset);
       if(tag===0x920A) exif.focalLength = readRationalAt(valOffset);
       if(tag===0x8827) exif.iso = type===3 ? get16(valOffset) : get32(valOffset);
+      if(tag===0x9003 && type===2) exif.dateTimeOriginal = readAscii(view, tiffStart+get32(valOffset), get32(entry+4));
     }
   }
   function readGpsIFD(ifdOffset){
@@ -5097,7 +5205,7 @@ document.getElementById("btnEdit").addEventListener("click", ()=>{
   exitCropMode();
   document.getElementById("edPreviewImg").src = p.dataUrl;
   document.getElementById("edFileName").value = p.fileName || "";
-  document.getElementById("edDate").value = p.dateAchat || "";
+  document.getElementById("edDate").value = toDateTimeLocalValue(p.dateAchat);
   document.getElementById("edSupport").value = p.support || "";
   document.getElementById("edPersonnage").value = p.personnage || "";
   document.getElementById("edLieu").value = p.lieu || "";
@@ -5166,7 +5274,7 @@ document.getElementById("edRecalcBtn").addEventListener("click", async ()=>{
   const originalLabel = btn.textContent;
   btn.textContent = "…"; btn.disabled = true;
   let changed = [];
-  if(meta.dateAchat){ document.getElementById("edDate").value = meta.dateAchat; changed.push("date"); }
+  if(meta.dateAchat){ document.getElementById("edDate").value = toDateTimeLocalValue(meta.dateAchat); changed.push("date"); }
   if(meta.personnage){ document.getElementById("edPersonnage").value = meta.personnage; changed.push("personnage"); }
   if(meta.etiquette){ document.getElementById("edEtiquette").value = meta.etiquette; changed.push("étiquette"); }
   if(meta.lieuCandidate){
@@ -5223,7 +5331,7 @@ function applyEditFormToSelectedPhoto(){
       p.driveWebViewLink = "";
     }
   }
-  p.dateAchat = document.getElementById("edDate").value || p.dateAchat;
+  p.dateAchat = normalizeDateAchatInput(document.getElementById("edDate").value) || p.dateAchat;
   p.support = document.getElementById("edSupport").value.trim();
   p.personnage = document.getElementById("edPersonnage").value.trim();
   p.lieu = document.getElementById("edLieu").value.trim();
@@ -5287,9 +5395,13 @@ document.getElementById("btnInfo").addEventListener("click", ()=>{
 
 function fmtDateFr(iso){
   if(!iso) return "Date inconnue";
-  const d = new Date(iso+"T00:00:00");
+  const isoDatePart = iso.slice(0,10);
+  const d = new Date(isoDatePart+"T00:00:00");
   if(isNaN(d)) return iso;
-  return d.toLocaleDateString("fr-FR", {weekday:"short", day:"2-digit", month:"long", year:"numeric"});
+  let out = d.toLocaleDateString("fr-FR", {weekday:"short", day:"2-digit", month:"long", year:"numeric"});
+  const heure = iso.match(/T(\d{2}:\d{2})/);
+  if(heure) out += " · " + heure[1];
+  return out;
 }
 function fmtSize(bytes){
   if(!bytes) return "";
@@ -5538,20 +5650,20 @@ async function maybeFetchGpsLieuCandidate(p){
 function startInlineEdit(containerId, field, p){
   const container = document.getElementById(containerId);
   if(!container || container.querySelector("input")) return;
-  const current = field==="date" ? (p.dateAchat||"") : field==="personnage" ? (p.personnage||"") : (p.lieu||"");
+  const current = field==="date" ? toDateTimeLocalValue(p.dateAchat) : field==="personnage" ? (p.personnage||"") : (p.lieu||"");
   // Suggestions de saisie ("tapez les 1ères lettres") à partir des valeurs
   // déjà utilisées dans le catalogue — aucun datalist pertinent pour une
   // date (valeur propre à chaque photo).
   const listAttr = field==="personnage" ? ' list="personnageList"' : field==="lieu" ? ' list="lieuList"' : "";
   const wrap = document.createElement("div");
   wrap.className = "info-inline-edit";
-  wrap.innerHTML = `<input type="${field==='date'?'date':'text'}" value="${escapeHtml(current)}"${listAttr}><button class="btn copper" style="padding:5px 10px;">OK</button>`;
+  wrap.innerHTML = `<input type="${field==='date'?'datetime-local':'text'}" value="${escapeHtml(current)}"${listAttr}><button class="btn copper" style="padding:5px 10px;">OK</button>`;
   container.appendChild(wrap);
   const input = wrap.querySelector("input");
   input.focus();
   input.select(); // tout le texte existant est présélectionné : taper une nouvelle valeur la remplace directement, sans avoir à effacer caractère par caractère pour choisir un autre auteur/lieu/personnage dans les suggestions
   wrap.querySelector("button").addEventListener("click", async ()=>{
-    if(field==="date") p.dateAchat = input.value || p.dateAchat;
+    if(field==="date") p.dateAchat = normalizeDateAchatInput(input.value) || p.dateAchat;
     else if(field==="personnage") p.personnage = input.value.trim();
     else p.lieu = input.value.trim();
     await idbPut("photos", p);
@@ -6107,7 +6219,7 @@ document.getElementById("btnConfirmAlbum").addEventListener("click", async ()=>{
    14. Nouvelle Entrée / Nouvel Auteur
    --------------------------------------------------------------- */
 document.getElementById("btnNewEntry").addEventListener("click", ()=>{
-  ["neDate"].forEach(id=> document.getElementById(id).value = new Date().toISOString().slice(0,10));
+  ["neDate"].forEach(id=> document.getElementById(id).value = localDateTimeFromTimestamp(Date.now()));
   ["neSupport","nePersonnage","neLieu","neEtiquette"].forEach(id=> document.getElementById(id).value="");
   document.getElementById("neAuteur").value = "Philippe";
   document.getElementById("neFile").value = "";
@@ -6124,7 +6236,12 @@ document.getElementById("neFile").addEventListener("change", async (e)=>{
   const lieuEl = document.getElementById("neLieu");
   const persEl = document.getElementById("nePersonnage");
   const etiqEl = document.getElementById("neEtiquette");
-  if(meta.dateAchat) dateEl.value = meta.dateAchat;
+  // L'EXIF (photo uniquement) donne l'instant exact du déclenchement, donc
+  // priorité sur la simple date déduite du nom de fichier — voir
+  // resolveDateAchat().
+  const exifForDate = !isVideoFile(file) ? await readBasicExif(file) : null;
+  const bestDate = resolveDateAchat(file, exifForDate, meta);
+  if(bestDate) dateEl.value = toDateTimeLocalValue(bestDate);
   if(meta.etiquette && !etiqEl.value) etiqEl.value = meta.etiquette;
   if(meta.personnage && !persEl.value) persEl.value = meta.personnage; // inclut déjà le candidat lieu par défaut
   if(meta.lieuCandidate && !lieuEl.value){
@@ -6166,7 +6283,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
     id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl,
     isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
     videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
-    dateAchat: document.getElementById("neDate").value || new Date().toISOString().slice(0,10),
+    dateAchat: normalizeDateAchatInput(document.getElementById("neDate").value) || localDateTimeFromTimestamp(Date.now()),
     personnage,
     lieu,
     support: document.getElementById("neSupport").value.trim(),
