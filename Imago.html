@@ -550,7 +550,9 @@ button{font-family:inherit;}
   position:absolute; cursor:crosshair; z-index:5;
   background:rgba(0,0,0,.35);
   touch-action:none; /* laisse le glisser piloter entièrement la sélection (pointer events), sans que le navigateur l'interprète comme un défilement/zoom tactile — condition nécessaire pour un cadre libre fiable jusqu'aux bords sur mobile/tablette */
+  user-select:none; -webkit-user-select:none;
 }
+.crop-rect{ user-select:none; -webkit-user-select:none; }
 .crop-rect{
   position:absolute; border:2px dashed var(--copper-hi);
   background:rgba(199,125,59,.18);
@@ -1084,7 +1086,7 @@ button{font-family:inherit;}
     <div class="modal-head"><h2>Modifier</h2><button class="modal-close" data-close="modalEdit">×</button></div>
 
     <div class="edit-preview-wrap" id="editPreviewWrap">
-      <img id="edPreviewImg" src="" alt="">
+      <img id="edPreviewImg" src="" alt="" draggable="false">
       <div class="crop-overlay hidden" id="cropOverlay"><div class="crop-rect hidden" id="cropRect"></div></div>
     </div>
     <div class="crop-toolbar hidden" id="cropToolbar">
@@ -4949,7 +4951,7 @@ cropOverlayEl.addEventListener("pointerdown", (e)=>{
   const bounds = cropOverlayEl.getBoundingClientRect();
   const startX = Math.max(0, Math.min(e.clientX - bounds.left, bounds.width));
   const startY = Math.max(0, Math.min(e.clientY - bounds.top, bounds.height));
-  cropState = {pointerId: e.pointerId, bounds, startX, startY};
+  cropState = {pointerId: e.pointerId, startX, startY};
   cropRectEl.classList.remove("hidden");
   cropRectEl.style.left = startX + "px";
   cropRectEl.style.top = startY + "px";
@@ -4958,7 +4960,12 @@ cropOverlayEl.addEventListener("pointerdown", (e)=>{
 });
 cropOverlayEl.addEventListener("pointermove", (e)=>{
   if(!cropState || cropState.pointerId !== e.pointerId) return;
-  const bounds = cropState.bounds; // figées au pointerdown : stables même si le pointeur ressort de l'overlay pendant le glisser
+  // Recalculées à CHAQUE mouvement (pas seulement au pointerdown) : élimine
+  // tout risque de limites figées légèrement désynchronisées de la position
+  // réelle de l'image à l'écran (redimensionnement de fenêtre, réajustement
+  // de mise en page…), cause possible d'un cadre qui semble s'arrêter juste
+  // avant un bord au lieu de l'atteindre exactement.
+  const bounds = cropOverlayEl.getBoundingClientRect();
   let x = e.clientX - bounds.left, y = e.clientY - bounds.top;
   x = Math.max(0, Math.min(x, bounds.width));
   y = Math.max(0, Math.min(y, bounds.height));
