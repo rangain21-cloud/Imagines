@@ -33,6 +33,7 @@
   --font-mono:    'Courier New', Courier, monospace;
   --topbar-h:     56px;
   --side-panel-w: 320px; /* largeur PARTAGÉE des 2 panneaux latéraux (Recherches + Infos) : les garder identiques évite qu'un des deux ne s'élargisse sans limite sur un grand écran au détriment de viewer-stage */
+  --thumb-min:    150px; /* taille minimale des vignettes de la planche-contact (l'heuristique), pilotée par le sélecteur "Agencement" du menu burger */
 }
 
 *{box-sizing:border-box;}
@@ -365,7 +366,7 @@ button{font-family:inherit;}
 .gallery-scroll{scrollbar-width:thin; scrollbar-color:var(--line) var(--bg-panel);}
 .gallery-grid{
   display:grid;
-  grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns:repeat(auto-fill, minmax(var(--thumb-min), 1fr));
   gap:14px;
 }
 .gallery-tile{
@@ -848,6 +849,22 @@ button{font-family:inherit;}
 
   <div class="pave">
     <button class="btn" id="btnExportCsv" style="width:100%;">Exporter le catalogue (.csv)</button>
+  </div>
+
+  <div class="pave">
+    <h3>Écran de travail</h3>
+    <div class="search-field">
+      <label for="agencementSelect">Agencement</label>
+      <select id="agencementSelect">
+        <option value="ultracompact">Ultra-compact</option>
+        <option value="laptop1366">Laptop 1366</option>
+        <option value="bureau1920" selected>Bureau standard 1920</option>
+        <option value="bureau2560">Bureau large 2560</option>
+        <option value="tablette1024">Tablette 1024</option>
+        <option value="lisibilite">Lisibilité max</option>
+        <option value="custom">Custom</option>
+      </select>
+    </div>
   </div>
 </nav>
 
@@ -2162,6 +2179,55 @@ function applyUiScale(key){
   select.addEventListener("change", ()=>{
     localStorage.setItem("imago_ui_scale", select.value);
     applyUiScale(select.value);
+    // Un réglage manuel de l'échelle décorrèle l'agencement du preset choisi
+    // dans le menu burger : on bascule ce dernier sur "Custom" pour éviter
+    // qu'il n'affiche un preset qui ne correspond plus à l'état réel.
+    markAgencementCustom();
+  });
+})();
+
+/* ---------------------------------------------------------------
+   Presets "Agencement" (menu burger) : un raccourci qui applique en une
+   fois l'échelle d'affichage (ci-dessus), la largeur des panneaux latéraux
+   et la densité des vignettes de la planche-contact, pour coller au type
+   d'écran de travail (laptop, bureau, tablette…). "Custom" signifie que
+   l'utilisateur a retouché un réglage individuellement (ex. via le
+   sélecteur "Agencement de l'affichage" de la sidebar) : dans ce cas on
+   n'écrase rien, on se contente de mémoriser l'état "sur mesure".
+   --------------------------------------------------------------- */
+const AGENCEMENT_PRESETS = {
+  ultracompact:  {uiScale:"compact",     sidePanelW:260, thumbMin:120},
+  laptop1366:    {uiScale:"compact",     sidePanelW:280, thumbMin:140},
+  bureau1920:    {uiScale:"standard",    sidePanelW:320, thumbMin:150},
+  bureau2560:    {uiScale:"comfortable", sidePanelW:380, thumbMin:170},
+  tablette1024:  {uiScale:"compact",     sidePanelW:260, thumbMin:130},
+  lisibilite:    {uiScale:"xl",          sidePanelW:340, thumbMin:190},
+};
+const AGENCEMENT_KEY = "imago_agencement";
+function markAgencementCustom(){
+  const agSelect = document.getElementById("agencementSelect");
+  if(!agSelect) return;
+  agSelect.value = "custom";
+  localStorage.setItem(AGENCEMENT_KEY, "custom");
+}
+function applyAgencement(key, persist){
+  const preset = AGENCEMENT_PRESETS[key];
+  if(!preset) return; // "custom" : on n'applique rien, l'état courant est conservé tel quel
+  document.documentElement.style.setProperty("--side-panel-w", preset.sidePanelW + "px");
+  document.documentElement.style.setProperty("--thumb-min", preset.thumbMin + "px");
+  const uiScaleSelect = document.getElementById("uiScaleSelect");
+  uiScaleSelect.value = preset.uiScale;
+  applyUiScale(preset.uiScale);
+  localStorage.setItem("imago_ui_scale", preset.uiScale);
+  if(persist) localStorage.setItem(AGENCEMENT_KEY, key);
+}
+(function initAgencement(){
+  const saved = localStorage.getItem(AGENCEMENT_KEY) || "bureau1920";
+  const select = document.getElementById("agencementSelect");
+  select.value = (AGENCEMENT_PRESETS[saved] || saved === "custom") ? saved : "bureau1920";
+  applyAgencement(select.value, false);
+  select.addEventListener("change", ()=>{
+    applyAgencement(select.value, true);
   });
 })();
 
