@@ -1026,7 +1026,8 @@ button{font-family:inherit;}
       </div>
 
       <p class="drive-note" style="margin-top:18px;">
-        <b>3) Partager</b> — envoie vers Google Drive le fichier Album ainsi que les images/vidéos chargées à l'étape 2) ci-dessus : tout est transféré tel quel dans le dossier Drive que vous choisissez au moment de cliquer (c'est vous qui désignez la destination, un simple dossier Drive parmi les vôtres). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).<br>
+        <b>3) Partager</b> — envoie vers Google Drive le fichier Album ainsi que les images/vidéos chargées à l'étape 2) ci-dessus, dans le dossier Drive que vous choisissez au moment de cliquer (c'est vous qui désignez la destination, un simple dossier Drive parmi les vôtres). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).<br>
+        🏷️ Pour les JPEG, l'Appareil, le Lieu et les coordonnées de la rubrique Map connus du catalogue sont incrustés directement dans le fichier (EXIF) avant l'envoi : ces infos restent donc visibles même hors d'Imago (Drive, Google Photos…), pas seulement dans Album-Favori.csv/Album-Art.csv. Les vidéos (.mp4) sont, elles, transférées telles quelles.<br>
         ⚠️ Pensez à déplacer vous-même le fichier Album fraîchement régénéré (étape 1) depuis votre dossier Téléchargements vers le dossier de vos photos <em>avant</em> de faire « Afficher » — sans ce déplacement manuel, « Afficher » (et donc ce partage) continuerait à utiliser l'ancienne version du fichier.
       </p>
       <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Choisir le dossier Drive et partager…</button>
@@ -2596,7 +2597,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   }
   const { file: albumFile, staleDuplicates } = match;
   statusEl.textContent = `Lecture de « ${albumFile.name} »…`;
-  let wantedPathsByName, wantedNamesOnly, hasSousDossier;
+  let wantedPathsByName, wantedNamesOnly, hasSousDossier, csvRows;
   try{
     const text = await albumFile.text();
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
@@ -2604,6 +2605,12 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     const header = normalizeColNames(parseCsvLine(lines[0]));
     const fileNameIdx = header.indexOf("fileName");
     const sousDossierIdx = header.indexOf("sousDossier");
+    // Colonnes de métadonnées à réinjecter dans les JPEG à l'étape 3 (voir
+    // buildJpegWithCatalogExif plus bas) — absentes sans conséquence si le
+    // fichier Album est ancien, ces infos ne seront simplement pas ajoutées.
+    const optiqueIdx = header.indexOf("optique");
+    const lieuIdx = header.indexOf("lieu");
+    const mapIdx = header.indexOf("map");
     if(fileNameIdx < 0){ statusEl.textContent = `« ${albumFile.name} » n'a pas le format attendu (colonne fileName manquante).`; return; }
     hasSousDossier = sousDossierIdx >= 0;
     // Le nom de fichier seul ne suffit pas à identifier une photo de façon
@@ -2620,17 +2627,28 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     // dans le catalogue) et le dossier choisi ici pour "Afficher".
     wantedPathsByName = new Map();
     wantedNamesOnly = new Set();
+    // csvRows : une entrée par ligne du fichier Album, avec son chemin
+    // complet et les quelques champs (Appareil/Lieu/Map) qu'on cherchera à
+    // réinjecter dans le JPEG correspondant à l'étape 3) Partager.
+    csvRows = [];
     for(let i=1;i<lines.length;i++){
       const cells = parseCsvLine(lines[i]);
       const name = cells[fileNameIdx];
       if(!name) continue;
       wantedNamesOnly.add(name);
+      const sousDossier = hasSousDossier ? (cells[sousDossierIdx]||"").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"") : "";
+      const fullPath = sousDossier ? `${sousDossier}/${name}` : name;
       if(hasSousDossier){
-        const sousDossier = (cells[sousDossierIdx]||"").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"");
-        const fullPath = sousDossier ? `${sousDossier}/${name}` : name;
         if(!wantedPathsByName.has(name)) wantedPathsByName.set(name, []);
         wantedPathsByName.get(name).push(fullPath);
       }
+      csvRows.push({
+        fileName: name,
+        fullPath,
+        optique: optiqueIdx>=0 ? (cells[optiqueIdx]||"") : "",
+        lieu: lieuIdx>=0 ? (cells[lieuIdx]||"") : "",
+        map: mapIdx>=0 ? (cells[mapIdx]||"") : ""
+      });
     }
   }catch(e){
     statusEl.textContent = `Lecture de « ${albumFile.name} » impossible : ${e.message}`;
@@ -2700,10 +2718,22 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // Mémorisé pour l'étape 3) Partager, qui réutilise ces mêmes fichiers
   // (déjà en mémoire, inutile de refaire sélectionner un dossier local) :
   // seuls le fichier Album et les fichiers jpg/mp4 effectivement chargés sont gardés.
-  hofShareData = {
-    albumFile,
-    mediaFiles: matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name))
-  };
+  const mediaFiles = matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name));
+  // metaByFile : File -> {optique, lieu, map} — indexé par RÉFÉRENCE d'objet
+  // (chaque File choisi via le sélecteur système est unique), pour retrouver
+  // sans ambiguïté à l'étape 3) Partager la ligne CSV d'un fichier donné et
+  // y incruster Appareil/Lieu/Map en EXIF (voir buildJpegWithCatalogExif).
+  const metaByFile = new Map();
+  mediaFiles.forEach(f=>{
+    const relPath = hasSousDossier
+      ? (f.webkitRelativePath ? f.webkitRelativePath.split("/").slice(1).join("/") : f.name)
+      : f.name;
+    const row = hasSousDossier
+      ? csvRows.find(r=> pathsLooselyMatch(relPath, r.fullPath))
+      : csvRows.find(r=> r.fileName === f.name);
+    if(row) metaByFile.set(f, row);
+  });
+  hofShareData = { albumFile, mediaFiles, metaByFile };
   document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
   // On fournit le fichier Album lui-même comme catalogue à
   // handleFilesSelected (il n'est pas un média : il ne sera donc jamais
@@ -2802,6 +2832,243 @@ function guessMimeType(file){
   if(/\.mp4$/i.test(file.name)) return "video/mp4";
   return "image/jpeg";
 }
+
+/* ---------------------------------------------------------------------
+   Incrustation EXIF des métadonnées du catalogue (Appareil/Lieu/Map) dans
+   les JPEG envoyés à l'étape 3) Partager de la modale Hall of fame.
+   Sans ça, ces informations n'existent QUE dans Album-Favori.csv / Album-
+   Art.csv : une fois sur Drive, toute application qui ignore ce CSV (Drive
+   lui-même, Google Photos, l'explorateur de fichiers…) ne les voit pas.
+   On les écrit ici sous forme de tags EXIF standard (Model, ImageDescrip-
+   tion, GPS*), lisibles par la quasi-totalité des visionneuses.
+   Limites assumées, pour rester simple et sûr (pas de bibliothèque EXIF
+   externe) :
+   - uniquement les JPEG (.jpg/.jpeg) ; les vidéos (.mp4) n'ont pas
+     d'équivalent EXIF simple et sont envoyées telles quelles, sans y toucher ;
+   - un éventuel bloc EXIF déjà présent dans le fichier d'origine est
+     REMPLACÉ (pas fusionné) : seule l'ORIENTATION d'origine est
+     explicitement récupérée et reportée dans le nouveau bloc (sans quoi une
+     photo correctement pivotée par l'appareil pourrait apparaître de
+     travers une fois republiée) ; les autres réglages techniques d'origine
+     (ISO, ouverture, vitesse, focale…) ne sont eux pas conservés dans ce
+     cas précis — un compromis délibéré pour éviter la complexité et les
+     risques d'un vrai lecteur/fusionneur EXIF générique. */
+
+// Extrait des coordonnées lat/lon d'une URL "map" du catalogue, quand elle
+// a été construite à partir du GPS du fichier (voir mapUrlFromCoords) —
+// ex. "https://www.google.com/maps?q=43.295000,5.374000". Une URL "map"
+// construite à partir d'un simple nom de lieu (mapUrlFromLieu, sans
+// coordonnées) ne matche pas ce motif : rien n'est alors extrait ici.
+function parseLatLonFromMapField(mapUrl){
+  if(!mapUrl) return null;
+  const m = /[?&]q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/.exec(mapUrl);
+  if(!m) return null;
+  const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+  return (isFinite(lat) && isFinite(lon)) ? {lat, lon} : null;
+}
+function exifAsciiBytes(str){
+  const out = new Uint8Array(str.length + 1); // +1 : terminateur nul requis par le type ASCII de la norme EXIF/TIFF
+  for(let i=0;i<str.length;i++) out[i] = str.charCodeAt(i) & 0xFF;
+  out[str.length] = 0;
+  return out;
+}
+function exifRationalBytes(num, den){
+  const b = new Uint8Array(8);
+  new DataView(b.buffer).setUint32(0, num, true);
+  new DataView(b.buffer).setUint32(4, den, true);
+  return b;
+}
+// Convertit un angle décimal (latitude ou longitude) en triplet de
+// rationnels degrés/minutes/secondes, format attendu par les tags EXIF
+// GPSLatitude/GPSLongitude (les secondes gardent 3 décimales de précision).
+function exifDegToDMSRationals(deg){
+  deg = Math.abs(deg);
+  const d = Math.floor(deg);
+  const minFloat = (deg - d) * 60;
+  const m = Math.floor(minFloat);
+  const s = Math.round((minFloat - m) * 60 * 1000);
+  const out = new Uint8Array(24);
+  out.set(exifRationalBytes(d,1), 0);
+  out.set(exifRationalBytes(m,1), 8);
+  out.set(exifRationalBytes(s,1000), 16);
+  return out;
+}
+/* Construit un segment APP1 "Exif\0\0" minimal contenant, dans l'IFD0 :
+   Model (Appareil), ImageDescription (Lieu) et Orientation (préservée) —
+   plus, si des coordonnées sont fournies, un IFD GPS complet. Chaque champ
+   est omis s'il est vide/absent (pas de tag écrit pour rien). */
+function buildCatalogExifPayload({model, description, lat, lon, orientation}){
+  const hasGps = lat!=null && lon!=null;
+  const hasOrientation = orientation!=null;
+  const fields = [];
+  if(model) fields.push({tag:0x0110, str: model});           // Model
+  if(description) fields.push({tag:0x010E, str: description}); // ImageDescription
+  const ifd0Count = fields.length + (hasGps?1:0) + (hasOrientation?1:0);
+
+  const TIFF_START = 6; // juste après la signature "Exif\0\0"
+  const ifd0Offset = 8; // relatif au début du TIFF ("II*\0" + ce pointeur = 8 octets)
+  const ifd0Size = 2 + ifd0Count*12 + 4;
+  let cursor = ifd0Offset + ifd0Size; // zone de données de l'IFD0, à la suite
+
+  fields.forEach(f=>{
+    f.bytes = exifAsciiBytes(f.str);
+    if(f.bytes.length <= 4){
+      f.inline = true;
+    } else {
+      f.inline = false;
+      f.dataOffset = cursor;
+      cursor += f.bytes.length;
+      if(cursor % 2) cursor += 1; // alignement pair, convention TIFF
+    }
+  });
+
+  let gpsIfdOffset = null, gpsLatDataOffset = null, gpsLonDataOffset = null;
+  if(hasGps){
+    gpsIfdOffset = cursor;
+    cursor += 2 + 5*12 + 4; // 5 entrées (VersionID, LatRef, Lat, LonRef, Lon) + next-IFD
+    gpsLatDataOffset = cursor; cursor += 24; // 3 rationnels (deg/min/sec)
+    gpsLonDataOffset = cursor; cursor += 24;
+  }
+
+  const buf = new Uint8Array(TIFF_START + cursor);
+  const dv = new DataView(buf.buffer);
+  buf.set([0x45,0x78,0x69,0x66,0x00,0x00], 0); // "Exif\0\0"
+  buf[TIFF_START]=0x49; buf[TIFF_START+1]=0x49; // "II" : little endian
+  dv.setUint16(TIFF_START+2, 42, true);
+  dv.setUint32(TIFF_START+4, ifd0Offset, true);
+
+  const ifd0Base = TIFF_START + ifd0Offset;
+  dv.setUint16(ifd0Base, ifd0Count, true);
+  let entryPos = ifd0Base + 2;
+  const allTags = fields.map(f=>({...f, kind:"ascii"}));
+  if(hasGps) allTags.push({tag:0x8825, kind:"gpsptr"});
+  if(hasOrientation) allTags.push({tag:0x0112, kind:"orientation"});
+  allTags.sort((a,b)=> a.tag - b.tag); // ordre croissant des tags requis par la norme TIFF
+
+  allTags.forEach(f=>{
+    dv.setUint16(entryPos, f.tag, true);
+    if(f.kind==="ascii"){
+      dv.setUint16(entryPos+2, 2, true); // type ASCII
+      dv.setUint32(entryPos+4, f.bytes.length, true);
+      if(f.inline) buf.set(f.bytes, entryPos+8);
+      else { dv.setUint32(entryPos+8, f.dataOffset, true); buf.set(f.bytes, TIFF_START + f.dataOffset); }
+    } else if(f.kind==="gpsptr"){
+      dv.setUint16(entryPos+2, 4, true); // type LONG
+      dv.setUint32(entryPos+4, 1, true);
+      dv.setUint32(entryPos+8, gpsIfdOffset, true);
+    } else { // orientation
+      dv.setUint16(entryPos+2, 3, true); // type SHORT
+      dv.setUint32(entryPos+4, 1, true);
+      dv.setUint16(entryPos+8, orientation, true);
+    }
+    entryPos += 12;
+  });
+  dv.setUint32(entryPos, 0, true); // pas d'IFD suivant (pas de vignette)
+
+  if(hasGps){
+    const gpsBase = TIFF_START + gpsIfdOffset;
+    dv.setUint16(gpsBase, 5, true);
+    let gp = gpsBase + 2;
+    dv.setUint16(gp,0x0000,true); dv.setUint16(gp+2,1,true); dv.setUint32(gp+4,4,true);
+    buf[gp+8]=2; buf[gp+9]=2; buf[gp+10]=0; buf[gp+11]=0; gp+=12; // GPSVersionID = 2.2.0.0
+    const latRef = lat>=0 ? "N" : "S", lonRef = lon>=0 ? "E" : "W";
+    dv.setUint16(gp,0x0001,true); dv.setUint16(gp+2,2,true); dv.setUint32(gp+4,2,true);
+    buf[gp+8]=latRef.charCodeAt(0); buf[gp+9]=0; gp+=12; // GPSLatitudeRef
+    dv.setUint16(gp,0x0002,true); dv.setUint16(gp+2,5,true); dv.setUint32(gp+4,3,true);
+    dv.setUint32(gp+8, gpsLatDataOffset, true);
+    buf.set(exifDegToDMSRationals(lat), TIFF_START+gpsLatDataOffset); gp+=12; // GPSLatitude
+    dv.setUint16(gp,0x0003,true); dv.setUint16(gp+2,2,true); dv.setUint32(gp+4,2,true);
+    buf[gp+8]=lonRef.charCodeAt(0); buf[gp+9]=0; gp+=12; // GPSLongitudeRef
+    dv.setUint16(gp,0x0004,true); dv.setUint16(gp+2,5,true); dv.setUint32(gp+4,3,true);
+    dv.setUint32(gp+8, gpsLonDataOffset, true);
+    buf.set(exifDegToDMSRationals(lon), TIFF_START+gpsLonDataOffset); gp+=12; // GPSLongitude
+    dv.setUint32(gp, 0, true);
+  }
+  return buf;
+}
+// Localise un éventuel segment APP1 "Exif\0\0" déjà présent dans le JPEG
+// d'origine (position de début/fin, marqueur inclus), pour le remplacer
+// proprement plutôt que d'en avoir deux à la suite (non conforme, et
+// source de confusion pour les visionneuses).
+function findJpegExifApp1(bytes){
+  if(bytes[0]!==0xFF || bytes[1]!==0xD8) return null; // pas un JPEG valide (SOI absent) : on n'y touche pas
+  let pos = 2;
+  while(pos < bytes.length - 1){
+    if(bytes[pos] !== 0xFF) break; // flux non standard : on arrête l'analyse par sécurité
+    const marker = bytes[pos+1];
+    if(marker === 0xD9 || marker === 0xDA) break; // fin d'image / début des données : plus de segments méta après
+    if(marker >= 0xD0 && marker <= 0xD7){ pos += 2; continue; } // marqueurs RST_n : pas de champ longueur
+    const len = (bytes[pos+2]<<8) | bytes[pos+3];
+    const segStart = pos, segEnd = pos + 2 + len;
+    const isExif = marker===0xE1 && bytes[pos+4]===0x45 && bytes[pos+5]===0x78 && bytes[pos+6]===0x69 && bytes[pos+7]===0x66 && bytes[pos+8]===0x00 && bytes[pos+9]===0x00;
+    if(isExif) return {start: segStart, end: segEnd};
+    pos = segEnd;
+  }
+  return null;
+}
+// Lit uniquement le tag Orientation (0x0112) de l'IFD0 d'un segment EXIF
+// déjà repéré par findJpegExifApp1 — c'est la seule valeur qu'on tient à
+// préserver du bloc EXIF d'origine avant de le remplacer (voir plus haut).
+function readJpegOrientation(bytes, seg){
+  if(!seg) return null;
+  try{
+    const tiffStart = seg.start + 4 + 6; // +4 (marqueur+longueur) +6 ("Exif\0\0")
+    const little = bytes[tiffStart]===0x49;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const ifd0Base = tiffStart + dv.getUint32(tiffStart+4, little);
+    const count = dv.getUint16(ifd0Base, little);
+    for(let i=0;i<count;i++){
+      const entry = ifd0Base + 2 + i*12;
+      if(dv.getUint16(entry, little) === 0x0112) return dv.getUint16(entry+8, little);
+    }
+  }catch(e){ /* segment EXIF d'origine mal formé : orientation simplement non récupérée */ }
+  return null;
+}
+// Fonction principale : renvoie les octets du JPEG avec le nouveau bloc
+// EXIF catalogue inséré (et l'éventuel ancien bloc EXIF retiré), ou `null`
+// si `meta` ne contient aucune info à ajouter (fichier alors envoyé tel
+// quel, sans y toucher).
+async function buildJpegWithCatalogExif(file, meta){
+  const coords = parseLatLonFromMapField(meta && meta.map);
+  if(!meta || (!meta.optique && !meta.lieu && !coords)) return null;
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const existing = findJpegExifApp1(buf);
+  const orientation = readJpegOrientation(buf, existing);
+  const payload = buildCatalogExifPayload({
+    model: meta.optique || "",
+    description: meta.lieu || "",
+    lat: coords ? coords.lat : null,
+    lon: coords ? coords.lon : null,
+    orientation
+  });
+  const segLen = payload.length + 2;
+  const seg = new Uint8Array(4 + payload.length);
+  seg[0]=0xFF; seg[1]=0xE1;
+  seg[2]=(segLen>>8)&0xFF; seg[3]=segLen&0xFF;
+  seg.set(payload, 4);
+  const before = existing ? buf.slice(0, existing.start) : buf.slice(0,2);
+  const after = existing ? buf.slice(existing.end) : buf.slice(2);
+  const out = new Uint8Array(before.length + seg.length + after.length);
+  out.set(before,0); out.set(seg, before.length); out.set(after, before.length+seg.length);
+  return out;
+}
+// Encode un Uint8Array en base64 via FileReader (comme fileToBase64), pour
+// rester fiable sur de gros fichiers (contrairement à un encodage manuel
+// par String.fromCharCode, qui peut dépasser la pile d'appels sur de
+// grosses images).
+function uint8ArrayToBase64(bytes){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const result = String(reader.result || "");
+      const idx = result.indexOf(",");
+      resolve(idx>=0 ? result.slice(idx+1) : "");
+    };
+    reader.onerror = ()=> reject(reader.error || new Error("Encodage base64 impossible."));
+    reader.readAsDataURL(new Blob([bytes]));
+  });
+}
+
 /* Crée (ou retrouve, pour rester rejouable sans doublon) un sous-dossier
    nommé `name` sous `parentId` — même logique de recherche-puis-création
    qu'ensureImaginesFolder, mais paramétrable pour un nom quelconque. */
@@ -2957,7 +3224,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
   const progressBar = document.getElementById("driveFolderPickerProgressBar");
   if(!hofShareData){ statusEl.textContent = "Faites d'abord « Afficher » (étape 2)."; return; }
   const current = driveFolderPicker.path[driveFolderPicker.path.length - 1];
-  const { albumFile, mediaFiles } = hofShareData;
+  const { albumFile, mediaFiles, metaByFile } = hofShareData;
   confirmBtn.disabled = true;
   progressWrap.classList.remove("hidden");
   progressBar.style.width = "0%";
@@ -2994,7 +3261,21 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
         updateProgress(`${file.name} — déjà présent, ignoré`);
         continue;
       }
-      const base64 = await fileToBase64(file);
+      // Pour un JPEG dont le catalogue connaît l'Appareil, le Lieu ou des
+      // coordonnées Map : on incruste ces infos en EXIF avant l'envoi, pour
+      // qu'elles restent visibles même hors d'Imago (voir
+      // buildJpegWithCatalogExif). Sans correspondance exploitable (vidéo,
+      // ou aucune des trois infos disponible), le fichier part inchangé,
+      // comme avant.
+      let base64;
+      if(/\.jpe?g$/i.test(file.name)){
+        let withExif = null;
+        try{ withExif = await buildJpegWithCatalogExif(file, metaByFile.get(file)); }
+        catch(e){ console.warn(`[Imago/HOF] Incrustation EXIF impossible pour « ${file.name} », envoi inchangé :`, e); }
+        base64 = withExif ? await uint8ArrayToBase64(withExif) : await fileToBase64(file);
+      } else {
+        base64 = await fileToBase64(file);
+      }
       await uploadOrUpdateToDriveFolder({
         fileId: null,
         name: file.name,
