@@ -2705,15 +2705,20 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     mediaFiles: matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name))
   };
   document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
-  // On adjoint les Catalogue-AAAA.csv du dossier (sans les importer comme
-  // médias : handleFilesSelected ne retient comme "photos" que les
-  // extensions image/vidéo) afin que chaque fichier retrouvé reprenne SA
-  // ligne de métadonnées existante (lieu, dateAchat d'origine…) au lieu de
-  // tomber dans la branche "non catalogué" (lieu vidé, date recalculée par
-  // heuristique) — c'est ce qui rendait le tri moins fiable et faisait
-  // disparaître le lieu en pied de diaporama pour une origine HOF.
-  const catalogFilesForMeta = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
-  await runHofImportWithProgress([...matchedFiles, ...catalogFilesForMeta], statusEl);
+  // On fournit le fichier Album lui-même comme catalogue à
+  // handleFilesSelected (il n'est pas un média : il ne sera donc jamais
+  // importé comme "photo", seulement lu pour sa métadonnée). Contrairement
+  // aux Catalogue-AAAA.csv d'origine — multiples (un par année), ce qui
+  // déclencherait une sélection ambiguë (pickCatalogFromCandidates) et ne
+  // couvrirait qu'UNE SEULE année à la fois — l'Album contient déjà, pour
+  // CHAQUE photo retenue, la ligne complète fusionnée depuis son catalogue
+  // d'origine (titre, lieu, dateAchat, personnage… voir
+  // generateAlbumFromCsvFiles) et indexée par "fileName" comme n'importe
+  // quel catalogue. Sans ça, la quasi-totalité des photos tombait dans la
+  // branche "non cataloguée" de importOneFile : lieu vidé (donc jamais
+  // affiché en pied de diaporama) et titre réduit au seul personnage
+  // (faute de lieu pour le compléter) au lieu du vrai titre enregistré.
+  await runHofImportWithProgress([...matchedFiles, albumFile], statusEl);
   closeModal("modalHOF");
   toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`
     + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : "")
