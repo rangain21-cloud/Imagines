@@ -636,7 +636,7 @@ button{font-family:inherit;}
 .info-pencil:hover{color:var(--copper-hi);}
 .info-inline-edit{display:flex; gap:6px; margin-top:4px;}
 .info-inline-edit input{flex:1; padding:5px 8px; font-size:12.5px; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink);}
-.info-map{width:100%; height:150px; border:0; border-radius:6px; margin-top:8px; filter:grayscale(.15) invert(.92) hue-rotate(180deg);}
+.info-map{width:100%; height:150px; border:0; border-radius:6px; margin-top:8px; background:#e8eaed;} /* fond clair type Google Maps — aucun filtre d'inversion, la carte garde ses couleurs d'origine */
 
 .album-list{display:flex; flex-direction:column; gap:8px; max-height:260px; overflow-y:auto; margin-bottom:12px;}
 .album-item{display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2); cursor:pointer;}
@@ -3700,6 +3700,36 @@ function mapUrl(exif, lieu){
   if(exif && exif.gpsLat!=null && exif.gpsLon!=null) return mapUrlFromCoords(exif.gpsLat, exif.gpsLon);
   return mapUrlFromLieu(lieu);
 }
+/* Extrait, depuis une URL Google Maps déjà enregistrée dans la rubrique
+   "map" (quel que soit son format — coordonnées via "?q=lat,lon" ou lieu via
+   "/maps/search/?api=1&query=..."), la valeur exploitable pour un aperçu
+   intégré (iframe "output=embed"). Renvoie "" si l'URL ne contient aucune
+   valeur reconnaissable (format inattendu). */
+function mapEmbedQueryFromMapField(url){
+  try{
+    const u = new URL(url);
+    const q = u.searchParams.get("query") || u.searchParams.get("q");
+    if(q) return q;
+    const m = u.pathname.match(/\/maps\/place\/([^/]+)/i);
+    if(m) return decodeURIComponent(m[1].replace(/\+/g, " "));
+  }catch(e){ /* URL non standard : pas d'aperçu extrait, on retombe sur lieu */ }
+  return "";
+}
+/* Aperçu carte de la modale Infos : construit systématiquement une URL
+   d'intégration (Google Maps "output=embed", sans clé API), en priorité à
+   partir de la rubrique "map" du catalogue CSV (qui contient déjà, dès
+   l'import, les coordonnées GPS du fichier quand elles existent — voir
+   mapUrl() ci-dessus), puis en repli à partir de la rubrique "lieu" (simple
+   recherche par nom). Renvoie "" si aucune des deux rubriques n'est
+   exploitable — c'est alors le seul cas où l'aperçu n'est pas affiché. */
+function mapEmbedSrcFor(p){
+  if(isValidMapUrl(p.map)){
+    const q = mapEmbedQueryFromMapField(p.map);
+    if(q) return `https://www.google.com/maps?q=${encodeURIComponent(q)}&z=15&output=embed`;
+  }
+  if(p.lieu) return `https://www.google.com/maps?q=${encodeURIComponent(p.lieu)}&z=12&output=embed`;
+  return "";
+}
 /* Géolocalisation inverse (coordonnées → nom de lieu lisible), façon Google
    Photos, mais sans clé API : utilise l'API publique OpenStreetMap
    Nominatim. Nécessite une connexion internet ; usage ponctuel/raisonnable
@@ -5591,10 +5621,13 @@ function renderInfoModal(p){
   const dims = (p.width && p.height) ? `${p.width} × ${p.height}` : "";
   const shared = (p.sharedWith && p.sharedWith.length) ? p.sharedWith.join(", ") : null;
 
-  // Aperçu carte : UNIQUEMENT à partir du GPS embarqué dans le fichier — jamais
-  // à partir du texte du champ Lieu (trop imprécis pour un pointeur cartographique).
+  // Aperçu carte : affiché systématiquement, construit en priorité à partir
+  // de la rubrique "map" (URL déjà enregistrée — elle-même issue du GPS du
+  // fichier quand il existe, voir mapUrl()), puis en repli à partir de la
+  // rubrique "lieu" (recherche par nom). Seul un enregistrement sans "map"
+  // NI "lieu" ne propose aucun aperçu.
   const hasGps = (p.gpsLat!=null && p.gpsLon!=null);
-  const mapEmbedSrc = hasGps ? `https://www.google.com/maps?q=${p.gpsLat.toFixed(6)},${p.gpsLon.toFixed(6)}&z=15&output=embed` : null;
+  const mapEmbedSrc = mapEmbedSrcFor(p);
   const mapLinkHref = hasGps ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : (p.lieu ? mapUrlFromLieu(p.lieu) : null);
 
   rows.innerHTML = `
@@ -5674,7 +5707,7 @@ function renderInfoModal(p){
           <button class="btn" id="infoVerifyLieuBtn" type="button" style="margin-top:6px; padding:6px 10px; font-size:12px;">🌐 Vérifier via Wikipédia</button>
         ` : (!p.lieu && hasGps ? `<div class="sub-line">Recherche du lieu via GPS…</div>` : "")}
         ${hasGps ? `<div class="sub-line">${escapeHtml(decimalToDMS(p.gpsLat, p.gpsLon))} · ${p.gpsLat.toFixed(6)}, ${p.gpsLon.toFixed(6)}</div>` : ""}
-        ${hasGps ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>` : `<div class="sub-line">Aucune coordonnée GPS dans ce fichier — pas d'aperçu carte.</div>`}
+        ${mapEmbedSrc ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>` : `<div class="sub-line">Aucune information de carte (rubrique « map » ou « lieu ») pour ce fichier.</div>`}
         ${mapLinkHref ? `<a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
       </div>
       <button class="info-pencil" data-edit="lieu" title="Modifier le lieu">✎</button>
