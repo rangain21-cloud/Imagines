@@ -2705,7 +2705,15 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     mediaFiles: matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name))
   };
   document.getElementById("btnHOFShare").classList.remove("done"); // nouvelle "Afficher" : l'éventuel ancien partage n'est plus forcément à jour
-  await runHofImportWithProgress(matchedFiles, statusEl);
+  // On adjoint les Catalogue-AAAA.csv du dossier (sans les importer comme
+  // médias : handleFilesSelected ne retient comme "photos" que les
+  // extensions image/vidéo) afin que chaque fichier retrouvé reprenne SA
+  // ligne de métadonnées existante (lieu, dateAchat d'origine…) au lieu de
+  // tomber dans la branche "non catalogué" (lieu vidé, date recalculée par
+  // heuristique) — c'est ce qui rendait le tri moins fiable et faisait
+  // disparaître le lieu en pied de diaporama pour une origine HOF.
+  const catalogFilesForMeta = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
+  await runHofImportWithProgress([...matchedFiles, ...catalogFilesForMeta], statusEl);
   closeModal("modalHOF");
   toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`
     + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : "")
