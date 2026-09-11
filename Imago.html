@@ -636,7 +636,7 @@ button{font-family:inherit;}
 .info-pencil:hover{color:var(--copper-hi);}
 .info-inline-edit{display:flex; gap:6px; margin-top:4px;}
 .info-inline-edit input{flex:1; padding:5px 8px; font-size:12.5px; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink);}
-.info-map{width:100%; height:150px; border:0; border-radius:6px; margin-top:8px; background:#e8eaed;} /* fond clair type Google Maps — aucun filtre d'inversion, la carte garde ses couleurs d'origine */
+.info-map{display:block; width:100%; height:180px; border:0; border-radius:6px; margin:2px 0 14px; background:#e8eaed;} /* fond clair type Google Maps — aucun filtre d'inversion, la carte garde ses couleurs d'origine ; bloc pleine largeur, hors de la colonne indentée .info-content */
 
 .album-list{display:flex; flex-direction:column; gap:8px; max-height:260px; overflow-y:auto; margin-bottom:12px;}
 .album-item{display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2); cursor:pointer;}
@@ -5707,11 +5707,13 @@ function renderInfoModal(p){
           <button class="btn" id="infoVerifyLieuBtn" type="button" style="margin-top:6px; padding:6px 10px; font-size:12px;">🌐 Vérifier via Wikipédia</button>
         ` : (!p.lieu && hasGps ? `<div class="sub-line">Recherche du lieu via GPS…</div>` : "")}
         ${hasGps ? `<div class="sub-line">${escapeHtml(decimalToDMS(p.gpsLat, p.gpsLon))} · ${p.gpsLat.toFixed(6)}, ${p.gpsLon.toFixed(6)}</div>` : ""}
-        ${mapEmbedSrc ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>` : `<div class="sub-line">Aucune information de carte (rubrique « map » ou « lieu ») pour ce fichier.</div>`}
-        ${mapLinkHref ? `<a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link" style="display:inline-block; margin-top:6px;">Ouvrir dans Google Maps ↗</a>` : ""}
       </div>
       <button class="info-pencil" data-edit="lieu" title="Modifier le lieu">✎</button>
     </div>
+    ${mapEmbedSrc
+      ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>`
+      : `<div class="info-row"><div class="info-ic"></div><div class="info-content sub-line" style="flex:1;">Aucune information de carte (rubrique « map » ou « lieu ») pour ce fichier.</div></div>`}
+    ${mapLinkHref ? `<div class="sub-line" style="margin:6px 0 14px;"><a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link">Ouvrir dans Google Maps ↗</a></div>` : ""}
   `;
 
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
