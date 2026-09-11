@@ -697,7 +697,7 @@ button{font-family:inherit;}
   backdrop-filter:blur(3px);
 }
 .slideshow-fill-toggle:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
-.slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em; z-index:5;}
+.slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em; z-index:5; transition:opacity .6s ease;}
 /* Date (bas-gauche) et lieu (bas-droite) incrustés sur chaque photo du
    diaporama, mis à jour en même temps que le fondu enchaîné (voir
    showSlideshowFrame). */
@@ -711,6 +711,11 @@ button{font-family:inherit;}
 .slide-caption:empty{display:none;}
 .slide-caption-date{left:18px; text-align:left;}
 .slide-caption-lieu{right:18px; text-align:right;}
+/* Titre de la photo : remplace le hint clavier (Échap/flèches) au centre du
+   pied de page une fois les 10 premières secondes du diaporama écoulées —
+   voir armSlideshowHint(). Opacité pilotée en JS (0 tant que le hint est
+   affiché), pas seulement par .slide-caption:empty. */
+.slide-caption-titre{left:50%; right:auto; transform:translateX(-50%); text-align:center; max-width:60%; bottom:14px;}
 
 /* ---------- bande de miniatures du diaporama (choix rapide) ---------- */
 /* Largeur pilotée par une variable CSS (au lieu d'une valeur fixe) pour
@@ -1385,8 +1390,9 @@ button{font-family:inherit;}
     <img id="slideshowImgB" class="slide-img" src="" alt="">
     <div class="slide-caption slide-caption-date" id="slideCaptionDate"></div>
     <div class="slide-caption slide-caption-lieu" id="slideCaptionLieu"></div>
+    <div class="slide-caption slide-caption-titre" id="slideCaptionTitre"></div>
     <button class="slideshow-fill-toggle" id="slideshowFillToggle" title="Basculer entre image entière (bandes noires possibles), équilibré et plein écran (léger recadrage)">⛶ Ajusté</button>
-    <div class="slideshow-hint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
+    <div class="slideshow-hint" id="slideshowHint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
   </div>
 </div>
 
@@ -5490,6 +5496,17 @@ document.getElementById("btnInfo").addEventListener("click", ()=>{
   openModal("modalInfo");
 });
 
+function fmtDateShort(iso){
+  // Format compact JJ-MM-AA (année sur 2 chiffres) pour le pied de page du
+  // diaporama — fmtDateFr() est trop long une fois l'heure ajoutée. L'heure
+  // éventuelle (voir dateAchat horodaté) n'a pas sa place ici, volontairement
+  // ignorée.
+  if(!iso) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if(!m) return iso;
+  const [, yyyy, mm, dd] = m;
+  return `${dd}-${mm}-${yyyy.slice(2)}`;
+}
 function fmtDateFr(iso){
   if(!iso) return "Date inconnue";
   const isoDatePart = iso.slice(0,10);
@@ -5875,6 +5892,7 @@ function openLoupe(id){
   showSlideshowFrame(true);
   loupeZoom=1; loupeX=0; loupeY=0; applyLoupeTransform();
   slideshowEl.classList.add("show");
+  armSlideshowHint();
 }
 function openDiaporama(id){
   State.slideshowMode = "diaporama";
@@ -5884,6 +5902,7 @@ function openDiaporama(id){
   buildSlideshowRail();
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
+  armSlideshowHint();
   clearTimeout(State.slideshowTimer);
   State.slideshowTimer = null;
   applySlideshowTimingVars();
@@ -5963,19 +5982,45 @@ function showSlideshowFrame(instant){
 }
 const slideCaptionDateEl = document.getElementById("slideCaptionDate");
 const slideCaptionLieuEl = document.getElementById("slideCaptionLieu");
-/* Date (bas-gauche) et lieu (bas-droite) incrustés sur la photo affichée,
-   mis à jour au même instant que le fondu enchaîné vers la nouvelle image
-   (appelé depuis l'onload de showSlideshowFrame). Un léger fondu d'opacité
-   (voir CSS .slide-caption) adoucit le changement de texte au lieu d'un
-   remplacement brutal. */
+const slideCaptionTitreEl = document.getElementById("slideCaptionTitre");
+const slideshowHintEl = document.getElementById("slideshowHint");
+/* Le pied de page central affiche d'abord l'aide clavier (Échap/flèches),
+   pendant 10 secondes seulement (temps de la lire une fois) — passé ce
+   délai elle s'efface et le TITRE de la photo affichée la remplace, mis à
+   jour à chaque changement de diapositive comme la date et le lieu. Ce
+   minuteur est unique par ouverture du diaporama/loupe (pas remis à zéro à
+   chaque diapositive) : une fois expiré, le titre reste affiché jusqu'à la
+   fermeture. */
+let slideshowHintTimer = null;
+let slideshowHintExpired = false;
+function armSlideshowHint(){
+  clearTimeout(slideshowHintTimer);
+  slideshowHintExpired = false;
+  slideshowHintEl.style.opacity = 1;
+  slideCaptionTitreEl.style.opacity = 0;
+  slideshowHintTimer = setTimeout(()=>{
+    slideshowHintExpired = true;
+    slideshowHintEl.style.opacity = 0;
+    slideCaptionTitreEl.style.opacity = 1; // révèle le titre déjà posé en arrière-plan par updateSlideCaptions
+  }, 10000);
+}
+/* Date (bas-gauche), lieu (bas-droite) et titre (bas-centre, une fois le
+   hint clavier expiré — voir armSlideshowHint) incrustés sur la photo
+   affichée, mis à jour au même instant que le fondu enchaîné vers la
+   nouvelle image (appelé depuis l'onload de showSlideshowFrame). Un léger
+   fondu d'opacité (voir CSS .slide-caption) adoucit le changement de texte
+   au lieu d'un remplacement brutal. */
 function updateSlideCaptions(p){
   slideCaptionDateEl.style.opacity = 0;
   slideCaptionLieuEl.style.opacity = 0;
+  if(slideshowHintExpired) slideCaptionTitreEl.style.opacity = 0;
   requestAnimationFrame(()=>{
-    slideCaptionDateEl.textContent = p.dateAchat ? fmtDateFr(p.dateAchat) : "";
+    slideCaptionDateEl.textContent = p.dateAchat ? fmtDateShort(p.dateAchat) : "";
     slideCaptionLieuEl.textContent = p.lieu || "";
+    slideCaptionTitreEl.textContent = p.titre || ""; // posé même hint encore visible (opacité 0 tant qu'armSlideshowHint ne l'a pas révélé)
     slideCaptionDateEl.style.opacity = 1;
     slideCaptionLieuEl.style.opacity = 1;
+    if(slideshowHintExpired) slideCaptionTitreEl.style.opacity = 1;
   });
 }
 /* Remplace l'ancien setInterval à durée fixe : re-planifie l'avance
@@ -6002,6 +6047,7 @@ function stepSlideshow(dir){
 }
 function closeSlideshow(){
   slideshowEl.classList.remove("show");
+  clearTimeout(slideshowHintTimer);
   slideshowFrameToken++; // invalide tout onload encore en attente pour l'image en cours de chargement
   clearTimeout(State.slideshowTimer);
   State.slideshowTimer = null;
