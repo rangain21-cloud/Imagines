@@ -1021,7 +1021,8 @@ button{font-family:inherit;}
       </div>
 
       <p class="drive-note" style="margin-top:18px;">
-        <b>3) Partager</b> — téléverse le fichier Album généré ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers le dossier Google Drive de votre choix (vous choisissez la destination). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).
+        <b>3) Partager</b> — envoie vers Google Drive le fichier Album ainsi que les images/vidéos chargées à l'étape 2) ci-dessus : tout est transféré tel quel dans le dossier Drive que vous choisissez au moment de cliquer (c'est vous qui désignez la destination, un simple dossier Drive parmi les vôtres). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).<br>
+        ⚠️ Pensez à déplacer vous-même le fichier Album fraîchement régénéré (étape 1) depuis votre dossier Téléchargements vers le dossier de vos photos <em>avant</em> de faire « Afficher » — sans ce déplacement manuel, « Afficher » (et donc ce partage) continuerait à utiliser l'ancienne version du fichier.
       </p>
       <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Choisir le dossier Drive et partager…</button>
 
@@ -2367,8 +2368,31 @@ document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofDi
 
 // Nom du fichier Album selon la rubrique choisie (radio Favori/Art) —
 // utilisé à la fois pour l'écrire (étape 1) et pour le rechercher (étape 2).
+// Alias de colonnes d'anciens formats de catalogue/album, pour rester
+// compatible avec des fichiers générés par une version antérieure d'Imago
+// (avant le passage de "sous dossier" à "sousDossier" en camelCase).
+const COLUMN_ALIASES = { "sous dossier": "sousDossier" };
+const normalizeColNames = cols => cols.map(c=> COLUMN_ALIASES[c] || c);
+
 function hofAlbumFileName(criterion){
   return criterion === "art" ? "Album-Art.csv" : "Album-Favori.csv";
+}
+// Reconnaît, en plus du nom exact, les doublons créés par le navigateur
+// quand un fichier de même nom existe déjà là où il est téléchargé
+// ("Album-Favori (2).csv", "Album-Favori(2).csv"…) et renvoie le PLUS
+// RÉCEMMENT MODIFIÉ des candidats trouvés — sans ça, un ancien fichier resté
+// sous le nom exact pouvait être utilisé silencieusement à la place d'une
+// régénération plus récente renommée par le navigateur.
+function findLatestAlbumCandidate(allFiles, targetName, criterion){
+  const escapedBase = targetName.replace(/\.csv$/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^${escapedBase}(?:\\s*\\(\\d+\\))?\\.csv$`, "i");
+  let candidates = allFiles.filter(f=> pattern.test(f.name));
+  if(!candidates.length && criterion === "favori"){
+    candidates = allFiles.filter(f=>/^Album(?:\s*\(\d+\))?\.csv$/i.test(f.name)); // repli : nommage d'avant l'introduction d'"Album-Favori.csv"
+  }
+  if(!candidates.length) return null;
+  candidates.sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
+  return { file: candidates[0], staleDuplicates: candidates.slice(1) };
 }
 
 // ---- 1) GÉNÉRER ----------------------------------------------------
@@ -2385,22 +2409,23 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   // n'est pas une source d'entrées mais LA BASE à récupérer et mettre à
   // jour (voir generateAlbumFromCsvFiles).
   const csvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
-  const existingAlbumFile = allFiles.find(f=> f.name.toLowerCase() === targetName.toLowerCase())
-    || (criterion === "favori" ? allFiles.find(f=>/^Album\.csv$/i.test(f.name)) : null);
+  const existingAlbumMatch = findLatestAlbumCandidate(allFiles, targetName, criterion);
+  const existingAlbumFile = existingAlbumMatch ? existingAlbumMatch.file : null;
   if(!csvFiles.length){
     document.getElementById("hofStatus").textContent = "Aucun fichier Catalogue-AAAA.csv trouvé dans ce dossier ni ses sous-dossiers.";
     return;
   }
-  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion);
+  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : []);
 });
 
-async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
+async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates){
   const criterionLabel = criterion === "art" ? "Art" : "Favori";
   const targetName = hofAlbumFileName(criterion);
   const statusEl = document.getElementById("hofStatus");
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
   // rowsById : id (identifiant UNIQUE de chaque photo dans le catalogue,
-  // colonne "id") -> ligne CSV brute. Sert de base (pré-remplie depuis
+  // colonne "id") -> ligne CSV déjà réordonnée selon CSV_COLUMNS (voir
+  // remapRowToCanonical ci-dessous). Sert de base (pré-remplie depuis
   // l'Album.csv existant, s'il y en a un) puis de résultat final après
   // passage des catalogues.
   // IMPORTANT : la clé est "id", volontairement PAS "fileName" — un même
@@ -2409,8 +2434,26 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
   // remise à zéro). Fusionner par fileName mélangeait ces photos entre
   // elles : retirer le Favori d'une photo pouvait supprimer par erreur une
   // AUTRE photo de même nom, ou en laisser une en double.
+  //
+  // En-tête de sortie FIXE (CSV_COLUMNS), plutôt que recopiée du premier
+  // catalogue rencontré : des catalogues d'années différentes peuvent avoir
+  // été générés par des versions différentes d'Imago, avec un ordre de
+  // colonnes différent (ex. anciens catalogues avant le passage de "sous
+  // dossier" à "sousDossier", ou avant que la colonne "art" ne soit
+  // déplacée juste après "favori"). Recopier chaque ligne telle quelle sous
+  // un en-tête pris ailleurs désynchronisait silencieusement en-tête et
+  // valeurs pour les lignes venant d'un catalogue à l'ancien format.
+  // COLUMN_ALIASES permet de reconnaître ces anciens intitulés.
+  const normalizeCols = normalizeColNames;
+  const remapRowToCanonical = (cells, normalizedCols) =>
+    CSV_COLUMNS.map(name=>{
+      const idx = normalizedCols.indexOf(name);
+      return idx >= 0 ? (cells[idx] ?? "") : "";
+    });
+  const sousDossierOutIdx = CSV_COLUMNS.indexOf("sousDossier");
+  const header = CSV_COLUMNS.join(";");
+
   const rowsById = new Map();
-  let header = null, idIdx = -1;
   let recoveredCount = 0;
 
   if(existingAlbumFile){
@@ -2418,18 +2461,17 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
       const text = await existingAlbumFile.text();
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
       if(lines.length){
-        const cols = parseCsvLine(lines[0]);
-        header = lines[0];
-        idIdx = cols.indexOf("id");
+        const normalizedCols = normalizeCols(parseCsvLine(lines[0]));
+        const idIdx = normalizedCols.indexOf("id");
         if(idIdx >= 0){
           for(let i=1;i<lines.length;i++){
             const cells = parseCsvLine(lines[i]);
-            if(cells[idIdx]) rowsById.set(cells[idIdx], lines[i]);
+            const id = cells[idIdx];
+            if(id) rowsById.set(id, remapRowToCanonical(cells, normalizedCols).map(csvEscape).join(";"));
           }
           recoveredCount = rowsById.size;
         } else {
           console.warn(`« ${existingAlbumFile.name} » existant ignoré : pas de colonne "id" reconnue.`);
-          header = null;
         }
       }
     }catch(e){
@@ -2437,26 +2479,22 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
     }
   }
 
-  let totalFav = 0, skippedFiles = 0;
+  let totalFav = 0, skippedFiles = 0, anyValidCatalog = false;
   const seenIds = new Set(); // tout id rencontré dans un catalogue LU cette fois-ci, Favori ou pas — sert à purger les entrées périmées ci-dessous
   for(const file of files){
     try{
       const text = await file.text();
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
       if(lines.length < 1) continue;
-      const cols = parseCsvLine(lines[0]);
-      const favIdx = cols.indexOf(criterion);
-      const idColIdx = cols.indexOf("id");
-      const sousDossierIdx = cols.indexOf("sousDossier");
-      if(!header){
-        header = lines[0];
-        idIdx = idColIdx;
-      }
+      const normalizedCols = normalizeCols(parseCsvLine(lines[0]));
+      const favIdx = normalizedCols.indexOf(criterion);
+      const idColIdx = normalizedCols.indexOf("id");
       if(favIdx < 0 || idColIdx < 0){
         console.warn(`"${file.name}" ignoré : colonne "${criterion}" ou "id" non reconnue (fichier non généré par Imago, ou généré avant l'ajout de la rubrique "${criterion}" ?).`);
         skippedFiles++;
         continue;
       }
+      anyValidCatalog = true;
       // Nom du sous-dossier Année d'origine, déduit du nom du fichier
       // "Catalogue-AAAA.csv" — reporté dans "sousDossier" pour que celui-ci
       // devienne un chemin complet ET SANS AMBIGUÏTÉ depuis le dossier
@@ -2471,16 +2509,15 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
         if(!id) continue;
         seenIds.add(id);
         if(cells[favIdx] === "true"){
-          let outCells = cells;
-          if(sousDossierIdx >= 0 && yearLabel){
-            outCells = cells.slice();
-            const orig = outCells[sousDossierIdx] || "";
+          const outCells = remapRowToCanonical(cells, normalizedCols);
+          if(sousDossierOutIdx >= 0 && yearLabel){
+            const orig = outCells[sousDossierOutIdx] || "";
             // Évite le double préfixage (ex. "2022/2022/Été") quand le
             // dossier racine utilisé pour importer CE catalogue à l'époque
             // portait déjà le nom de l'année (cas le plus courant) : "orig"
             // commence alors déjà par yearLabel, inutile de le rajouter.
             const alreadyPrefixed = orig === yearLabel || orig.startsWith(`${yearLabel}/`);
-            outCells[sousDossierIdx] = alreadyPrefixed ? orig : (orig ? `${yearLabel}/${orig}` : yearLabel);
+            outCells[sousDossierOutIdx] = alreadyPrefixed ? orig : (orig ? `${yearLabel}/${orig}` : yearLabel);
           }
           rowsById.set(id, outCells.map(csvEscape).join(";")); // ajoute, ou met à jour si déjà présent depuis l'Album.csv existant
           totalFav++;
@@ -2493,7 +2530,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
       skippedFiles++;
     }
   }
-  if(!header){
+  if(!anyValidCatalog){
     statusEl.textContent = "Aucun catalogue lisible n'a été sélectionné.";
     return;
   }
@@ -2527,6 +2564,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion){
     (skippedFiles ? ` (${skippedFiles} fichier(s) ignoré(s), voir la console).` : "") +
     (staleCount ? ` — ${staleCount} entrée(s) périmée(s) de l'ancien Album purgée(s) (assurez-vous d'avoir choisi le dossier racine complet, avec TOUS les Catalogue-AAAA.csv, sans quoi les années absentes de cette sélection auraient été purgées à tort).` : "") +
     (skippedFiles ? ` Purge des entrées périmées désactivée cette fois (catalogue(s) ignoré(s) ci-dessus : on ne peut pas garantir que leurs entrées manquantes correspondent à de vrais retraits).` : "") +
+    ((staleDuplicates && staleDuplicates.length) ? ` ⚠️ ${staleDuplicates.length} autre(s) fichier(s) « ${targetName} »-like trouvé(s) dans ce dossier (${staleDuplicates.map(f=>f.name).join(", ")}) — c'est le plus récent qui a été récupéré comme base ; supprimez les anciens pour éviter toute confusion.` : "") +
     " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
 }
 
@@ -2545,19 +2583,19 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
   const criterionLabel = criterion === "art" ? "Art" : "Favori";
   const targetName = hofAlbumFileName(criterion);
-  const albumFile = allFiles.find(f=> f.name.toLowerCase() === targetName.toLowerCase())
-    || (criterion === "favori" ? allFiles.find(f=>/^Album\.csv$/i.test(f.name)) : null);
-  if(!albumFile){
+  const match = findLatestAlbumCandidate(allFiles, targetName, criterion);
+  if(!match){
     statusEl.textContent = `Aucun fichier « ${targetName} » trouvé dans ce dossier — générez-le d'abord (bouton « Générer » ci-dessus, rubrique « ${criterionLabel} »), déposez-le dans ce dossier, puis réessayez.`;
     return;
   }
+  const { file: albumFile, staleDuplicates } = match;
   statusEl.textContent = `Lecture de « ${albumFile.name} »…`;
   let wantedPathsByName, wantedNamesOnly, hasSousDossier;
   try{
     const text = await albumFile.text();
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
     if(lines.length < 2){ statusEl.textContent = `« ${albumFile.name} » ne contient aucune entrée.`; return; }
-    const header = parseCsvLine(lines[0]);
+    const header = normalizeColNames(parseCsvLine(lines[0]));
     const fileNameIdx = header.indexOf("fileName");
     const sousDossierIdx = header.indexOf("sousDossier");
     if(fileNameIdx < 0){ statusEl.textContent = `« ${albumFile.name} » n'a pas le format attendu (colonne fileName manquante).`; return; }
@@ -2664,7 +2702,8 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   await runHofImportWithProgress(matchedFiles, statusEl);
   closeModal("modalHOF");
   toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`
-    + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : ""));
+    + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : "")
+    + (staleDuplicates.length ? ` ⚠️ ${staleDuplicates.length} autre(s) version(s) de ce fichier trouvée(s) dans le dossier (${staleDuplicates.map(f=>f.name).join(", ")}) — la plus récente a été utilisée, mais supprimez les anciennes pour éviter toute confusion.` : ""));
 });
 
 /* Lance le pipeline d'import habituel (handleFilesSelected) SANS fermer la
