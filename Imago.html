@@ -822,6 +822,7 @@ button{font-family:inherit;}
       <span class="gallery-select-count hidden" id="gallerySelectCount"></span>
       <button class="btn hidden" id="btnGalleryShareSelection" title="Envoyer les images sélectionnées dans Drive" disabled>⇪ Partager</button>
       <button class="btn" id="btnSortOrderGallery" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
+      <button class="btn" id="btnSortByFileName" title="Trier les images et vidéos par nom de fichier">🔤 Tri par Nom de fichier</button>
       <button class="btn" id="btnGallerySelectToggle" title="Sélectionner plusieurs images">☑ Sélectionner</button>
     </div>
   </div>
@@ -912,7 +913,6 @@ button{font-family:inherit;}
       <h2 id="gridTitle">Images</h2>
       <span class="result-count" id="resultCount"></span>
       <button class="btn" id="btnSortOrder" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
-      <button class="btn" id="btnSortByFileName" title="Trier les images et vidéos par nom de fichier">🔤 Tri par Nom de fichier</button>
       <div class="zoom-controls">
         <button id="zoomOut" title="Diminuer">–</button>
         <input type="range" id="zoomRange" class="zoom-range" min="30" max="300" value="100">
@@ -1826,6 +1826,15 @@ function galleryPhotos(){
   return State.photos
     .filter(p=>!p.corbeille)
     .sort((a,b)=>{
+      // Tri par nom de fichier (ordre naturel/alphabétique) quand le bouton
+      // "🔤 Tri par Nom de fichier" de l'écran d'accueil est actif —
+      // s'applique aux images comme aux vidéos, indépendamment de
+      // State.sortOrder qui ne pilote alors plus que le sens (A→Z / Z→A).
+      if(State.sortByFileName){
+        let cmp = naturalCompare(a.fileName, b.fileName);
+        if(State.sortOrder === "antichrono") cmp = -cmp;
+        return cmp;
+      }
       const da = a.dateAchat || "", db = b.dateAchat || "";
       let cmp = da < db ? -1 : da > db ? 1 : naturalCompare(a.fileName, b.fileName);
       if(State.sortOrder === "antichrono") cmp = -cmp;
