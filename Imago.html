@@ -87,6 +87,7 @@ button{font-family:inherit;}
 .tool-btn:hover{background:#26392e; border-color:var(--copper);}
 .tool-btn .ic{font-size:15px;}
 .tool-btn.active{background:var(--copper); border-color:var(--copper); color:#171008;}
+#btnSortByFileName.active{background:var(--copper); border-color:var(--copper); color:#171008;}
 .tool-btn[disabled]{opacity:.35; cursor:not-allowed;}
 .tool-btn[disabled]:hover{background:var(--bg-panel-2); border-color:var(--line);}
 #btnInfo{background:#14432b; border-color:#1f5c3c;}
@@ -911,6 +912,7 @@ button{font-family:inherit;}
       <h2 id="gridTitle">Images</h2>
       <span class="result-count" id="resultCount"></span>
       <button class="btn" id="btnSortOrder" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
+      <button class="btn" id="btnSortByFileName" title="Trier les images et vidéos par nom de fichier">🔤 Tri par Nom de fichier</button>
       <div class="zoom-controls">
         <button id="zoomOut" title="Diminuer">–</button>
         <input type="range" id="zoomRange" class="zoom-range" min="30" max="300" value="100">
@@ -1484,6 +1486,7 @@ const State = {
   auteurs: [],         // {id, name, note}
   filters: {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""},
   sortOrder: localStorage.getItem("imago_sort_order") || "antichrono", // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien) — "antichrono" par défaut pour rester cohérent avec le tri historique de l'écran d'accueil (planche-contact triée du plus récent au plus ancien)
+  sortByFileName: localStorage.getItem("imago_sort_by_filename") === "1", // true : le visualiseur principal ("Main 90%") trie images/vidéos par ordre alphabétique du nom de fichier plutôt que par date (bouton "🔤 Tri par Nom de fichier")
   selectedId: null,
   viewIndex: 0,
   view: {scale:1},
@@ -1705,7 +1708,16 @@ function activePhotos(){
     }
     return true;
   }).sort((a,b)=>{
-    // Tri par date (dateAchat, format ISO donc comparable en chaîne),
+    // Tri par nom de fichier (ordre naturel/alphabétique) quand le bouton
+    // "🔤 Tri par Nom de fichier" du visualiseur principal ("Main 90%") est
+    // actif — s'applique aux images comme aux vidéos, indépendamment de
+    // State.sortOrder qui ne pilote alors plus que le sens (A→Z / Z→A).
+    if(State.sortByFileName){
+      let cmp = naturalCompare(a.fileName, b.fileName);
+      if(State.sortOrder === "antichrono") cmp = -cmp;
+      return cmp;
+    }
+    // Sinon, tri par date (dateAchat, format ISO donc comparable en chaîne),
     // sens piloté par State.sortOrder (bouton "Tri chronologique" de la
     // barre d'outils du visualiseur principal) ; à date égale (ou
     // manquante), on retombe sur le tri naturel du nom de fichier pour un
@@ -2178,6 +2190,26 @@ function toggleSortOrder(){
 }
 document.getElementById("btnSortOrder").addEventListener("click", toggleSortOrder);
 document.getElementById("btnSortOrderGallery").addEventListener("click", toggleSortOrder);
+
+/* Bouton "🔤 Tri par Nom de fichier" — visualiseur principal ("Main 90%")
+   uniquement. Bascule activePhotos() entre le tri par date (par défaut) et
+   le tri alphabétique/naturel sur le nom de fichier, pour images comme
+   vidéos. L'état actif est mémorisé d'une session à l'autre (comme
+   State.sortOrder) et affiché sur le bouton via la classe "active". */
+function updateSortByFileNameBtn(){
+  const btn = document.getElementById("btnSortByFileName");
+  btn.classList.toggle("active", State.sortByFileName);
+  btn.title = State.sortByFileName
+    ? "Tri par nom de fichier actif — cliquer pour revenir au tri par date"
+    : "Trier les images et vidéos par nom de fichier";
+}
+document.getElementById("btnSortByFileName").addEventListener("click", ()=>{
+  State.sortByFileName = !State.sortByFileName;
+  localStorage.setItem("imago_sort_by_filename", State.sortByFileName ? "1" : "0");
+  updateSortByFileNameBtn();
+  renderGrid();
+});
+updateSortByFileNameBtn();
 updateSortOrderBtn();
 function resetFilters(){
   State.filters = {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""};
