@@ -3523,7 +3523,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         titre: existingRow.titre || "",
-        dateAchat: existingRow.dateAchat || resolveDateAchat(file, exif, meta),
+        dateAchat: ensureDateAchatHasTime(existingRow.dateAchat, file) || resolveDateAchat(file, exif, meta),
         personnage: existingRow.personnage || "",
         lieu: existingRow.lieu || "",
         lieuCandidate: "",
@@ -3929,15 +3929,33 @@ function localDateTimeFromTimestamp(ms){
   const pad = n=> String(n).padStart(2,"0");
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+// Complète un horodatage "Date cliché" qui ne contiendrait que le jour (pas
+// l'heure — cas du format legacy "AAAA-MM-JJ", ou de l'heuristique de nom de
+// fichier parseFileNameMeta, qui ne peut par nature déduire que le jour)
+// avec l'heure de dernière modification du fichier — seule information
+// d'heure disponible en l'absence d'EXIF. SANS CETTE COMPLÉTION, TOUS LES
+// TRIS PAR "Date cliché" retomberaient, pour départager les photos d'un même
+// jour, sur l'ordre alphabétique du nom de fichier plutôt que sur l'ordre
+// chronologique réel — ce qui n'a rien à voir avec l'ordre de prise de vue
+// dès que les noms de fichiers ne sont pas déjà chronologiques (renommage,
+// export, copie…).
+function ensureDateAchatHasTime(dateAchat, file){
+  if(!dateAchat || /T\d{2}:\d{2}/.test(dateAchat)) return dateAchat; // vide, ou déjà horodaté : rien à faire
+  if(!file || !file.lastModified) return dateAchat; // aucune heure disponible : on garde le jour seul (mieux que rien)
+  const d = new Date(file.lastModified);
+  if(isNaN(d)) return dateAchat;
+  const pad = n=> String(n).padStart(2,"0");
+  return `${dateAchat}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 // Détermine le meilleur horodatage disponible pour un fichier importé, par
 // ordre de fiabilité décroissant : date/heure de prise de vue EXIF (photo
 // uniquement — c'est l'instant exact du déclenchement) > date déduite du nom
-// de fichier (heuristique, jour seul) > date de dernière modification du
-// fichier (heure locale) > maintenant.
+// de fichier (heuristique, jour seul — complétée ci-dessous avec l'heure du
+// fichier) > date de dernière modification du fichier (heure locale) > maintenant.
 function resolveDateAchat(file, exif, meta){
   const fromExif = exif && exifDateTimeToDateAchat(exif.dateTimeOriginal || exif.dateTime);
   if(fromExif) return fromExif;
-  if(meta && meta.dateAchat) return meta.dateAchat;
+  if(meta && meta.dateAchat) return ensureDateAchatHasTime(meta.dateAchat, file);
   if(file && file.lastModified) return localDateTimeFromTimestamp(file.lastModified);
   return localDateTimeFromTimestamp(Date.now());
 }
