@@ -1028,9 +1028,16 @@ button{font-family:inherit;}
       </div>
 
       <p class="drive-note" style="margin-top:18px;">
-        <b>3) Partager</b> — envoie vers Google Drive le fichier Album ainsi que les images/vidéos chargées à l'étape 2) ci-dessus, dans le dossier Drive que vous choisissez au moment de cliquer (c'est vous qui désignez la destination, un simple dossier Drive parmi les vôtres). Nécessite d'avoir fait « Afficher » au préalable dans cette session, et d'être connecté à Drive (menu ☰).<br>
-        🏷️ Pour les JPEG, l'Appareil, le Lieu et les coordonnées de la rubrique Map connus du catalogue sont incrustés directement dans le fichier (EXIF) avant l'envoi : ces infos restent donc visibles même hors d'Imago (Drive, Google Photos…), pas seulement dans Album-Favori.csv/Album-Art.csv. Les vidéos (.mp4) sont, elles, transférées telles quelles.<br>
+        <b>3) Partager</b> — envoie le fichier Album ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers la destination choisie ci-dessous : soit un dossier Google Drive (c'est vous qui le désignez au moment de cliquer), soit un dossier local sur votre ordinateur — disque C: ou clé USB par exemple.<br>
+        🏷️ Pour les JPEG, l'Appareil, le Lieu et les coordonnées de la rubrique Map connus du catalogue sont incrustés directement dans le fichier (EXIF) avant l'envoi, quelle que soit la destination : ces infos restent donc visibles même hors d'Imago (Drive, Google Photos, explorateur de fichiers…), pas seulement dans Album-Favori.csv/Album-Art.csv. Les vidéos (.mp4) sont, elles, transférées telles quelles.<br>
         ⚠️ Pensez à déplacer vous-même le fichier Album fraîchement régénéré (étape 1) depuis votre dossier Téléchargements vers le dossier de vos photos <em>avant</em> de faire « Afficher » — sans ce déplacement manuel, « Afficher » (et donc ce partage) continuerait à utiliser l'ancienne version du fichier.
+      </p>
+      <div style="display:flex; gap:16px; margin:6px 0 8px; font-size:13px;">
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofShareDest" value="drive" checked> ☁️ Google Drive</label>
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofShareDest" value="local"> 💾 Dossier local (disque C:, clé USB…)</label>
+      </div>
+      <p class="drive-note" id="hofShareLocalNote" style="margin:0 0 8px; display:none;">
+        Ouvre le sélecteur de dossier de votre système : choisissez-y n'importe quel emplacement accessible depuis l'ordinateur (disque C:, clé USB branchée, disque réseau…). Nécessite un navigateur compatible (Chrome ou Edge sur ordinateur) ; ni connexion Drive ni compte Google requis pour cette option.
       </p>
       <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Choisir le dossier Drive et partager…</button>
 
@@ -2848,13 +2855,103 @@ async function runHofImportWithProgress(matchedFiles, statusEl){
    ----------------------------------------------------------------- */
 document.getElementById("btnHOFShare").addEventListener("click", ()=>{
   const statusEl = document.getElementById("hofStatus");
-  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (menu ☰ → Connexion)."); return; }
+  const dest = document.querySelector('input[name="hofShareDest"]:checked').value;
   if(!hofShareData || !hofShareData.mediaFiles.length){
     statusEl.textContent = "Faites d'abord « Afficher » (étape 2 ci-dessus) dans cette session : c'est ce qu'elle charge qui sera partagé.";
     return;
   }
+  if(dest === "local"){
+    shareHofToLocalFolder();
+    return;
+  }
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (menu ☰ → Connexion)."); return; }
   openDriveFolderPicker();
 });
+
+// Bascule le libellé du bouton "3) Partager" et l'affichage de la note
+// dédiée selon la destination choisie (Google Drive, historique, ou dossier
+// local ajouté ensuite) — purement cosmétique, la logique de branchement
+// réelle est dans le listener de clic ci-dessus.
+document.querySelectorAll('input[name="hofShareDest"]').forEach(radio=>{
+  radio.addEventListener("change", ()=>{
+    const dest = document.querySelector('input[name="hofShareDest"]:checked').value;
+    document.getElementById("btnHOFShare").textContent = dest === "local"
+      ? "💾 Choisir un dossier local et enregistrer…"
+      : "☁️ Choisir le dossier Drive et partager…";
+    document.getElementById("hofShareLocalNote").style.display = dest === "local" ? "" : "none";
+  });
+});
+
+/* ---------------------------------------------------------------------
+   3) PARTAGER — variante "Dossier local (disque C:, clé USB…)" : alter-
+   native à l'envoi Google Drive ci-dessus, pour qui préfère (ou doit, en
+   l'absence de compte/connexion Google) enregistrer l'Album et les
+   fichiers directement sur un support accessible depuis l'ordinateur.
+   Repose sur la File System Access API (showDirectoryPicker), qui ouvre le
+   sélecteur de dossier natif du système : l'utilisateur peut y désigner
+   n'importe quel emplacement — disque C:, clé USB branchée, disque réseau,
+   etc. — exactement comme il choisirait un dossier Drive à l'étape
+   équivalente. Non disponible sur tous les navigateurs (Chrome/Edge
+   desktop uniquement à ce jour) : on le signale clairement si absent,
+   plutôt que d'échouer silencieusement.
+   ----------------------------------------------------------------- */
+async function shareHofToLocalFolder(){
+  const statusEl = document.getElementById("hofStatus");
+  const shareBtn = document.getElementById("btnHOFShare");
+  if(typeof window.showDirectoryPicker !== "function"){
+    statusEl.textContent = "Ce navigateur ne permet pas de choisir un dossier local (fonctionnalité disponible sur Chrome ou Edge, sur ordinateur) — utilisez Google Drive, ou changez de navigateur.";
+    return;
+  }
+  let dirHandle;
+  try{
+    dirHandle = await window.showDirectoryPicker({ id: "imago-hof-local-share", mode: "readwrite" });
+  }catch(e){
+    if(e && e.name === "AbortError") return; // sélection annulée par l'utilisateur : rien à signaler
+    statusEl.textContent = `Impossible d'ouvrir le sélecteur de dossier : ${e.message}`;
+    return;
+  }
+  const { albumFile, mediaFiles, metaByFile } = hofShareData;
+  shareBtn.disabled = true;
+  try{
+    statusEl.textContent = `Enregistrement de « ${albumFile.name} » dans « ${dirHandle.name} »…`;
+    await writeFileToLocalDirectory(dirHandle, albumFile.name, albumFile);
+
+    const total = mediaFiles.length;
+    let done = 0;
+    for(const file of mediaFiles){
+      // Même incrustation EXIF (Appareil/Lieu/Map) que pour l'envoi Drive
+      // ci-dessus, pour que ces infos restent lisibles hors d'Imago quel
+      // que soit le support de destination.
+      let content = file;
+      if(/\.jpe?g$/i.test(file.name)){
+        try{ content = (await buildJpegWithCatalogExif(file, metaByFile.get(file))) || file; }
+        catch(e){ console.warn(`[Imago/HOF] Incrustation EXIF impossible pour « ${file.name} », enregistrement inchangé :`, e); }
+      }
+      await writeFileToLocalDirectory(dirHandle, file.name, content);
+      done++;
+      statusEl.textContent = `${done}/${total} — ${file.name}`;
+    }
+    shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès (comme pour Drive)
+    const msg = `« ${dirHandle.name} » : « ${albumFile.name} » et ${total} fichier(s) enregistrés localement.`;
+    statusEl.textContent = msg;
+    toast(`💾 ${msg}`);
+  }catch(err){
+    statusEl.textContent = `Enregistrement local impossible : ${err.message}`;
+  }finally{
+    shareBtn.disabled = false;
+  }
+}
+
+// Écrit (ou remplace) un fichier dans un dossier local obtenu via
+// showDirectoryPicker(). "content" peut être un File/Blob (album CSV,
+// vidéo, JPEG non modifié) ou un Uint8Array (JPEG réincrusté en EXIF) :
+// FileSystemWritableFileStream.write() accepte les deux tels quels.
+async function writeFileToLocalDirectory(dirHandle, name, content){
+  const fileHandle = await dirHandle.getFileHandle(name, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(content);
+  await writable.close();
+}
 
 function fileToBase64(file){
   return new Promise((resolve, reject)=>{
