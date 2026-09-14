@@ -1064,6 +1064,21 @@ button{font-family:inherit;}
         </div>
       </div>
       <p class="drive-note" id="driveFolderPickerStatus" style="margin-top:10px;"></p>
+      <div id="driveFolderPickerFailedWrap" class="hidden" style="margin-top:8px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <p class="drive-note" id="driveFolderPickerFailedSummary" style="margin:0;"></p>
+          <button class="btn" id="btnDriveFolderPickerCopyFailed" style="flex:none; padding:4px 10px; font-size:12px;">📋 Copier la liste</button>
+        </div>
+        <textarea id="driveFolderPickerFailedList" readonly style="width:100%; height:110px; margin-top:6px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;"></textarea>
+      </div>
+      <div id="driveFolderPickerOrphanWrap" class="hidden" style="margin-top:8px; padding-top:8px; border-top:1px solid var(--line);">
+        <p class="drive-note" id="driveFolderPickerOrphanSummary" style="margin:0 0 6px;"></p>
+        <textarea id="driveFolderPickerOrphanList" readonly style="width:100%; height:90px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;"></textarea>
+        <div style="display:flex; gap:8px; margin-top:6px;">
+          <button class="btn" id="btnDriveFolderPickerKeepOrphans" style="flex:1;">Conserver ces fichiers</button>
+          <button class="btn" id="btnDriveFolderPickerDeleteOrphans" style="flex:1; background:var(--danger); border-color:var(--danger);">🗑️ Supprimer ces fichiers de Drive</button>
+        </div>
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalDriveFolderPicker">Annuler</button>
@@ -2918,23 +2933,47 @@ async function shareHofToLocalFolder(){
 
     const total = mediaFiles.length;
     let done = 0;
+    // Comme pour l'envoi Drive : un échec sur un fichier ne doit pas
+    // interrompre les suivants — on le consigne et on continue.
+    const failed = [];
     for(const file of mediaFiles){
-      // Même incrustation EXIF (Appareil/Lieu/Map) que pour l'envoi Drive
-      // ci-dessus, pour que ces infos restent lisibles hors d'Imago quel
-      // que soit le support de destination.
-      let content = file;
-      if(/\.jpe?g$/i.test(file.name)){
-        try{ content = (await buildJpegWithCatalogExif(file, metaByFile.get(file))) || file; }
-        catch(e){ console.warn(`[Imago/HOF] Incrustation EXIF impossible pour « ${file.name} », enregistrement inchangé :`, e); }
+      try{
+        // Même incrustation EXIF (Appareil/Lieu/Map) que pour l'envoi Drive
+        // ci-dessus, pour que ces infos restent lisibles hors d'Imago quel
+        // que soit le support de destination.
+        let content = file;
+        if(/\.jpe?g$/i.test(file.name)){
+          try{ content = (await buildJpegWithCatalogExif(file, metaByFile.get(file))) || file; }
+          catch(e){ console.warn(`[Imago/HOF] Incrustation EXIF impossible pour « ${file.name} », enregistrement inchangé :`, e); }
+        }
+        await writeFileToLocalDirectory(dirHandle, file.name, content);
+        done++;
+        statusEl.textContent = `${done}/${total} — ${file.name}${failed.length ? ` (${failed.length} échec(s))` : ""}`;
+      }catch(e){
+        failed.push({name: file.name, reason: e && e.message ? e.message : String(e)});
+        done++;
+        statusEl.textContent = `${done}/${total} — ${file.name} — échec (${failed.length} échec(s))`;
+        console.warn(`[Imago/HOF] Enregistrement local impossible pour « ${file.name} » :`, e);
       }
-      await writeFileToLocalDirectory(dirHandle, file.name, content);
-      done++;
-      statusEl.textContent = `${done}/${total} — ${file.name}`;
     }
-    shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès (comme pour Drive)
-    const msg = `« ${dirHandle.name} » : « ${albumFile.name} » et ${total} fichier(s) enregistrés localement.`;
+    const okCount = total - failed.length;
+    const msg = failed.length
+      ? `« ${dirHandle.name} » : « ${albumFile.name} » et ${okCount} fichier(s) enregistrés, ⚠️ ${failed.length} échec(s) sur ${total} — détail (liste complète) dans la console (F12).`
+      : `« ${dirHandle.name} » : « ${albumFile.name} » et ${total} fichier(s) enregistrés localement.`;
     statusEl.textContent = msg;
+    if(failed.length){
+      shareBtn.classList.remove("done");
+      console.warn(`[Imago/HOF] ${failed.length} fichier(s) non enregistrés sur ${total} :`, failed);
+    } else {
+      shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès (comme pour Drive)
+    }
     toast(`💾 ${msg}`);
+
+    // Fichiers présents dans ce dossier local lors d'un partage précédent
+    // mais absents de la dernière version de l'Album (même logique que
+    // orphanMediaFilesInDriveFolder côté Drive) : proposés à la suppression,
+    // jamais supprimés automatiquement.
+    await offerDeleteLocalOrphans(dirHandle, mediaFiles, albumFile.name, statusEl);
   }catch(err){
     statusEl.textContent = `Enregistrement local impossible : ${err.message}`;
   }finally{
@@ -2951,6 +2990,46 @@ async function writeFileToLocalDirectory(dirHandle, name, content){
   const writable = await fileHandle.createWritable();
   await writable.write(content);
   await writable.close();
+}
+
+// Repère, dans un dossier local déjà utilisé pour un partage HOF précédent,
+// les fichiers qui ne sont ni un Album-*.csv ni référencés par la dernière
+// version de mediaFiles — typiquement une photo/vidéo qui a perdu son ⭐
+// Favori (ou son 🎨 Art) depuis le dernier partage — puis, après confirmation
+// explicite, les supprime (dirHandle.removeEntry). Même garde-fou d'extension
+// que côté Drive (HOF_MEDIA_EXT_RE) pour ne jamais toucher un fichier qui ne
+// serait pas un média envoyé par ce flux.
+async function offerDeleteLocalOrphans(dirHandle, mediaFiles, albumFileName, statusEl){
+  const currentNames = new Set(mediaFiles.map(f=> f.name));
+  const orphanNames = [];
+  for await (const [name, handle] of dirHandle.entries()){
+    if(handle.kind !== "file") continue;
+    if(/\.csv$/i.test(name)) continue; // jamais un Album-*.csv, quelle que soit la rubrique
+    if(currentNames.has(name)) continue;
+    if(!HOF_MEDIA_EXT_RE.test(name)) continue;
+    orphanNames.push(name);
+  }
+  if(!orphanNames.length) return;
+  const doDelete = confirm(
+    `🗑️ ${orphanNames.length} fichier(s) présent(s) dans « ${dirHandle.name} » ne sont plus référencés par « ${albumFileName} » ` +
+    `(retirés des Favoris/Art depuis le dernier partage, ou renommés) :\n\n${orphanNames.join("\n")}\n\n` +
+    `Les supprimer de ce dossier ? (définitif — pas de corbeille locale, contrairement à Drive)`
+  );
+  if(!doDelete) return;
+  let deleted = 0;
+  const deleteFailed = [];
+  for(const name of orphanNames){
+    try{ await dirHandle.removeEntry(name); deleted++; }
+    catch(e){
+      deleteFailed.push({name, reason: e && e.message ? e.message : String(e)});
+      console.warn(`[Imago/HOF] Suppression locale impossible pour « ${name} » :`, e);
+    }
+  }
+  const msg = deleteFailed.length
+    ? `${deleted} fichier(s) supprimé(s), ⚠️ ${deleteFailed.length} échec(s) de suppression (détail console).`
+    : `🗑️ ${deleted} fichier(s) obsolète(s) supprimé(s) de « ${dirHandle.name} ».`;
+  statusEl.textContent = msg;
+  toast(msg);
 }
 
 function fileToBase64(file){
@@ -3256,9 +3335,52 @@ async function uploadOrUpdateToDriveFolder({fileId, name, mimeType, folderId, co
   const data = await res.json();
   return data.id;
 }
+// Met un fichier Drive à la corbeille (récupérable depuis Drive, contrairement
+// à une suppression définitive) — utilisé pour retirer, du dossier de
+// destination de l'étape 3) Partager, les images/vidéos qui référençaient
+// une ancienne version d'Album-Favori.csv/Album-Art.csv mais n'apparaissent
+// plus dans la dernière (voir orphanMediaFilesInDriveFolder ci-dessous).
+async function driveTrashFile(fileId){
+  await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({trashed:true})
+  });
+}
+// Extensions reconnues comme "média Hall of fame" : sert de garde-fou pour
+// ne jamais proposer la suppression d'un fichier qui ne serait pas une
+// image/vidéo envoyée par ce flux (un document quelconque déposé à la main
+// dans le même dossier Drive, par exemple) même s'il ne figure pas dans la
+// dernière liste de mediaFiles.
+const HOF_MEDIA_EXT_RE = /\.(jpe?g|png|heic|heif|mp4|mov|m4v)$/i;
+// Calcule, parmi les fichiers déjà présents dans le dossier Drive choisi
+// (existingIds, déjà interrogé pour savoir quoi ignorer/mettre à jour), ceux
+// qui ne sont RECONDUITS ni comme fichier Album (peu importe la rubrique :
+// Album-Favori.csv ET Album-Art.csv sont toujours épargnés, au cas où les
+// deux rubriques partageraient le même dossier de destination) ni comme
+// image/vidéo de la dernière version chargée à l'étape 2) — typiquement une
+// photo qui a perdu son ⭐ Favori (ou son 🎨 Art) depuis le dernier partage.
+function orphanMediaFilesInDriveFolder(existingIds, mediaFiles){
+  const currentNames = new Set(mediaFiles.map(f=> f.name));
+  const orphans = [];
+  existingIds.forEach((id, name)=>{
+    if(/\.csv$/i.test(name)) return; // jamais un Album-*.csv, quelle que soit la rubrique
+    if(currentNames.has(name)) return; // toujours référencé : à garder
+    if(!HOF_MEDIA_EXT_RE.test(name)) return; // pas un type de fichier envoyé par ce flux : on n'y touche pas
+    orphans.push({name, id});
+  });
+  return orphans;
+}
 /* ---- Navigateur de dossiers Drive (choix de la destination) ---- */
 // path : pile des dossiers traversés, du plus haut (racine) au courant.
 let driveFolderPicker = { path: [{id:"root", name:"Mon Drive"}] };
+// Fichiers obsolètes détectés en fin de partage (voir orphanMediaFilesInDriveFolder)
+// + dossier Drive concerné — mémorisés ici pour être exploités par les
+// boutons "Conserver"/"Supprimer" ci-dessous, cliqués après coup par
+// l'utilisateur (donc en dehors de la portée de la fonction async qui les a
+// calculés).
+let pendingDriveOrphans = [];
+let pendingDriveOrphanFolder = null;
 
 function openDriveFolderPicker(){
   driveFolderPicker.path = [{id:"root", name:"Mon Drive"}];
@@ -3360,6 +3482,10 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
   const confirmBtn = document.getElementById("btnDriveFolderPickerConfirm");
   const progressWrap = document.getElementById("driveFolderPickerProgressWrap");
   const progressBar = document.getElementById("driveFolderPickerProgressBar");
+  const failedWrap = document.getElementById("driveFolderPickerFailedWrap");
+  const orphanWrap = document.getElementById("driveFolderPickerOrphanWrap");
+  failedWrap.classList.add("hidden"); // liste d'une éventuelle tentative précédente : masquée tant que celle-ci n'a pas conclu
+  orphanWrap.classList.add("hidden");
   if(!hofShareData){ statusEl.textContent = "Faites d'abord « Afficher » (étape 2)."; return; }
   const current = driveFolderPicker.path[driveFolderPicker.path.length - 1];
   const { albumFile, mediaFiles, metaByFile } = hofShareData;
@@ -3386,9 +3512,18 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
 
     const total = mediaFiles.length;
     let done = 0, uploaded = 0, skipped = 0;
+    // Fichiers dont l'envoi a échoué (lecture impossible, erreur réseau/API
+    // Drive…) : contrairement à uploaded/skipped, on ne les compte plus dans
+    // "à jour" et on retient le pourquoi pour la liste affichée en fin
+    // d'étape. Un échec sur un fichier ne doit plus interrompre les
+    // suivants (voir le try/catch PAR FICHIER ci-dessous) — avant ce
+    // correctif, la première erreur stoppait net tout le reste du lot,
+    // ce qui explique un envoi qui s'arrête bien avant le total attendu
+    // sans qu'aucun des fichiers restants n'ait même été tenté.
+    const failed = [];
     const updateProgress = (label)=>{
       progressBar.style.width = total ? `${Math.round((done/total)*100)}%` : "0%";
-      statusEl.textContent = `${done}/${total} — ${label}${skipped ? ` (${skipped} déjà présent(s), ignoré(s))` : ""}`;
+      statusEl.textContent = `${done}/${total} — ${label}${skipped ? ` (${skipped} déjà présent(s), ignoré(s))` : ""}${failed.length ? ` (${failed.length} échec(s))` : ""}`;
     };
     for(const file of mediaFiles){
       if(existingIds.has(file.name)){
@@ -3399,44 +3534,150 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
         updateProgress(`${file.name} — déjà présent, ignoré`);
         continue;
       }
-      // Pour un JPEG dont le catalogue connaît l'Appareil, le Lieu ou des
-      // coordonnées Map : on incruste ces infos en EXIF avant l'envoi, pour
-      // qu'elles restent visibles même hors d'Imago (voir
-      // buildJpegWithCatalogExif). Sans correspondance exploitable (vidéo,
-      // ou aucune des trois infos disponible), le fichier part inchangé,
-      // comme avant.
-      let base64;
-      if(/\.jpe?g$/i.test(file.name)){
-        let withExif = null;
-        try{ withExif = await buildJpegWithCatalogExif(file, metaByFile.get(file)); }
-        catch(e){ console.warn(`[Imago/HOF] Incrustation EXIF impossible pour « ${file.name} », envoi inchangé :`, e); }
-        base64 = withExif ? await uint8ArrayToBase64(withExif) : await fileToBase64(file);
-      } else {
-        base64 = await fileToBase64(file);
+      try{
+        // Pour un JPEG dont le catalogue connaît l'Appareil, le Lieu ou des
+        // coordonnées Map : on incruste ces infos en EXIF avant l'envoi, pour
+        // qu'elles restent visibles même hors d'Imago (voir
+        // buildJpegWithCatalogExif). Sans correspondance exploitable (vidéo,
+        // ou aucune des trois infos disponible), le fichier part inchangé,
+        // comme avant.
+        let base64;
+        if(/\.jpe?g$/i.test(file.name)){
+          let withExif = null;
+          try{ withExif = await buildJpegWithCatalogExif(file, metaByFile.get(file)); }
+          catch(e){ console.warn(`[Imago/HOF] Incrustation EXIF impossible pour « ${file.name} », envoi inchangé :`, e); }
+          base64 = withExif ? await uint8ArrayToBase64(withExif) : await fileToBase64(file);
+        } else {
+          base64 = await fileToBase64(file);
+        }
+        await uploadOrUpdateToDriveFolder({
+          fileId: null,
+          name: file.name,
+          mimeType: guessMimeType(file),
+          folderId: current.id,
+          content: base64,
+          isBase64: true
+        });
+        uploaded++;
+        done++;
+        updateProgress(file.name);
+      }catch(e){
+        // On journalise et on RETIENT l'échec, mais on continue avec le
+        // fichier suivant plutôt que d'abandonner tout le reste du lot.
+        failed.push({name: file.name, reason: e && e.message ? e.message : String(e)});
+        done++;
+        updateProgress(`${file.name} — échec, ignoré`);
+        console.warn(`[Imago/HOF] Envoi Drive impossible pour « ${file.name} » :`, e);
       }
-      await uploadOrUpdateToDriveFolder({
-        fileId: null,
-        name: file.name,
-        mimeType: guessMimeType(file),
-        folderId: current.id,
-        content: base64,
-        isBase64: true
-      });
-      uploaded++;
-      done++;
-      updateProgress(file.name);
     }
     progressBar.style.width = "100%";
-    shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès
-    const msg = `« ${current.name} » : « ${albumFile.name} » à jour, ${uploaded} fichier(s) envoyé(s)${skipped ? `, ${skipped} déjà présent(s) ignoré(s)` : ""} sur ${total}.`;
+    // Fichiers présents dans ce dossier Drive lors d'un partage précédent
+    // mais qui ne sont plus référencés par la dernière version de l'Album
+    // (ex. : une photo qui a perdu son ⭐ Favori / son 🎨 Art depuis) — voir
+    // orphanMediaFilesInDriveFolder. Affiché pour décision de l'utilisateur,
+    // jamais supprimé automatiquement.
+    const orphans = orphanMediaFilesInDriveFolder(existingIds, mediaFiles);
+    pendingDriveOrphans = orphans;
+    pendingDriveOrphanFolder = current;
+    const msg = `« ${current.name} » : « ${albumFile.name} » à jour, ${uploaded} fichier(s) envoyé(s)${skipped ? `, ${skipped} déjà présent(s) ignoré(s)` : ""}${failed.length ? `, ⚠️ ${failed.length} échec(s)` : ""} sur ${total}.`;
     statusEl.textContent = msg;
     hofStatusEl.textContent = msg;
-    toast(`☁️ ${msg}`);
-    closeModal("modalDriveFolderPicker");
+    if(orphans.length){
+      document.getElementById("driveFolderPickerOrphanSummary").textContent =
+        `🗑️ ${orphans.length} fichier(s) présent(s) dans « ${current.name} » ne sont plus référencés par « ${albumFile.name} » (retirés des Favoris/Art depuis le dernier partage, ou tout simplement renommés) :`;
+      document.getElementById("driveFolderPickerOrphanList").value = orphans.map(o=> o.name).join("\n");
+      orphanWrap.classList.remove("hidden");
+    }
+    if(failed.length){
+      // Échec(s) : la modale reste OUVERTE (pas de closeModal) plutôt que de
+      // se fermer comme en cas de succès total — le bouton "Téléverser ici"
+      // reste disponible pour rejouer l'envoi, ce qui ne retentera alors que
+      // les fichiers manquants (les autres sont désormais dans existingIds).
+      shareBtn.classList.remove("done");
+      document.getElementById("driveFolderPickerFailedSummary").textContent =
+        `${failed.length} fichier(s) non transmis sur ${total} — corrigez si possible (accès au fichier, connexion…) puis cliquez de nouveau sur « Téléverser ici » pour ne réessayer que ceux-ci :`;
+      document.getElementById("driveFolderPickerFailedList").value =
+        failed.map(f=> `${f.name} — ${f.reason}`).join("\n");
+      failedWrap.classList.remove("hidden");
+      console.warn(`[Imago/HOF] ${failed.length} fichier(s) non transmis sur ${total} :`, failed);
+      toast(`⚠️ ${msg}`);
+    } else {
+      shareBtn.classList.add("done"); // fond vert : étape 3 terminée avec succès
+      toast(`☁️ ${msg}`);
+      // Ne se ferme automatiquement que s'il n'y a RIEN à trancher : ni
+      // échec à réessayer, ni fichier obsolète à garder/supprimer.
+      if(!orphans.length) closeModal("modalDriveFolderPicker");
+    }
   }catch(err){
     statusEl.textContent = `Partage impossible : ${err.message}`;
   }finally{
     confirmBtn.disabled = false;
+  }
+});
+document.getElementById("btnDriveFolderPickerCopyFailed").addEventListener("click", async ()=>{
+  const ta = document.getElementById("driveFolderPickerFailedList");
+  try{
+    await navigator.clipboard.writeText(ta.value);
+    toast("Liste copiée dans le presse-papiers.");
+  }catch(e){
+    // Repli si l'API Presse-papiers est indisponible (contexte non sécurisé,
+    // permission refusée…) : sélectionne le texte pour un copier manuel
+    // (Ctrl/Cmd+C) plutôt que d'échouer silencieusement.
+    ta.focus();
+    ta.select();
+    toast("Presse-papiers indisponible : texte sélectionné, copiez avec Ctrl/Cmd+C.");
+  }
+});
+
+document.getElementById("btnDriveFolderPickerKeepOrphans").addEventListener("click", ()=>{
+  // L'utilisateur choisit explicitement de NE PAS supprimer ces fichiers ce
+  // coup-ci (peut-être volontairement conservés sur Drive) : on referme
+  // juste cette section, sans y retoucher. Un futur partage reproposera la
+  // même liste tant qu'ils n'apparaîtront pas dans une version plus récente
+  // de l'Album ou ne seront pas supprimés manuellement sur Drive.
+  document.getElementById("driveFolderPickerOrphanWrap").classList.add("hidden");
+  pendingDriveOrphans = [];
+});
+
+document.getElementById("btnDriveFolderPickerDeleteOrphans").addEventListener("click", async ()=>{
+  const orphans = pendingDriveOrphans;
+  if(!orphans.length) return;
+  if(!confirm(`Mettre à la corbeille Drive ${orphans.length} fichier(s) qui ne sont plus référencés par « ${hofShareData ? hofShareData.albumFile.name : "l'Album"} » ?\n\n${orphans.map(o=>o.name).join("\n")}\n\nIls resteront récupérables depuis la corbeille Google Drive.`)){
+    return;
+  }
+  const statusEl = document.getElementById("driveFolderPickerStatus");
+  const deleteBtn = document.getElementById("btnDriveFolderPickerDeleteOrphans");
+  const keepBtn = document.getElementById("btnDriveFolderPickerKeepOrphans");
+  deleteBtn.disabled = true;
+  keepBtn.disabled = true;
+  let done = 0, deleted = 0;
+  const deleteFailed = [];
+  for(const orphan of orphans){
+    try{
+      await driveTrashFile(orphan.id);
+      deleted++;
+    }catch(e){
+      deleteFailed.push({name: orphan.name, reason: e && e.message ? e.message : String(e)});
+      console.warn(`[Imago/HOF] Mise à la corbeille impossible pour « ${orphan.name} » :`, e);
+    }
+    done++;
+    statusEl.textContent = `Suppression : ${done}/${orphans.length}…`;
+  }
+  deleteBtn.disabled = false;
+  keepBtn.disabled = false;
+  const msg = deleteFailed.length
+    ? `${deleted} fichier(s) mis à la corbeille Drive, ⚠️ ${deleteFailed.length} échec(s) (détail console).`
+    : `🗑️ ${deleted} fichier(s) obsolète(s) mis à la corbeille Drive.`;
+  statusEl.textContent = msg;
+  toast(msg);
+  if(deleteFailed.length){
+    document.getElementById("driveFolderPickerOrphanSummary").textContent =
+      `${deleteFailed.length} suppression(s) ont échoué — nouvel essai possible :`;
+    document.getElementById("driveFolderPickerOrphanList").value = deleteFailed.map(f=> `${f.name} — ${f.reason}`).join("\n");
+    pendingDriveOrphans = deleteFailed.map(f=> orphans.find(o=> o.name === f.name)).filter(Boolean);
+  } else {
+    document.getElementById("driveFolderPickerOrphanWrap").classList.add("hidden");
+    pendingDriveOrphans = [];
   }
 });
 
