@@ -6621,9 +6621,35 @@ function openLoupe(id){
   armSlideshowHint();
 }
 function openDiaporama(id){
+  // Le diaporama (contrairement à la Loupe) n'affiche que les photos : les
+  // vidéos restent sélectionnables en ⭐ Favori / 🎨 Art, toujours incluses
+  // dans les sauvegardes Drive/USB (étape 3 de la modale Hall of fame),
+  // mais ne sont plus montrées ici — pas de lecture automatique adaptée à
+  // un déroulé minuté façon diaporama.
+  const withoutVideos = activePhotos().filter(p=> !p.isVideo);
+  if(!withoutVideos.length){
+    toast("Aucune photo à afficher en diaporama (uniquement des vidéos dans cette sélection).");
+    return;
+  }
   State.slideshowMode = "diaporama";
-  State.slideshowList = activePhotos();
-  State.slideshowIndex = Math.max(0, State.slideshowList.findIndex(p=>p.id===id));
+  State.slideshowList = withoutVideos;
+  let idx = State.slideshowList.findIndex(p=>p.id===id);
+  if(idx < 0){
+    // Point de départ demandé sur une vidéo (ou introuvable) : démarre sur
+    // la photo la plus proche dans l'ordre d'affichage habituel plutôt que
+    // d'échouer — on cherche d'abord après cette position, puis avant.
+    const fullList = activePhotos();
+    const originalIdx = fullList.findIndex(p=>p.id===id);
+    if(originalIdx >= 0){
+      for(let i=originalIdx; i<fullList.length && idx<0; i++){
+        if(!fullList[i].isVideo) idx = State.slideshowList.findIndex(p=>p.id===fullList[i].id);
+      }
+      for(let i=originalIdx; i>=0 && idx<0; i--){
+        if(!fullList[i].isVideo) idx = State.slideshowList.findIndex(p=>p.id===fullList[i].id);
+      }
+    }
+  }
+  State.slideshowIndex = Math.max(0, idx);
   resetSlideTransforms();
   buildSlideshowRail();
   showSlideshowFrame(true);
