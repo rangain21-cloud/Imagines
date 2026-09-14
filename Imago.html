@@ -1079,6 +1079,14 @@ button{font-family:inherit;}
           <button class="btn" id="btnDriveFolderPickerDeleteOrphans" style="flex:1; background:var(--danger); border-color:var(--danger);">🗑️ Supprimer ces fichiers de Drive</button>
         </div>
       </div>
+      <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--line);">
+        <button class="btn" id="btnDriveFolderPickerScanDuplicates" style="width:100%;">🧹 Détecter les doublons dans ce dossier…</button>
+        <div id="driveFolderPickerDuplicateWrap" class="hidden" style="margin-top:8px;">
+          <p class="drive-note" id="driveFolderPickerDuplicateSummary" style="margin:0 0 6px;"></p>
+          <textarea id="driveFolderPickerDuplicateList" readonly style="width:100%; height:90px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;"></textarea>
+          <button class="btn" id="btnDriveFolderPickerDeleteDuplicates" style="width:100%; margin-top:6px; background:var(--danger); border-color:var(--danger);">🗑️ Supprimer les doublons (garder le plus récent de chaque nom)</button>
+        </div>
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalDriveFolderPicker">Annuler</button>
@@ -3334,15 +3342,56 @@ async function ensureNamedDriveSubfolder(name, parentId){
   const created = await createRes.json();
   return created.id;
 }
+// Liste TOUS les fichiers d'un dossier Drive (pas seulement les 1000
+// premiers) : l'API Drive plafonne chaque réponse à pageSize (1000 au
+// maximum) et fournit un nextPageToken tant qu'il reste des résultats — sans
+// boucler dessus, un dossier de plus de 1000 fichiers se voyait tronqué
+// SILENCIEUSEMENT au premier lot (ordre non garanti côté Drive), ce qui
+// faisait manquer des fichiers pourtant bien présents. fieldsList permet de
+// ne demander que les champs utiles à l'appelant (id,name suffit pour la
+// mise à jour/duplication ; +modifiedTime pour la détection de doublons).
+async function listAllDriveFolderFiles(folderId, fieldsList){
+  const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+  const fields = encodeURIComponent(`nextPageToken, files(${fieldsList})`);
+  const all = [];
+  let pageToken = "";
+  do{
+    const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+    const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&pageSize=1000&spaces=drive${tokenParam}`);
+    const data = await res.json();
+    (data.files||[]).forEach(f=> all.push(f));
+    pageToken = data.nextPageToken || "";
+  } while(pageToken);
+  return all;
+}
 // Fichiers déjà présents dans le dossier cible (nom -> id), pour mettre à
 // jour plutôt que dupliquer lors d'un nouveau partage du même dossier.
 async function listDriveFolderFileIdsByName(folderId){
-  const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
-  const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=1000&spaces=drive`);
-  const data = await res.json();
+  const files = await listAllDriveFolderFiles(folderId, "id,name");
   const map = new Map();
-  (data.files||[]).forEach(f=> map.set(f.name, f.id));
+  files.forEach(f=> map.set(f.name, f.id));
   return map;
+}
+// Repère, dans un dossier Drive, les noms de fichier apparaissant PLUSIEURS
+// fois (doublons créés par d'anciens partages qui souffraient du bug de
+// troncature ci-dessus : un fichier déjà présent mais absent du lot tronqué
+// était recréé au lieu d'être mis à jour). Pour chaque nom en double, le
+// fichier le plus récent (modifiedTime) est conservé, les autres sont
+// proposés à la suppression — jamais supprimés automatiquement.
+async function scanDriveFolderDuplicates(folderId){
+  const files = await listAllDriveFolderFiles(folderId, "id,name,modifiedTime");
+  const byName = new Map();
+  files.forEach(f=>{
+    if(!byName.has(f.name)) byName.set(f.name, []);
+    byName.get(f.name).push(f);
+  });
+  const toDelete = [];
+  byName.forEach((group, name)=>{
+    if(group.length < 2) return;
+    group.sort((a,b)=> new Date(b.modifiedTime) - new Date(a.modifiedTime)); // le plus récent d'abord
+    group.slice(1).forEach(f=> toDelete.push({name, id:f.id, modifiedTime:f.modifiedTime}));
+  });
+  return toDelete;
 }
 async function uploadOrUpdateToDriveFolder({fileId, name, mimeType, folderId, content, isBase64}){
   const boundary = "imago_share_" + Date.now() + "_" + Math.random().toString(36).slice(2);
@@ -3709,6 +3758,84 @@ document.getElementById("btnDriveFolderPickerDeleteOrphans").addEventListener("c
   } else {
     document.getElementById("driveFolderPickerOrphanWrap").classList.add("hidden");
     pendingDriveOrphans = [];
+  }
+});
+
+/* ---------------------------------------------------------------
+   Détection/suppression des DOUBLONS dans le dossier Drive choisi —
+   conséquence de l'ancien bug de troncature à 1000 fichiers de
+   listDriveFolderFileIdsByName (voir scanDriveFolderDuplicates) : un
+   fichier déjà présent mais invisible pour le code était recréé plutôt
+   que mis à jour. Toujours calculé sur le dossier COURANT du navigateur
+   (driveFolderPicker.path), indépendamment d'un partage en cours — on
+   peut l'utiliser même sans avoir cliqué « Téléverser ici ». Ne supprime
+   jamais rien sans confirmation explicite.
+   --------------------------------------------------------------- */
+let pendingDriveDuplicates = [];
+document.getElementById("btnDriveFolderPickerScanDuplicates").addEventListener("click", async ()=>{
+  const statusEl = document.getElementById("driveFolderPickerStatus");
+  const scanBtn = document.getElementById("btnDriveFolderPickerScanDuplicates");
+  const dupWrap = document.getElementById("driveFolderPickerDuplicateWrap");
+  const current = driveFolderPicker.path[driveFolderPicker.path.length - 1];
+  scanBtn.disabled = true;
+  dupWrap.classList.add("hidden");
+  statusEl.textContent = `Recherche de doublons dans « ${current.name} »…`;
+  try{
+    const duplicates = await scanDriveFolderDuplicates(current.id);
+    pendingDriveDuplicates = duplicates;
+    if(!duplicates.length){
+      statusEl.textContent = `Aucun doublon trouvé dans « ${current.name} ».`;
+    } else {
+      const distinctNames = new Set(duplicates.map(d=> d.name)).size;
+      document.getElementById("driveFolderPickerDuplicateSummary").textContent =
+        `🧹 ${duplicates.length} fichier(s) en double (${distinctNames} nom(s) concerné(s)) dans « ${current.name} » — pour chaque nom, la version la plus récente est conservée :`;
+      document.getElementById("driveFolderPickerDuplicateList").value =
+        duplicates.map(d=> `${d.name} (modifié le ${d.modifiedTime ? new Date(d.modifiedTime).toLocaleString("fr-FR") : "date inconnue"})`).join("\n");
+      dupWrap.classList.remove("hidden");
+      statusEl.textContent = `${duplicates.length} doublon(s) trouvé(s) dans « ${current.name} ».`;
+    }
+  }catch(e){
+    statusEl.textContent = `Recherche de doublons impossible : ${e.message}`;
+  }finally{
+    scanBtn.disabled = false;
+  }
+});
+document.getElementById("btnDriveFolderPickerDeleteDuplicates").addEventListener("click", async ()=>{
+  const duplicates = pendingDriveDuplicates;
+  if(!duplicates.length) return;
+  if(!confirm(`Mettre à la corbeille Drive ${duplicates.length} fichier(s) en double (la version la plus récente de chaque nom est conservée) ?\n\n${duplicates.map(d=>d.name).join("\n")}\n\nIls resteront récupérables depuis la corbeille Google Drive.`)){
+    return;
+  }
+  const statusEl = document.getElementById("driveFolderPickerStatus");
+  const deleteBtn = document.getElementById("btnDriveFolderPickerDeleteDuplicates");
+  deleteBtn.disabled = true;
+  let done = 0, deleted = 0;
+  const deleteFailed = [];
+  for(const dup of duplicates){
+    try{
+      await driveTrashFile(dup.id);
+      deleted++;
+    }catch(e){
+      deleteFailed.push({name: dup.name, reason: e && e.message ? e.message : String(e)});
+      console.warn(`[Imago/HOF] Mise à la corbeille d'un doublon impossible pour « ${dup.name} » :`, e);
+    }
+    done++;
+    statusEl.textContent = `Suppression des doublons : ${done}/${duplicates.length}…`;
+  }
+  deleteBtn.disabled = false;
+  const msg = deleteFailed.length
+    ? `${deleted} doublon(s) mis à la corbeille Drive, ⚠️ ${deleteFailed.length} échec(s) (détail console).`
+    : `🧹 ${deleted} doublon(s) mis à la corbeille Drive.`;
+  statusEl.textContent = msg;
+  toast(msg);
+  if(deleteFailed.length){
+    document.getElementById("driveFolderPickerDuplicateSummary").textContent =
+      `${deleteFailed.length} suppression(s) ont échoué — nouvel essai possible :`;
+    document.getElementById("driveFolderPickerDuplicateList").value = deleteFailed.map(f=> `${f.name} — ${f.reason}`).join("\n");
+    pendingDriveDuplicates = deleteFailed.map(f=> duplicates.find(d=> d.name === f.name && d.id)).filter(Boolean);
+  } else {
+    document.getElementById("driveFolderPickerDuplicateWrap").classList.add("hidden");
+    pendingDriveDuplicates = [];
   }
 });
 
