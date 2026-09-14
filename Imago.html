@@ -2465,6 +2465,35 @@ function findLatestAlbumCandidate(allFiles, targetName, criterion){
   return { file: candidates[0], staleDuplicates: candidates.slice(1) };
 }
 
+// Comme pour findLatestAlbumCandidate ci-dessus (Album-Favori.csv/Album-
+// Art.csv), un même Catalogue-AAAA.csv peut exister en plusieurs
+// exemplaires dans le dossier choisi si l'utilisateur l'a régénéré/exporté
+// plusieurs fois sans supprimer l'ancien : le navigateur renomme alors le
+// second téléchargement ("Catalogue-2023 (1).csv"...) plutôt que d'écraser
+// le premier. Sans dédoublonnage, generateAlbumFromCsvFiles ci-dessous
+// pouvait lire l'un OU L'AUTRE selon l'ordre retourné par le sélecteur de
+// dossier — y compris, par malchance, l'ancien exemplaire APRÈS le récent,
+// ce qui effaçait silencieusement les Favoris tout juste ajoutés (et faisait
+// réapparaître d'anciens Favoris pourtant retirés depuis). On ne garde donc,
+// pour chaque année, que l'exemplaire le PLUS RÉCEMMENT MODIFIÉ.
+function dedupeCatalogFilesByYear(files){
+  const groups = new Map(); // clé = nom sans le suffixe " (N)" éventuel, en minuscules
+  for(const f of files){
+    const key = f.name.replace(/\s*\(\d+\)(\.csv)$/i, "$1").toLowerCase();
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  const chosen = [];
+  const staleDuplicates = [];
+  groups.forEach(list=>{
+    if(list.length === 1){ chosen.push(list[0]); return; }
+    list.sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
+    chosen.push(list[0]);
+    staleDuplicates.push(...list.slice(1));
+  });
+  return { files: chosen, staleDuplicates };
+}
+
 // ---- 1) GÉNÉRER ----------------------------------------------------
 hofGenerateFolderInput.addEventListener("change", async ()=>{
   const allFiles = [...hofGenerateFolderInput.files];
@@ -2478,17 +2507,18 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   // rubrique choisie — ou encore "Album.csv", ancien nom, pour "Favori")
   // n'est pas une source d'entrées mais LA BASE à récupérer et mettre à
   // jour (voir generateAlbumFromCsvFiles).
-  const csvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
+  const rawCsvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
+  const { files: csvFiles, staleDuplicates: staleCatalogDuplicates } = dedupeCatalogFilesByYear(rawCsvFiles);
   const existingAlbumMatch = findLatestAlbumCandidate(allFiles, targetName, criterion);
   const existingAlbumFile = existingAlbumMatch ? existingAlbumMatch.file : null;
   if(!csvFiles.length){
     document.getElementById("hofStatus").textContent = "Aucun fichier Catalogue-AAAA.csv trouvé dans ce dossier ni ses sous-dossiers.";
     return;
   }
-  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : []);
+  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates);
 });
 
-async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates){
+async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates){
   const criterionLabel = criterion === "art" ? "Art" : "Favori";
   const targetName = hofAlbumFileName(criterion);
   const statusEl = document.getElementById("hofStatus");
@@ -2635,6 +2665,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     (staleCount ? ` — ${staleCount} entrée(s) périmée(s) de l'ancien Album purgée(s) (assurez-vous d'avoir choisi le dossier racine complet, avec TOUS les Catalogue-AAAA.csv, sans quoi les années absentes de cette sélection auraient été purgées à tort).` : "") +
     (skippedFiles ? ` Purge des entrées périmées désactivée cette fois (catalogue(s) ignoré(s) ci-dessus : on ne peut pas garantir que leurs entrées manquantes correspondent à de vrais retraits).` : "") +
     ((staleDuplicates && staleDuplicates.length) ? ` ⚠️ ${staleDuplicates.length} autre(s) fichier(s) « ${targetName} »-like trouvé(s) dans ce dossier (${staleDuplicates.map(f=>f.name).join(", ")}) — c'est le plus récent qui a été récupéré comme base ; supprimez les anciens pour éviter toute confusion.` : "") +
+    ((staleCatalogDuplicates && staleCatalogDuplicates.length) ? ` ⚠️ ${staleCatalogDuplicates.length} doublon(s) de Catalogue-AAAA.csv trouvé(s) et ignoré(s) (${staleCatalogDuplicates.map(f=>f.name).join(", ")}) — seul le plus récent de chaque année a été utilisé ; supprimez les anciens pour éviter qu'ils ne soient repris par erreur à une prochaine génération.` : "") +
     " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
 }
 
@@ -6633,23 +6664,14 @@ function openDiaporama(id){
   }
   State.slideshowMode = "diaporama";
   State.slideshowList = withoutVideos;
-  let idx = State.slideshowList.findIndex(p=>p.id===id);
-  if(idx < 0){
-    // Point de départ demandé sur une vidéo (ou introuvable) : démarre sur
-    // la photo la plus proche dans l'ordre d'affichage habituel plutôt que
-    // d'échouer — on cherche d'abord après cette position, puis avant.
-    const fullList = activePhotos();
-    const originalIdx = fullList.findIndex(p=>p.id===id);
-    if(originalIdx >= 0){
-      for(let i=originalIdx; i<fullList.length && idx<0; i++){
-        if(!fullList[i].isVideo) idx = State.slideshowList.findIndex(p=>p.id===fullList[i].id);
-      }
-      for(let i=originalIdx; i>=0 && idx<0; i--){
-        if(!fullList[i].isVideo) idx = State.slideshowList.findIndex(p=>p.id===fullList[i].id);
-      }
-    }
-  }
-  State.slideshowIndex = Math.max(0, idx);
+  // Contrairement à la Loupe (qui reprend là où l'on regardait), le
+  // Diaporama démarre TOUJOURS sur la première photo du déroulé (en haut
+  // du rail de gauche), quelle que soit la photo/vidéo qui était
+  // sélectionnée au moment de cliquer sur "▶ Diaporama" — plus besoin de
+  // pointer manuellement le rail sur la première image pour redémarrer
+  // du début. Le paramètre "id" n'est donc plus utilisé ici ; conservé
+  // dans la signature pour ne pas casser les appels existants.
+  State.slideshowIndex = 0;
   resetSlideTransforms();
   buildSlideshowRail();
   showSlideshowFrame(true);
