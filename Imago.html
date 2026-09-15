@@ -1039,6 +1039,13 @@ button{font-family:inherit;}
       <p class="drive-note" id="hofShareLocalNote" style="margin:0 0 8px; display:none;">
         Ouvre le sélecteur de dossier de votre système : choisissez-y n'importe quel emplacement accessible depuis l'ordinateur (disque C:, clé USB branchée, disque réseau…). Nécessite un navigateur compatible (Chrome ou Edge sur ordinateur) ; ni connexion Drive ni compte Google requis pour cette option.
       </p>
+      <p class="drive-note" style="margin:0 0 4px;">
+        Fichiers image/vidéo déjà présents dans le dossier de destination (le fichier Album, lui, est toujours mis à jour) :
+      </p>
+      <div style="display:flex; gap:16px; margin:0 0 8px; font-size:13px;">
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofExistingFilesMode" value="skip" checked> ⏭️ Passer (ignorer)</label>
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofExistingFilesMode" value="overwrite"> 🔁 Réécrire (remplacer)</label>
+      </div>
       <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Choisir le dossier Drive et partager…</button>
 
       <p class="drive-note" id="hofStatus" style="margin-top:10px;"></p>
@@ -2949,6 +2956,16 @@ document.querySelectorAll('input[name="hofShareDest"]').forEach(radio=>{
    desktop uniquement à ce jour) : on le signale clairement si absent,
    plutôt que d'échouer silencieusement.
    ----------------------------------------------------------------- */
+// Mode choisi à l'étape 3) Partager pour les fichiers image/vidéo déjà
+// présents dans le dossier de destination (Drive ou local) : "skip" pour
+// les laisser tels quels (ignorés, non réenvoyés), "overwrite" pour les
+// réécrire avec la version actuelle. Ne concerne jamais le fichier Album
+// (CSV), toujours mis à jour quel que soit ce choix.
+function getHofExistingFilesMode(){
+  const el = document.querySelector('input[name="hofExistingFilesMode"]:checked');
+  return el ? el.value : "skip";
+}
+
 async function shareHofToLocalFolder(){
   const statusEl = document.getElementById("hofStatus");
   const shareBtn = document.getElementById("btnHOFShare");
@@ -2965,17 +2982,31 @@ async function shareHofToLocalFolder(){
     return;
   }
   const { albumFile, mediaFiles, metaByFile } = hofShareData;
+  const existingFilesMode = getHofExistingFilesMode(); // "skip" ou "overwrite" — ne concerne pas albumFile, toujours mis à jour
   shareBtn.disabled = true;
   try{
     statusEl.textContent = `Enregistrement de « ${albumFile.name} » dans « ${dirHandle.name} »…`;
     await writeFileToLocalDirectory(dirHandle, albumFile.name, albumFile);
 
+    // Noms déjà présents dans ce dossier, pour appliquer le choix
+    // "Passer"/"Réécrire" ci-dessous sur les seuls fichiers image/vidéo.
+    const existingNames = new Set();
+    for await (const [name, handle] of dirHandle.entries()){
+      if(handle.kind === "file") existingNames.add(name);
+    }
+
     const total = mediaFiles.length;
-    let done = 0;
+    let done = 0, skipped = 0;
     // Comme pour l'envoi Drive : un échec sur un fichier ne doit pas
     // interrompre les suivants — on le consigne et on continue.
     const failed = [];
     for(const file of mediaFiles){
+      if(existingFilesMode === "skip" && existingNames.has(file.name)){
+        skipped++;
+        done++;
+        statusEl.textContent = `${done}/${total} — ${file.name} — déjà présent, ignoré (${skipped} au total)`;
+        continue;
+      }
       try{
         // Même incrustation EXIF (Appareil/Lieu/Map) que pour l'envoi Drive
         // ci-dessus, pour que ces infos restent lisibles hors d'Imago quel
@@ -2987,7 +3018,7 @@ async function shareHofToLocalFolder(){
         }
         await writeFileToLocalDirectory(dirHandle, file.name, content);
         done++;
-        statusEl.textContent = `${done}/${total} — ${file.name}${failed.length ? ` (${failed.length} échec(s))` : ""}`;
+        statusEl.textContent = `${done}/${total} — ${file.name}${skipped ? ` (${skipped} déjà présent(s), ignoré(s))` : ""}${failed.length ? ` (${failed.length} échec(s))` : ""}`;
       }catch(e){
         failed.push({name: file.name, reason: e && e.message ? e.message : String(e)});
         done++;
@@ -2995,10 +3026,10 @@ async function shareHofToLocalFolder(){
         console.warn(`[Imago/HOF] Enregistrement local impossible pour « ${file.name} » :`, e);
       }
     }
-    const okCount = total - failed.length;
+    const okCount = total - failed.length - skipped;
     const msg = failed.length
-      ? `« ${dirHandle.name} » : « ${albumFile.name} » et ${okCount} fichier(s) enregistrés, ⚠️ ${failed.length} échec(s) sur ${total} — détail (liste complète) dans la console (F12).`
-      : `« ${dirHandle.name} » : « ${albumFile.name} » et ${total} fichier(s) enregistrés localement.`;
+      ? `« ${dirHandle.name} » : « ${albumFile.name} » et ${okCount} fichier(s) enregistrés${skipped ? `, ${skipped} déjà présent(s) ignoré(s)` : ""}, ⚠️ ${failed.length} échec(s) sur ${total} — détail (liste complète) dans la console (F12).`
+      : `« ${dirHandle.name} » : « ${albumFile.name} » et ${okCount} fichier(s) enregistrés localement${skipped ? `, ${skipped} déjà présent(s) ignoré(s)` : ""} (sur ${total}).`;
     statusEl.textContent = msg;
     if(failed.length){
       shareBtn.classList.remove("done");
@@ -3578,6 +3609,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
     // fois à mettre à jour Album.csv (toujours) et à REPÉRER, pour les
     // photos/vidéos, celles à ne pas réenvoyer (déjà là = inutile).
     const existingIds = await listDriveFolderFileIdsByName(current.id);
+    const existingFilesMode = getHofExistingFilesMode(); // "skip" ou "overwrite" — ne concerne pas albumFile, toujours mis à jour
 
     statusEl.textContent = `Envoi de « ${albumFile.name} »…`;
     const albumText = await albumFile.text();
@@ -3606,9 +3638,9 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
       statusEl.textContent = `${done}/${total} — ${label}${skipped ? ` (${skipped} déjà présent(s), ignoré(s))` : ""}${failed.length ? ` (${failed.length} échec(s))` : ""}`;
     };
     for(const file of mediaFiles){
-      if(existingIds.has(file.name)){
-        // Déjà sur Drive sous ce nom, dans ce dossier : pas besoin de le
-        // retéléverser (ni même le mettre à jour) — on l'ignore simplement.
+      if(existingFilesMode === "skip" && existingIds.has(file.name)){
+        // Déjà sur Drive sous ce nom, dans ce dossier, et mode "Passer" :
+        // pas besoin de le retéléverser — on l'ignore simplement.
         skipped++;
         done++;
         updateProgress(`${file.name} — déjà présent, ignoré`);
@@ -3631,7 +3663,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
           base64 = await fileToBase64(file);
         }
         await uploadOrUpdateToDriveFolder({
-          fileId: null,
+          fileId: existingIds.get(file.name) || null, // mode "overwrite" sur un fichier déjà présent : mise à jour plutôt que doublon
           name: file.name,
           mimeType: guessMimeType(file),
           folderId: current.id,
@@ -3640,7 +3672,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
         });
         uploaded++;
         done++;
-        updateProgress(file.name);
+        updateProgress(existingIds.has(file.name) ? `${file.name} — réécrit` : file.name);
       }catch(e){
         // On journalise et on RETIENT l'échec, mais on continue avec le
         // fichier suivant plutôt que d'abandonner tout le reste du lot.
