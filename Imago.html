@@ -6917,7 +6917,7 @@ function updateSlideCaptions(p){
   if(slideshowHintExpired) slideCaptionTitreEl.style.opacity = 0;
   requestAnimationFrame(()=>{
     slideCaptionDateEl.textContent = p.dateAchat ? fmtDateShort(p.dateAchat) : "";
-    slideCaptionLieuEl.textContent = p.lieu || "";
+    slideCaptionLieuEl.textContent = p.fileName || "";
     slideCaptionTitreEl.textContent = p.titre || ""; // posé même hint encore visible (opacité 0 tant qu'armSlideshowHint ne l'a pas révélé)
     slideCaptionDateEl.style.opacity = 1;
     slideCaptionLieuEl.style.opacity = 1;
