@@ -803,6 +803,7 @@ button{font-family:inherit;}
     <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
     <button class="tool-btn" id="btnArt" title="Art"><span class="ic">🎨</span><span>Art</span></button>
     <button class="tool-btn" id="btnConcert" title="Concert"><span class="ic">🎤</span><span>Concert</span></button>
+    <button class="tool-btn" id="btnHistoire" title="Histoire"><span class="ic">📜</span><span>Histoire</span></button>
     <button class="tool-btn" id="btnTrash" title="Corbeille"><span class="ic">🗑</span><span>Corbeille</span></button>
     <button class="tool-btn" id="btnInfo" title="Information"><span class="ic">ⓘ</span><span>Information</span></button>
     <button class="tool-btn" id="btnMore" title="Plus d'info"><span class="ic">⋯</span><span>Plus d'info</span></button>
@@ -1010,17 +1011,18 @@ button{font-family:inherit;}
     <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
     <div class="modal-body">
       <p class="drive-note">
-        <b>1) Générer</b> — construit (ou récupère) un fichier « Album-Favori.csv », « Album-Art.csv » ou « Album-Concert.csv » (selon la rubrique choisie ci-dessous) en intégrant les images/vidéos marquées dans les fichiers Catalogue-AAAA.csv de chaque année.
+        <b>1) Générer</b> — construit (ou récupère) un fichier « Album-Favori.csv », « Album-Art.csv », « Album-Concert.csv » ou « Album-Histoire.csv » (selon la rubrique choisie ci-dessous) en intégrant les images/vidéos marquées dans les fichiers Catalogue-AAAA.csv de chaque année.
       </p>
       <div style="display:flex; gap:16px; margin:6px 0 4px; font-size:13px;">
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="favori" checked> ★ Favori</label>
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="art"> 🎨 Art</label>
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="concert"> 🎤 Concert</label>
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="histoire"> 📜 Histoire</label>
       </div>
       <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
 
       <p class="drive-note" style="margin-top:18px;">
-        <b>2) Afficher</b> — une fois « Album-Favori.csv », « Album-Art.csv » ou « Album-Concert.csv » (selon la rubrique choisie ci-dessus) généré et déposé dans le dossier de vos photos, choisissez ce même dossier : seules les images/vidéos qu'il référence seront chargées, pas tout le dossier.
+        <b>2) Afficher</b> — une fois « Album-Favori.csv », « Album-Art.csv », « Album-Concert.csv » ou « Album-Histoire.csv » (selon la rubrique choisie ci-dessus) généré et déposé dans le dossier de vos photos, choisissez ce même dossier : seules les images/vidéos qu'il référence seront chargées, pas tout le dossier.
       </p>
       <button class="btn" id="btnHOFPickFolder" style="width:100%; margin-top:4px;">📁 Choisir un dossier d'images…</button>
       <div id="hofProgressWrap" class="hidden" style="margin-top:10px;">
@@ -1031,7 +1033,7 @@ button{font-family:inherit;}
 
       <p class="drive-note" style="margin-top:18px;">
         <b>3) Partager</b> — envoie le fichier Album ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers la destination choisie ci-dessous : soit un dossier Google Drive (c'est vous qui le désignez au moment de cliquer), soit un dossier local sur votre ordinateur — disque C: ou clé USB par exemple.<br>
-        🏷️ Pour les JPEG, l'Appareil, le Lieu et les coordonnées de la rubrique Map connus du catalogue sont incrustés directement dans le fichier (EXIF) avant l'envoi, quelle que soit la destination : ces infos restent donc visibles même hors d'Imago (Drive, Google Photos, explorateur de fichiers…), pas seulement dans Album-Favori.csv/Album-Art.csv/Album-Concert.csv. Les vidéos (.mp4) sont, elles, transférées telles quelles.<br>
+        🏷️ Pour les JPEG, l'Appareil, le Lieu et les coordonnées de la rubrique Map connus du catalogue sont incrustés directement dans le fichier (EXIF) avant l'envoi, quelle que soit la destination : ces infos restent donc visibles même hors d'Imago (Drive, Google Photos, explorateur de fichiers…), pas seulement dans Album-Favori.csv/Album-Art.csv/Album-Concert.csv/Album-Histoire.csv. Les vidéos (.mp4) sont, elles, transférées telles quelles.<br>
         ⚠️ Pensez à déplacer vous-même le fichier Album fraîchement régénéré (étape 1) depuis votre dossier Téléchargements vers le dossier de vos photos <em>avant</em> de faire « Afficher » — sans ce déplacement manuel, « Afficher » (et donc ce partage) continuerait à utiliser l'ancienne version du fichier.
       </p>
       <div style="display:flex; gap:16px; margin:6px 0 8px; font-size:13px;">
@@ -2108,7 +2110,7 @@ function getSelected(){ return State.photos.find(p=>p.id===State.selectedId) || 
 
 function updateToolbarState(){
   const has = !!getSelected();
-  ["btnShare","btnEdit","btnZoomToggle","btnInfo","btnFav","btnArt","btnConcert","btnTrash","btnMore"].forEach(id=>{
+  ["btnShare","btnEdit","btnZoomToggle","btnInfo","btnFav","btnArt","btnConcert","btnHistoire","btnTrash","btnMore"].forEach(id=>{
     document.getElementById(id).disabled = !has;
   });
   document.getElementById("selHint").textContent = has ? `Sélection : ${getSelected().fileName}` : "Aucune image sélectionnée";
@@ -2121,6 +2123,9 @@ function updateToolbarState(){
   const concertBtn = document.getElementById("btnConcert");
   if(has) concertBtn.classList.toggle("active", !!getSelected().concert);
   else concertBtn.classList.remove("active");
+  const histoireBtn = document.getElementById("btnHistoire");
+  if(has) histoireBtn.classList.toggle("active", !!getSelected().histoire);
+  else histoireBtn.classList.remove("active");
 }
 
 /* ---------------------------------------------------------------
@@ -2412,8 +2417,8 @@ function pickCatalogFromCandidates(csvFiles){
 /* -----------------------------------------------------------------
    "Hall of fame" — deux actions bien distinctes :
    1) GÉNÉRER : construit (ou met à jour) « Album-Favori.csv »,
-      « Album-Art.csv » ou « Album-Concert.csv » (selon la rubrique choisie par l'utilisateur —
-      bouton radio "favori", "art" ou "concert") à partir de plusieurs
+      « Album-Art.csv », « Album-Concert.csv » ou « Album-Histoire.csv » (selon la rubrique choisie par l'utilisateur —
+      bouton radio "favori", "art", "concert" ou "histoire") à partir de plusieurs
       Catalogue-AAAA.csv (un par année), SANS jamais relire les
       images/vidéos elles-mêmes — uniquement du texte, donc rapide même sur
       plusieurs années d'historique. Chaque ligne retenue est recopiée telle
@@ -2427,7 +2432,7 @@ function pickCatalogFromCandidates(csvFiles){
       la rubrique choisie) sont ajoutées/mises à jour, et toute ligne dont
       le catalogue d'origine indique désormais "non" pour cette même
       rubrique en est retirée.
-   2) AFFICHER : une fois le fichier Album (Favori, Art ou Concert selon la rubrique
+   2) AFFICHER : une fois le fichier Album (Favori, Art, Concert ou Histoire selon la rubrique
       choisie ci-dessus) généré et déposé par l'utilisateur dans le dossier
       de ses photos, un sélecteur de DOSSIER (même mécanisme que
       "📁 Choisir un dossier d'images…" du menu ☰, donc récursif) repère ce
@@ -2456,7 +2461,7 @@ document.getElementById("btnHOF").addEventListener("click", ()=>{
 document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofGenerateFolderInput.click());
 document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofDisplayFolderInput.click());
 
-// Nom du fichier Album selon la rubrique choisie (radio Favori/Art/Concert) —
+// Nom du fichier Album selon la rubrique choisie (radio Favori/Art/Concert/Histoire) —
 // utilisé à la fois pour l'écrire (étape 1) et pour le rechercher (étape 2).
 // Alias de colonnes d'anciens formats de catalogue/album, pour rester
 // compatible avec des fichiers générés par une version antérieure d'Imago
@@ -2467,6 +2472,7 @@ const normalizeColNames = cols => cols.map(c=> COLUMN_ALIASES[c] || c);
 function hofAlbumFileName(criterion){
   if(criterion === "art") return "Album-Art.csv";
   if(criterion === "concert") return "Album-Concert.csv";
+  if(criterion === "histoire") return "Album-Histoire.csv";
   return "Album-Favori.csv";
 }
 // Reconnaît, en plus du nom exact, les doublons créés par le navigateur
@@ -2521,7 +2527,7 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   const allFiles = [...hofGenerateFolderInput.files];
   hofGenerateFolderInput.value = "";
   document.getElementById("btnHOFGenerate").classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
-  // Rubrique choisie par l'utilisateur (bouton radio) : "favori", "art" ou "concert".
+  // Rubrique choisie par l'utilisateur (bouton radio) : "favori", "art", "concert" ou "histoire".
   const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
   const targetName = hofAlbumFileName(criterion);
   // "Catalogue-AAAA.csv" pour les sources ; un éventuel fichier Album déjà
@@ -2541,7 +2547,7 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
 });
 
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates){
-  const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : "Favori");
+  const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Histoire" : "Favori"));
   const targetName = hofAlbumFileName(criterion);
   const statusEl = document.getElementById("hofStatus");
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
@@ -2704,7 +2710,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // nom de fichier Album recherché ("Album.csv" en repli pour "Favori",
   // pour les fichiers générés avant l'introduction de ce nommage distinct).
   const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
-  const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : "Favori");
+  const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Histoire" : "Favori"));
   const targetName = hofAlbumFileName(criterion);
   const match = findLatestAlbumCandidate(allFiles, targetName, criterion);
   if(!match){
@@ -2913,7 +2919,7 @@ async function runHofImportWithProgress(matchedFiles, statusEl){
 }
 
 /* -----------------------------------------------------------------
-   3) PARTAGER : téléverse le fichier Album (Favori, Art ou Concert) ainsi que les images/vidéos
+   3) PARTAGER : téléverse le fichier Album (Favori, Art, Concert ou Histoire) ainsi que les images/vidéos
    chargées à l'étape 2) — déjà en mémoire, aucune resélection de dossier
    local — vers un dossier Google Drive choisi par l'utilisateur au moyen
    d'un petit navigateur de dossiers Drive (modalDriveFolderPicker). Les
@@ -3072,7 +3078,7 @@ async function writeFileToLocalDirectory(dirHandle, name, content){
 // Repère, dans un dossier local déjà utilisé pour un partage HOF précédent,
 // les fichiers qui ne sont ni un Album-*.csv ni référencés par la dernière
 // version de mediaFiles — typiquement une photo/vidéo qui a perdu son ⭐
-// Favori (ou son 🎨 Art / 🎤 Concert) depuis le dernier partage — puis, après confirmation
+// Favori (ou son 🎨 Art / 🎤 Concert / 📜 Histoire) depuis le dernier partage — puis, après confirmation
 // explicite, les supprime (dirHandle.removeEntry). Même garde-fou d'extension
 // que côté Drive (HOF_MEDIA_EXT_RE) pour ne jamais toucher un fichier qui ne
 // serait pas un média envoyé par ce flux.
@@ -3089,7 +3095,7 @@ async function offerDeleteLocalOrphans(dirHandle, mediaFiles, albumFileName, sta
   if(!orphanNames.length) return;
   const doDelete = confirm(
     `🗑️ ${orphanNames.length} fichier(s) présent(s) dans « ${dirHandle.name} » ne sont plus référencés par « ${albumFileName} » ` +
-    `(retirés des Favoris/Art/Concert depuis le dernier partage, ou renommés) :\n\n${orphanNames.join("\n")}\n\n` +
+    `(retirés des Favoris/Art/Concert/Histoire depuis le dernier partage, ou renommés) :\n\n${orphanNames.join("\n")}\n\n` +
     `Les supprimer de ce dossier ? (définitif — pas de corbeille locale, contrairement à Drive)`
   );
   if(!doDelete) return;
@@ -3456,7 +3462,7 @@ async function uploadOrUpdateToDriveFolder({fileId, name, mimeType, folderId, co
 // Met un fichier Drive à la corbeille (récupérable depuis Drive, contrairement
 // à une suppression définitive) — utilisé pour retirer, du dossier de
 // destination de l'étape 3) Partager, les images/vidéos qui référençaient
-// une ancienne version d'Album-Favori.csv/Album-Art.csv/Album-Concert.csv mais n'apparaissent
+// une ancienne version d'Album-Favori.csv/Album-Art.csv/Album-Concert.csv/Album-Histoire.csv mais n'apparaissent
 // plus dans la dernière (voir orphanMediaFilesInDriveFolder ci-dessous).
 async function driveTrashFile(fileId){
   await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
@@ -3474,10 +3480,10 @@ const HOF_MEDIA_EXT_RE = /\.(jpe?g|png|heic|heif|mp4|mov|m4v)$/i;
 // Calcule, parmi les fichiers déjà présents dans le dossier Drive choisi
 // (existingIds, déjà interrogé pour savoir quoi ignorer/mettre à jour), ceux
 // qui ne sont RECONDUITS ni comme fichier Album (peu importe la rubrique :
-// Album-Favori.csv, Album-Art.csv ET Album-Concert.csv sont toujours épargnés,
+// Album-Favori.csv, Album-Art.csv, Album-Concert.csv ET Album-Histoire.csv sont toujours épargnés,
 // au cas où plusieurs rubriques partageraient le même dossier de destination) ni comme
 // image/vidéo de la dernière version chargée à l'étape 2) — typiquement une
-// photo qui a perdu son ⭐ Favori (ou son 🎨 Art / 🎤 Concert) depuis le dernier partage.
+// photo qui a perdu son ⭐ Favori (ou son 🎨 Art / 🎤 Concert / 📜 Histoire) depuis le dernier partage.
 function orphanMediaFilesInDriveFolder(existingIds, mediaFiles){
   const currentNames = new Set(mediaFiles.map(f=> f.name));
   const orphans = [];
@@ -3692,7 +3698,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
     progressBar.style.width = "100%";
     // Fichiers présents dans ce dossier Drive lors d'un partage précédent
     // mais qui ne sont plus référencés par la dernière version de l'Album
-    // (ex. : une photo qui a perdu son ⭐ Favori / son 🎨 Art / 🎤 Concert depuis) — voir
+    // (ex. : une photo qui a perdu son ⭐ Favori / son 🎨 Art / 🎤 Concert / 📜 Histoire depuis) — voir
     // orphanMediaFilesInDriveFolder. Affiché pour décision de l'utilisateur,
     // jamais supprimé automatiquement.
     const orphans = orphanMediaFilesInDriveFolder(existingIds, mediaFiles);
@@ -3703,7 +3709,7 @@ document.getElementById("btnDriveFolderPickerConfirm").addEventListener("click",
     hofStatusEl.textContent = msg;
     if(orphans.length){
       document.getElementById("driveFolderPickerOrphanSummary").textContent =
-        `🗑️ ${orphans.length} fichier(s) présent(s) dans « ${current.name} » ne sont plus référencés par « ${albumFile.name} » (retirés des Favoris/Art/Concert depuis le dernier partage, ou tout simplement renommés) :`;
+        `🗑️ ${orphans.length} fichier(s) présent(s) dans « ${current.name} » ne sont plus référencés par « ${albumFile.name} » (retirés des Favoris/Art/Concert/Histoire depuis le dernier partage, ou tout simplement renommés) :`;
       document.getElementById("driveFolderPickerOrphanList").value = orphans.map(o=> o.name).join("\n");
       orphanWrap.classList.remove("hidden");
     }
@@ -4109,6 +4115,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         favori: existingRow.favori === "true",
         art: existingRow.art === "true",
         concert: existingRow.concert === "true",
+        histoire: existingRow.histoire === "true",
         corbeille: existingRow.corbeille === "true",
         rotation: Number(existingRow.rotation)||0,
         albums: existingRow.albums ? existingRow.albums.split("|").filter(Boolean) : [],
@@ -4261,6 +4268,7 @@ function buildOrphanRecordFromCsvRow(row, fileName){
     favori: row.favori === "true",
     art: row.art === "true",
     concert: row.concert === "true",
+    histoire: row.histoire === "true",
     corbeille: true, // règle : fichier introuvable dans le dossier → corbeille
     rotation: Number(row.rotation)||0,
     albums: row.albums ? row.albums.split("|").filter(Boolean) : [],
@@ -6743,6 +6751,16 @@ document.getElementById("btnConcert").addEventListener("click", async ()=>{
   toast(p.concert ? "Marqué « Concert »." : "Retiré de « Concert ».");
 });
 
+document.getElementById("btnHistoire").addEventListener("click", async ()=>{
+  const p = getSelected(); if(!p) return;
+  p.histoire = !p.histoire;
+  await idbPut("photos", p);
+  renderGrid();
+  updateToolbarState();
+  autoBuildCsv();
+  toast(p.histoire ? "Marqué « Histoire »." : "Retiré de « Histoire ».");
+});
+
 document.getElementById("btnTrash").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
   if(!confirm(`Supprimer « ${p.fileName} » du catalogue ?`)) return;
@@ -6831,7 +6849,7 @@ function openLoupe(id){
 }
 function openDiaporama(id){
   // Le diaporama (contrairement à la Loupe) n'affiche que les photos : les
-  // vidéos restent sélectionnables en ⭐ Favori / 🎨 Art / 🎤 Concert, toujours incluses
+  // vidéos restent sélectionnables en ⭐ Favori / 🎨 Art / 🎤 Concert / 📜 Histoire, toujours incluses
   // dans les sauvegardes Drive/USB (étape 3 de la modale Hall of fame),
   // mais ne sont plus montrées ici — pas de lecture automatique adaptée à
   // un déroulé minuté façon diaporama.
@@ -7420,7 +7438,7 @@ document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
 /* ---------------------------------------------------------------
    15. CSV — génération automatique, export, import
    --------------------------------------------------------------- */
-const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","art","concert","corbeille","rotation","albums","filterKey","optique","poids","map"];
+const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","art","concert","histoire","corbeille","rotation","albums","filterKey","optique","poids","map"];
 /* Titre auto-construit à partir de Lieu + Personnage : AUCUNE ponctuation,
    AUCUN chiffre — uniquement des lettres et des espaces, sans le mot de
    liaison "et". Reste éditable dans la modale Information : si
@@ -7498,6 +7516,7 @@ async function mergeCsvIntoCatalog(text){
     rec.favori = row.favori === "true";
     rec.art = row.art === "true";
     rec.concert = row.concert === "true";
+    rec.histoire = row.histoire === "true";
     rec.corbeille = row.corbeille === "true";
     rec.rotation = Number(row.rotation)||0;
     rec.albums = row.albums ? row.albums.split("|").filter(Boolean) : [];
