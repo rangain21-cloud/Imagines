@@ -2646,6 +2646,15 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates);
 });
 
+// Cède la main au navigateur pour qu'il ait réellement l'occasion de peindre
+// l'écran (ex. une barre de progression) avant de reprendre le traitement.
+// Sans ce point de cession, des mises à jour DOM trop rapprochées (ex. lire
+// 1 ou 2 petits fichiers locaux en quelques millisecondes) peuvent être
+// regroupées par le navigateur en une seule image affichée — la barre
+// apparaît et disparaît sans jamais être réellement rendue à l'écran.
+function nextFrame(){ return new Promise(r=> requestAnimationFrame(r)); }
+function sleep(ms){ return new Promise(r=> setTimeout(r, ms)); }
+
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates){
   const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Culture" : (criterion === "partition" ? "Partition" : "Favori")));
   const targetName = hofAlbumFileName(criterion);
@@ -2661,6 +2670,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   genProgressBar.style.width = "0%";
   genBtn.disabled = true;
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)… (0/${files.length})`;
+  await nextFrame(); // laisse le temps au navigateur d'afficher la barre à 0% avant de commencer
   // rowsById : id (identifiant UNIQUE de chaque photo dans le catalogue,
   // colonne "id") -> ligne CSV déjà réordonnée selon CSV_COLUMNS (voir
   // remapRowToCanonical ci-dessous). Sert de base (pré-remplie depuis
@@ -2773,6 +2783,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
       processedCount++;
       genProgressBar.style.width = Math.round((processedCount / files.length) * 100) + "%";
       statusEl.textContent = `Lecture des catalogues… (${processedCount}/${files.length})`;
+      await nextFrame(); // force une image affichée à chaque catalogue, même sur un lot très rapide (1-2 fichiers)
     }
   }
   if(!anyValidCatalog){
@@ -2815,9 +2826,14 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   } finally {
     // Que la génération ait abouti, échoué, ou été interrompue (aucun
     // catalogue valide), la barre/bouton de l'étape 1 sont toujours remis
-    // dans leur état de repos.
+    // dans leur état de repos. On réactive le bouton tout de suite, mais on
+    // laisse la barre à 100% visible un court instant avant de la masquer —
+    // sinon, sur un lot très rapide (1-2 catalogues), elle disparaît dans la
+    // même image que celle où elle vient d'apparaître et n'est jamais vue.
     genProgressBar.style.width = "100%";
     genBtn.disabled = false;
+    await nextFrame();
+    await sleep(400);
     genProgressWrap.classList.add("hidden");
   }
 }
