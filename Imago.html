@@ -2645,6 +2645,7 @@ function dedupeCatalogFilesByYear(files){
 
 // ---- 1) GÉNÉRER ----------------------------------------------------
 hofGenerateFolderInput.addEventListener("change", async ()=>{
+ try{
   const allFiles = [...hofGenerateFolderInput.files];
   hofGenerateFolderInput.value = "";
   document.getElementById("btnHOFGenerate").classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
@@ -2665,16 +2666,24 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   // choisit lui-même, ci-dessous, lesquels utiliser comme catalogues sources.
   const allCsvFiles = allFiles.filter(f=> /\.csv$/i.test(f.name) && !ALBUM_OUTPUT_FILE_RE.test(f.name));
   if(!allCsvFiles.length){
-    document.getElementById("hofStatus").textContent = "Aucun fichier .csv trouvé dans ce dossier ni ses sous-dossiers.";
+    const msg = "Aucun fichier .csv trouvé dans ce dossier ni ses sous-dossiers.";
+    document.getElementById("hofStatus").textContent = msg;
+    toast(msg); // le statut est en bas de la modale, hors champ sur mobile : le toast garantit que le message est vu
     return;
   }
   const selectedCsvFiles = await pickHofCsvCandidates(allCsvFiles);
   if(!selectedCsvFiles.length){
-    document.getElementById("hofStatus").textContent = "Génération annulée : aucun catalogue sélectionné.";
+    const msg = "Génération annulée : aucun catalogue sélectionné.";
+    document.getElementById("hofStatus").textContent = msg;
+    toast(msg);
     return;
   }
   const { files: csvFiles, staleDuplicates: staleCatalogDuplicates } = dedupeCatalogFilesByYear(selectedCsvFiles);
   await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates);
+ }catch(err){
+  console.error("Hall of fame — Générer :", err);
+  toast("Générer (Hall of fame) : " + err.message);
+ }
 });
 
 // Cède la main au navigateur pour qu'il ait réellement l'occasion de peindre
@@ -2701,6 +2710,11 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   genProgressBar.style.width = "0%";
   genBtn.disabled = true;
   statusEl.textContent = `Lecture de ${files.length} catalogue(s)… (0/${files.length})`;
+  // La modale "Hall of fame" peut dépasser la hauteur de l'écran (surtout sur
+  // mobile) : sans ce scroll explicite, la barre de progression et le
+  // message de statut restent hors champ sous les radios de rubrique, et la
+  // génération semble n'avoir "aucun effet" alors qu'elle tourne bel et bien.
+  genProgressWrap.scrollIntoView({behavior:"smooth", block:"center"});
   await nextFrame(); // laisse le temps au navigateur d'afficher la barre à 0% avant de commencer
   // rowsById : id (identifiant UNIQUE de chaque photo dans le catalogue,
   // colonne "id") -> ligne CSV déjà réordonnée selon CSV_COLUMNS (voir
@@ -2818,7 +2832,9 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     }
   }
   if(!anyValidCatalog){
-    statusEl.textContent = "Aucun catalogue lisible n'a été sélectionné.";
+    const msg = "Aucun catalogue lisible n'a été sélectionné (fichier(s) non reconnu(s) comme généré(s) par Imago — voir la console pour le détail).";
+    statusEl.textContent = msg;
+    toast(msg);
     return;
   }
   // Purge des entrées périmées : un id présent dans l'Album récupéré mais
@@ -2854,6 +2870,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     ((staleDuplicates && staleDuplicates.length) ? ` ⚠️ ${staleDuplicates.length} autre(s) fichier(s) « ${targetName} »-like trouvé(s) dans ce dossier (${staleDuplicates.map(f=>f.name).join(", ")}) — c'est le plus récent qui a été récupéré comme base ; supprimez les anciens pour éviter toute confusion.` : "") +
     ((staleCatalogDuplicates && staleCatalogDuplicates.length) ? ` ⚠️ ${staleCatalogDuplicates.length} doublon(s) de Catalogue-AAAA.csv trouvé(s) et ignoré(s) (${staleCatalogDuplicates.map(f=>f.name).join(", ")}) — seul le plus récent de chaque année a été utilisé ; supprimez les anciens pour éviter qu'ils ne soient repris par erreur à une prochaine génération.` : "") +
     " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
+  toast(`🏆 « ${targetName} » ${existingAlbumFile ? "mis à jour" : "généré"} : ${totalOut} entrée(s) « ${criterionLabel} ».`);
   } finally {
     // Que la génération ait abouti, échoué, ou été interrompue (aucun
     // catalogue valide), la barre/bouton de l'étape 1 sont toujours remis
