@@ -7567,7 +7567,7 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
   }
   confirmBtn.disabled = true;
   statusEl.textContent = `Suppression en cours dans « ${dirHandle.name} »…`;
-  let deleted = 0;
+  let deleted = 0, alreadyGone = 0;
   const deleteFailed = [];
   for(const p of candidates){
     const path = p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName;
@@ -7593,8 +7593,13 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
         removed = true;
       }catch(e){ lastErr = e; }
     }
-    if(removed){
-      deleted++;
+    // Un NotFoundError après les deux tentatives signifie très
+    // probablement que le fichier a déjà été supprimé par ailleurs
+    // (manuellement, ou lors d'un essai précédent) : le résultat voulu
+    // (fichier absent) est déjà acquis, ce n'est donc pas un vrai échec.
+    const alreadyAbsent = !removed && lastErr && lastErr.name === "NotFoundError";
+    if(removed || alreadyAbsent){
+      if(alreadyAbsent) alreadyGone++; else deleted++;
       // Le fichier n'existe plus sur disque : on retire aussi sa fiche du
       // catalogue (sinon cette même modale la re-proposerait indéfiniment).
       State.photos = State.photos.filter(x=> x.id !== p.id);
@@ -7604,15 +7609,16 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
       console.warn(`[Imago] Suppression de corbeille impossible pour « ${path} » :`, lastErr);
     }
   }
-  if(deleted){
+  if(deleted || alreadyGone){
     State.selectedId = null;
     populateFilterOptions();
     renderGrid();
     autoBuildCsv();
   }
+  const goneNote = alreadyGone ? `, ${alreadyGone} déjà absent(s) du dossier (fiche retirée du catalogue)` : "";
   const msg = deleteFailed.length
-    ? `${deleted} fichier(s) de la corbeille supprimé(s), ⚠️ ${deleteFailed.length} échec(s) de suppression — détail dans la console (F12).`
-    : `🗑️ ${deleted} fichier(s) de la corbeille supprimé(s) définitivement de « ${dirHandle.name} ».`;
+    ? `${deleted} fichier(s) de la corbeille supprimé(s)${goneNote}, ⚠️ ${deleteFailed.length} échec(s) de suppression — détail dans la console (F12).`
+    : `🗑️ ${deleted} fichier(s) de la corbeille supprimé(s) définitivement de « ${dirHandle.name} »${goneNote}.`;
   statusEl.textContent = msg;
   toast(msg);
   if(!deleteFailed.length){
