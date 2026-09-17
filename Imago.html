@@ -4251,6 +4251,11 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
     offset += IMPORT_BACKGROUND_CHUNK;
     const stillLoading = offset < restFiles.length;
     renderGallery(); // complète la planche-contact avec les photos du paquet qui vient d'être traité
+    // Sans cet appel, les suggestions (Titre/Personnage/Lieu de la modale
+    // Infos) et les filtres restaient figés sur le seul 1er lot prioritaire
+    // (les photos les plus récentes) : toutes les valeurs des photos
+    // chargées ensuite, en arrière-plan, n'étaient jamais proposées.
+    populateFilterOptions();
     reportImportProgress(folderName, catalogCandidates, stats, stillLoading);
     if(stillLoading){
       if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
