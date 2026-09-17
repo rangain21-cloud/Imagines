@@ -7569,44 +7569,66 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
   statusEl.textContent = `Suppression en cours dans « ${dirHandle.name} »…`;
   let deleted = 0, alreadyGone = 0;
   const deleteFailed = [];
+  // Résout `parts` (segments de sous-dossier) depuis `root`, puis tente d'y
+  // supprimer `fileName`. Distingue "dossier introuvable" (on n'a pas pu
+  // descendre jusque-là — peu concluant, il faut essayer un autre chemin
+  // candidat) de "fichier introuvable dans un dossier qu'on a bien atteint"
+  // (là, c'est concluant : le fichier est réellement absent).
+  async function tryDeleteAt(root, parts, fileName){
+    let target = root;
+    for(const part of parts){
+      try{ target = await target.getDirectoryHandle(part); }
+      catch(e){
+        if(e && e.name === "NotFoundError") return {status:"dir-not-found"};
+        throw e;
+      }
+    }
+    try{ await target.removeEntry(fileName); return {status:"deleted"}; }
+    catch(e){
+      if(e && e.name === "NotFoundError") return {status:"file-not-found"};
+      throw e;
+    }
+  }
   for(const p of candidates){
     const path = p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName;
-    let removed = false, lastErr = null;
-    // 1) résolution "normale" : le dossier choisi est censé être la racine
-    // d'import, et sousDossier son sous-dossier (ex. l'année).
-    try{
-      let target = dirHandle;
-      if(p.sousDossier){
-        for(const part of p.sousDossier.split("/").filter(Boolean)){
-          target = await target.getDirectoryHandle(part);
-        }
-      }
-      await target.removeEntry(p.fileName);
-      removed = true;
-    }catch(e){ lastErr = e; }
-    // 2) repli : le dossier choisi est peut-être déjà le sous-dossier
-    // lui-même (ex. on a directement désigné le dossier "2021", pas son
-    // parent) — on retente alors une suppression directe dedans.
-    if(!removed && p.sousDossier){
+    const parts = p.sousDossier ? p.sousDossier.split("/").filter(Boolean) : [];
+    // Chemins candidats, du plus probable au moins probable, selon ce que
+    // l'utilisateur a pu choisir comme dossier de départ :
+    //  A. le dossier choisi EST la racine d'import (on descend tout sousDossier) ;
+    //  B. le dossier choisi est déjà le sous-dossier complet (rien à descendre) ;
+    //  C. le dossier choisi correspond au 1er segment (ex. l'année) : on ne
+    //     descend que les segments suivants (utile pour un sousDossier à
+    //     plusieurs niveaux, ex. "2021/Vacances").
+    const pathCandidates = [parts];
+    if(parts.length) pathCandidates.push([]);
+    if(parts.length > 1) pathCandidates.push(parts.slice(1));
+
+    let outcome = null, lastErr = null;
+    for(const cp of pathCandidates){
       try{
-        await dirHandle.removeEntry(p.fileName);
-        removed = true;
-      }catch(e){ lastErr = e; }
+        const r = await tryDeleteAt(dirHandle, cp, p.fileName);
+        if(r.status === "deleted"){ outcome = "deleted"; break; }
+        if(r.status === "file-not-found"){ outcome = "file-not-found"; break; } // dossier atteint, fichier absent → concluant
+        // "dir-not-found" : chemin candidat non concluant, on essaie le suivant
+      }catch(e){ lastErr = e; outcome = "error"; break; } // erreur dure (permission…) : inutile d'essayer d'autres chemins
     }
-    // Un NotFoundError après les deux tentatives signifie très
-    // probablement que le fichier a déjà été supprimé par ailleurs
-    // (manuellement, ou lors d'un essai précédent) : le résultat voulu
-    // (fichier absent) est déjà acquis, ce n'est donc pas un vrai échec.
-    const alreadyAbsent = !removed && lastErr && lastErr.name === "NotFoundError";
-    if(removed || alreadyAbsent){
-      if(alreadyAbsent) alreadyGone++; else deleted++;
-      // Le fichier n'existe plus sur disque : on retire aussi sa fiche du
+
+    if(outcome === "deleted" || outcome === "file-not-found"){
+      if(outcome === "file-not-found") alreadyGone++; else deleted++;
+      // Fichier supprimé (ou déjà absent) : on retire aussi sa fiche du
       // catalogue (sinon cette même modale la re-proposerait indéfiniment).
       State.photos = State.photos.filter(x=> x.id !== p.id);
       await idbDelete("photos", p.id);
     }else{
-      deleteFailed.push({name: path, reason: lastErr && lastErr.message ? lastErr.message : String(lastErr)});
-      console.warn(`[Imago] Suppression de corbeille impossible pour « ${path} » :`, lastErr);
+      // outcome "error", ou aucun chemin candidat n'a permis d'atteindre un
+      // dossier existant : on ne touche PAS au catalogue (le fichier
+      // pourrait très bien exister encore, juste hors d'atteinte du
+      // dossier choisi) — ceci reste un échec à corriger côté dossier.
+      const reason = outcome === "error"
+        ? (lastErr && lastErr.message ? lastErr.message : String(lastErr))
+        : "dossier introuvable depuis le dossier choisi";
+      deleteFailed.push({name: path, reason});
+      console.warn(`[Imago] Suppression de corbeille impossible pour « ${path} » :`, lastErr || reason);
     }
   }
   if(deleted || alreadyGone){
