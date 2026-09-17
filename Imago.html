@@ -7500,7 +7500,71 @@ function downloadCsvFile(csvText, fileName){
   URL.revokeObjectURL(a.href);
 }
 
-document.getElementById("btnExportCsv").addEventListener("click", ()=>{
+// ---------------------------------------------------------------
+// Vidage de la corbeille, proposé à chaque export du catalogue : les
+// photos/vidéos marquées "corbeille" (rubrique) sont de simples
+// candidates à la suppression tant qu'on n'a pas confirmé — comme pour
+// les orphelins HOF ci-dessus, un confirm() natif liste les fichiers
+// concernés et SEUL un OK explicite déclenche la suppression physique
+// (dirHandle.removeEntry, via un sélecteur de dossier à choisir ici :
+// l'import initial par <input webkitdirectory> ne fournit aucun accès
+// en écriture). Sur Annuler, rien n'est supprimé ni modifié.
+async function offerDeleteCorbeilleFiles(){
+  const candidates = State.photos.filter(p=> p.corbeille === true);
+  if(!candidates.length) return;
+  const names = candidates.map(p=> p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName);
+  const doDelete = confirm(
+    `🗑️ ${candidates.length} fichier(s) marqué(s) « corbeille » dans le catalogue :\n\n${names.join("\n")}\n\n` +
+    `Les supprimer définitivement du dossier de vos photos ? (vous choisirez ce dossier juste après)`
+  );
+  if(!doDelete) return;
+  if(typeof window.showDirectoryPicker !== "function"){
+    toast("Ce navigateur ne permet pas de choisir un dossier local en écriture pour supprimer ces fichiers (fonctionnalité disponible sur Chrome ou Edge, sur ordinateur).");
+    return;
+  }
+  let dirHandle;
+  try{
+    dirHandle = await window.showDirectoryPicker({ id: "imago-corbeille-delete", mode: "readwrite" });
+  }catch(e){
+    if(e && e.name === "AbortError") return; // sélection annulée par l'utilisateur : rien à signaler
+    toast(`Impossible d'ouvrir le sélecteur de dossier : ${e.message}`);
+    return;
+  }
+  let deleted = 0;
+  const deleteFailed = [];
+  for(const p of candidates){
+    const path = p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName;
+    try{
+      let target = dirHandle;
+      if(p.sousDossier){
+        for(const part of p.sousDossier.split("/").filter(Boolean)){
+          target = await target.getDirectoryHandle(part);
+        }
+      }
+      await target.removeEntry(p.fileName);
+      deleted++;
+      // Le fichier n'existe plus sur disque : on retire aussi sa fiche du
+      // catalogue (sinon ce même confirm() la re-proposerait indéfiniment).
+      State.photos = State.photos.filter(x=> x.id !== p.id);
+      await idbDelete("photos", p.id);
+    }catch(e){
+      deleteFailed.push({name: path, reason: e && e.message ? e.message : String(e)});
+      console.warn(`[Imago] Suppression de corbeille impossible pour « ${path} » :`, e);
+    }
+  }
+  if(deleted){
+    State.selectedId = null;
+    populateFilterOptions();
+    renderGrid();
+    autoBuildCsv();
+  }
+  const msg = deleteFailed.length
+    ? `${deleted} fichier(s) de la corbeille supprimé(s), ⚠️ ${deleteFailed.length} échec(s) de suppression — détail dans la console (F12).`
+    : `🗑️ ${deleted} fichier(s) de la corbeille supprimé(s) définitivement de « ${dirHandle.name} ».`;
+  toast(msg);
+}
+
+document.getElementById("btnExportCsv").addEventListener("click", async ()=>{
   if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
   const csv = autoBuildCsv();
   downloadCsvFile(csv, State.catalogFileName);
@@ -7509,6 +7573,7 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   // plus besoin de fichiers annexes lieu.csv / map.csv.
   markCsvClean();
   toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.`);
+  await offerDeleteCorbeilleFiles();
 });
 
 async function mergeCsvIntoCatalog(text){
