@@ -1059,6 +1059,23 @@ button{font-family:inherit;}
   </div>
 </div>
 
+<!-- ============== MODAL: CHOIX DES CATALOGUES CSV (HOF, étape 1) ============== -->
+<div class="modal-overlay" id="modalHOFCsvPick">
+  <div class="modal">
+    <div class="modal-head"><h2>Quels catalogues utiliser ?</h2><button class="modal-close" data-close="modalHOFCsvPick">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" style="margin-bottom:10px;">
+        Cochez les fichiers .csv à utiliser comme sources (pré-cochés : ceux nommés « Catalogue-AAAA.csv » — mais tout autre .csv du dossier peut aussi être coché).
+      </p>
+      <div id="hofCsvPickList"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" id="btnHOFCsvPickCancel">Annuler</button>
+      <button class="btn copper" id="btnHOFCsvPickConfirm">Continuer</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============== MODAL: CHOIX DU DOSSIER DRIVE (Hall of fame → Partager) ============== -->
 <div class="modal-overlay" id="modalDriveFolderPicker">
   <div class="modal">
@@ -2507,6 +2524,44 @@ function hofAlbumFileName(criterion){
   if(criterion === "partition") return "Album-Partoche.csv";
   return "Album-Favori.csv";
 }
+// Reconnaît tout fichier Album-*.csv (quelle que soit la rubrique, y compris
+// les anciens noms "Album.csv"/"Album-Histoire.csv") pour ne JAMAIS proposer
+// un fichier de sortie d'une génération précédente comme catalogue SOURCE
+// dans la liste de choix ci-dessous (voir pickHofCsvCandidates).
+const ALBUM_OUTPUT_FILE_RE = /^Album(-Favori|-Art|-Concert|-Culture|-Histoire|-Partoche)?(?:\s*\(\d+\))?\.csv$/i;
+// Sélection, par coches, des .csv à utiliser comme catalogues sources —
+// à la demande de l'utilisateur, on ne se limite plus au nommage strict
+// "Catalogue-AAAA.csv" : n'importe quel .csv du dossier choisi (hors
+// fichiers Album-*.csv, qui sont des SORTIES) peut être coché. Les fichiers
+// nommés selon la convention habituelle restent cochés par défaut pour ne
+// rien changer au flux existant quand l'utilisateur ne touche à rien.
+function pickHofCsvCandidates(csvFiles){
+  return new Promise(resolve=>{
+    const list = document.getElementById("hofCsvPickList");
+    list.innerHTML = "";
+    csvFiles.slice().sort((a,b)=> a.name.localeCompare(b.name, "fr")).forEach((f, idx)=>{
+      const label = document.createElement("label");
+      label.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:6px; cursor:pointer;";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = /^Catalogue-\d+.*\.csv$/i.test(f.name); // nommage habituel : coché par défaut
+      checkbox.dataset.idx = String(idx);
+      const span = document.createElement("span");
+      span.textContent = `${f.name} (${fmtSize(f.size)})`;
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      list.appendChild(label);
+    });
+    document.getElementById("btnHOFCsvPickConfirm").onclick = ()=>{
+      const sorted = csvFiles.slice().sort((a,b)=> a.name.localeCompare(b.name, "fr"));
+      const checkedIdx = [...list.querySelectorAll("input[type=checkbox]:checked")].map(cb=> Number(cb.dataset.idx));
+      closeModal("modalHOFCsvPick");
+      resolve(checkedIdx.map(i=> sorted[i]));
+    };
+    document.getElementById("btnHOFCsvPickCancel").onclick = ()=>{ closeModal("modalHOFCsvPick"); resolve([]); };
+    openModal("modalHOFCsvPick");
+  });
+}
 // Reconnaît, en plus du nom exact, les doublons créés par le navigateur
 // quand un fichier de même nom existe déjà là où il est téléchargé
 // ("Album-Favori (2).csv", "Album-Favori(2).csv"…) et renvoie le PLUS
@@ -2565,19 +2620,29 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   // Rubrique choisie par l'utilisateur (bouton radio) : "favori", "art", "concert", "histoire" ou "partition".
   const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
   const targetName = hofAlbumFileName(criterion);
-  // "Catalogue-AAAA.csv" pour les sources ; un éventuel fichier Album déjà
-  // présent à la racine du dossier choisi (sous le nom correspondant à la
-  // rubrique choisie — ou encore "Album.csv", ancien nom, pour "Favori")
-  // n'est pas une source d'entrées mais LA BASE à récupérer et mettre à
-  // jour (voir generateAlbumFromCsvFiles).
-  const rawCsvFiles = allFiles.filter(f=>/^Catalogue-\d+.*\.csv$/i.test(f.name));
-  const { files: csvFiles, staleDuplicates: staleCatalogDuplicates } = dedupeCatalogFilesByYear(rawCsvFiles);
+  // Un éventuel fichier Album déjà présent à la racine du dossier choisi
+  // (sous le nom correspondant à la rubrique choisie — ou encore
+  // "Album.csv"/"Album-Histoire.csv", anciens noms) n'est pas une source
+  // d'entrées mais LA BASE à récupérer et mettre à jour (voir
+  // generateAlbumFromCsvFiles) : on l'exclut donc de la liste de choix
+  // ci-dessous, ainsi que tout autre fichier Album-*.csv (sorties d'une
+  // précédente génération, quelle que soit sa rubrique).
   const existingAlbumMatch = findLatestAlbumCandidate(allFiles, targetName, criterion);
   const existingAlbumFile = existingAlbumMatch ? existingAlbumMatch.file : null;
-  if(!csvFiles.length){
-    document.getElementById("hofStatus").textContent = "Aucun fichier Catalogue-AAAA.csv trouvé dans ce dossier ni ses sous-dossiers.";
+  // Tous les .csv du dossier (et sous-dossiers) hors sorties Album-*.csv —
+  // on ne se limite plus au nommage "Catalogue-AAAA.csv" : l'utilisateur
+  // choisit lui-même, ci-dessous, lesquels utiliser comme catalogues sources.
+  const allCsvFiles = allFiles.filter(f=> /\.csv$/i.test(f.name) && !ALBUM_OUTPUT_FILE_RE.test(f.name));
+  if(!allCsvFiles.length){
+    document.getElementById("hofStatus").textContent = "Aucun fichier .csv trouvé dans ce dossier ni ses sous-dossiers.";
     return;
   }
+  const selectedCsvFiles = await pickHofCsvCandidates(allCsvFiles);
+  if(!selectedCsvFiles.length){
+    document.getElementById("hofStatus").textContent = "Génération annulée : aucun catalogue sélectionné.";
+    return;
+  }
+  const { files: csvFiles, staleDuplicates: staleCatalogDuplicates } = dedupeCatalogFilesByYear(selectedCsvFiles);
   await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates);
 });
 
@@ -2585,7 +2650,17 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Culture" : (criterion === "partition" ? "Partition" : "Favori")));
   const targetName = hofAlbumFileName(criterion);
   const statusEl = document.getElementById("hofStatus");
-  statusEl.textContent = `Lecture de ${files.length} catalogue(s)…`;
+  // Compteur d'avancement (réutilise la barre déjà utilisée pour l'étape 2
+  // "Afficher" — une seule étape à la fois est active dans cette modale) :
+  // mis à jour à chaque catalogue lu dans la boucle ci-dessous, plutôt qu'un
+  // simple message figé pendant toute la durée de la lecture.
+  const genProgressWrap = document.getElementById("hofProgressWrap");
+  const genProgressBar = document.getElementById("hofProgressBar");
+  const genBtn = document.getElementById("btnHOFGenerate");
+  genProgressWrap.classList.remove("hidden");
+  genProgressBar.style.width = "0%";
+  genBtn.disabled = true;
+  statusEl.textContent = `Lecture de ${files.length} catalogue(s)… (0/${files.length})`;
   // rowsById : id (identifiant UNIQUE de chaque photo dans le catalogue,
   // colonne "id") -> ligne CSV déjà réordonnée selon CSV_COLUMNS (voir
   // remapRowToCanonical ci-dessous). Sert de base (pré-remplie depuis
@@ -2619,6 +2694,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   const rowsById = new Map();
   let recoveredCount = 0;
 
+  try{
   if(existingAlbumFile){
     try{
       const text = await existingAlbumFile.text();
@@ -2642,7 +2718,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     }
   }
 
-  let totalFav = 0, skippedFiles = 0, anyValidCatalog = false;
+  let totalFav = 0, skippedFiles = 0, anyValidCatalog = false, processedCount = 0;
   const seenIds = new Set(); // tout id rencontré dans un catalogue LU cette fois-ci, Favori ou pas — sert à purger les entrées périmées ci-dessous
   for(const file of files){
     try{
@@ -2691,6 +2767,12 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     }catch(e){
       console.warn(`Lecture impossible pour "${file.name}".`, e);
       skippedFiles++;
+    } finally {
+      // Compteur d'avancement : mis à jour après CHAQUE catalogue, qu'il ait
+      // été lu avec succès ou ignoré ci-dessus.
+      processedCount++;
+      genProgressBar.style.width = Math.round((processedCount / files.length) * 100) + "%";
+      statusEl.textContent = `Lecture des catalogues… (${processedCount}/${files.length})`;
     }
   }
   if(!anyValidCatalog){
@@ -2730,6 +2812,14 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     ((staleDuplicates && staleDuplicates.length) ? ` ⚠️ ${staleDuplicates.length} autre(s) fichier(s) « ${targetName} »-like trouvé(s) dans ce dossier (${staleDuplicates.map(f=>f.name).join(", ")}) — c'est le plus récent qui a été récupéré comme base ; supprimez les anciens pour éviter toute confusion.` : "") +
     ((staleCatalogDuplicates && staleCatalogDuplicates.length) ? ` ⚠️ ${staleCatalogDuplicates.length} doublon(s) de Catalogue-AAAA.csv trouvé(s) et ignoré(s) (${staleCatalogDuplicates.map(f=>f.name).join(", ")}) — seul le plus récent de chaque année a été utilisé ; supprimez les anciens pour éviter qu'ils ne soient repris par erreur à une prochaine génération.` : "") +
     " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
+  } finally {
+    // Que la génération ait abouti, échoué, ou été interrompue (aucun
+    // catalogue valide), la barre/bouton de l'étape 1 sont toujours remis
+    // dans leur état de repos.
+    genProgressBar.style.width = "100%";
+    genBtn.disabled = false;
+    genProgressWrap.classList.add("hidden");
+  }
 }
 
 // ---- 2) AFFICHER (seulement les entrées référencées par Album.csv) --
