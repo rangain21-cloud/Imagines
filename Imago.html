@@ -1122,6 +1122,22 @@ button{font-family:inherit;}
   </div>
 </div>
 
+<!-- ============== MODAL: VIDER LA CORBEILLE ============== -->
+<div class="modal-overlay" id="modalCorbeilleDelete">
+  <div class="modal">
+    <div class="modal-head"><h2>Vider la corbeille</h2><button class="modal-close" data-close="modalCorbeilleDelete">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" id="corbeilleDeleteIntro" style="margin-bottom:10px;"></p>
+      <div id="corbeilleDeleteList" style="max-height:220px; overflow-y:auto; font-size:13px; line-height:1.6; background:var(--bg-panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px;"></div>
+      <p class="drive-note" id="corbeilleDeleteStatus" style="margin-top:10px;"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalCorbeilleDelete">Annuler</button>
+      <button class="btn copper" id="btnCorbeilleDeleteConfirm">🗑️ Choisir le dossier et supprimer…</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============== MODAL: PARTAGER ============== -->
 <div class="modal-overlay" id="modalShare">
   <div class="modal">
@@ -7503,23 +7519,41 @@ function downloadCsvFile(csvText, fileName){
 // ---------------------------------------------------------------
 // Vidage de la corbeille, proposé à chaque export du catalogue : les
 // photos/vidéos marquées "corbeille" (rubrique) sont de simples
-// candidates à la suppression tant qu'on n'a pas confirmé — comme pour
-// les orphelins HOF ci-dessus, un confirm() natif liste les fichiers
-// concernés et SEUL un OK explicite déclenche la suppression physique
-// (dirHandle.removeEntry, via un sélecteur de dossier à choisir ici :
-// l'import initial par <input webkitdirectory> ne fournit aucun accès
-// en écriture). Sur Annuler, rien n'est supprimé ni modifié.
-async function offerDeleteCorbeilleFiles(){
+// candidates à la suppression tant qu'on n'a pas confirmé — une modale
+// (et non un confirm() natif, voir plus bas) liste les fichiers
+// concernés ; seul un clic explicite sur son bouton "Supprimer"
+// déclenche la suppression physique (dirHandle.removeEntry, via un
+// sélecteur de dossier à choisir à ce moment-là : l'import initial par
+// <input webkitdirectory> ne fournit aucun accès en écriture). Sur
+// Annuler (ou fermeture), rien n'est supprimé ni modifié.
+//
+// IMPORTANT : on utilise volontairement une modale HTML plutôt qu'un
+// confirm() natif ici. showDirectoryPicker() exige un geste utilisateur
+// "frais" (transient activation) — or plusieurs navigateurs consomment
+// ce geste dès qu'une boîte de dialogue bloquante native (confirm/
+// alert/prompt) est affichée, ce qui fait échouer silencieusement
+// l'ouverture du sélecteur de dossier juste après un confirm(). Un
+// bouton dans une modale HTML fournit lui-même un nouveau geste au
+// moment du clic, ce qui évite ce piège.
+function openCorbeilleDeleteModal(){
   const candidates = State.photos.filter(p=> p.corbeille === true);
   if(!candidates.length) return;
-  const names = candidates.map(p=> p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName);
-  const doDelete = confirm(
-    `🗑️ ${candidates.length} fichier(s) marqué(s) « corbeille » dans le catalogue :\n\n${names.join("\n")}\n\n` +
-    `Les supprimer définitivement du dossier de vos photos ? (vous choisirez ce dossier juste après)`
-  );
-  if(!doDelete) return;
+  const listEl = document.getElementById("corbeilleDeleteList");
+  const introEl = document.getElementById("corbeilleDeleteIntro");
+  const statusEl = document.getElementById("corbeilleDeleteStatus");
+  const confirmBtn = document.getElementById("btnCorbeilleDeleteConfirm");
+  introEl.textContent = `${candidates.length} fichier(s) marqué(s) « corbeille » dans le catalogue — les supprimer définitivement du dossier de vos photos ? (vous choisirez ce dossier en cliquant ci-dessous)`;
+  listEl.innerHTML = candidates.map(p=> escapeHtml(p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName)).join("<br>");
+  statusEl.textContent = "";
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = "🗑️ Choisir le dossier et supprimer…";
+  confirmBtn.onclick = ()=> deleteCorbeilleFiles(candidates, statusEl, confirmBtn);
+  openModal("modalCorbeilleDelete");
+}
+
+async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
   if(typeof window.showDirectoryPicker !== "function"){
-    toast("Ce navigateur ne permet pas de choisir un dossier local en écriture pour supprimer ces fichiers (fonctionnalité disponible sur Chrome ou Edge, sur ordinateur).");
+    statusEl.textContent = "Ce navigateur ne permet pas de choisir un dossier local en écriture pour supprimer ces fichiers (fonctionnalité disponible sur Chrome ou Edge, sur ordinateur).";
     return;
   }
   let dirHandle;
@@ -7527,9 +7561,11 @@ async function offerDeleteCorbeilleFiles(){
     dirHandle = await window.showDirectoryPicker({ id: "imago-corbeille-delete", mode: "readwrite" });
   }catch(e){
     if(e && e.name === "AbortError") return; // sélection annulée par l'utilisateur : rien à signaler
-    toast(`Impossible d'ouvrir le sélecteur de dossier : ${e.message}`);
+    statusEl.textContent = `Impossible d'ouvrir le sélecteur de dossier : ${e.message}`;
     return;
   }
+  confirmBtn.disabled = true;
+  statusEl.textContent = `Suppression en cours dans « ${dirHandle.name} »…`;
   let deleted = 0;
   const deleteFailed = [];
   for(const p of candidates){
@@ -7544,7 +7580,7 @@ async function offerDeleteCorbeilleFiles(){
       await target.removeEntry(p.fileName);
       deleted++;
       // Le fichier n'existe plus sur disque : on retire aussi sa fiche du
-      // catalogue (sinon ce même confirm() la re-proposerait indéfiniment).
+      // catalogue (sinon cette même modale la re-proposerait indéfiniment).
       State.photos = State.photos.filter(x=> x.id !== p.id);
       await idbDelete("photos", p.id);
     }catch(e){
@@ -7561,10 +7597,14 @@ async function offerDeleteCorbeilleFiles(){
   const msg = deleteFailed.length
     ? `${deleted} fichier(s) de la corbeille supprimé(s), ⚠️ ${deleteFailed.length} échec(s) de suppression — détail dans la console (F12).`
     : `🗑️ ${deleted} fichier(s) de la corbeille supprimé(s) définitivement de « ${dirHandle.name} ».`;
+  statusEl.textContent = msg;
   toast(msg);
+  if(!deleteFailed.length){
+    setTimeout(()=> closeModal("modalCorbeilleDelete"), 900);
+  }
 }
 
-document.getElementById("btnExportCsv").addEventListener("click", async ()=>{
+document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
   const csv = autoBuildCsv();
   downloadCsvFile(csv, State.catalogFileName);
@@ -7573,7 +7613,7 @@ document.getElementById("btnExportCsv").addEventListener("click", async ()=>{
   // plus besoin de fichiers annexes lieu.csv / map.csv.
   markCsvClean();
   toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.`);
-  await offerDeleteCorbeilleFiles();
+  openCorbeilleDeleteModal();
 });
 
 async function mergeCsvIntoCatalog(text){
