@@ -1155,6 +1155,29 @@ button{font-family:inherit;}
   </div>
 </div>
 
+<!-- ============== MODAL: COPIER VERS UN DOSSIER DE TRANSFERT ==============
+     Proposée après "Sélectionner des images…" (repli Android quand "Choisir
+     un dossier" échoue, ex. dossier Caméra) : ce sélecteur de photos système
+     ne transmet aucun chemin d'origine (restriction Android), donc le
+     catalogue ne pourrait pas relocaliser ces fichiers plus tard pour le
+     diaporama/HOF. Cette modale recopie les fichiers choisis dans un dossier
+     accessible en écriture (ex. "Transfert vers IMAGO") via la File System
+     Access API, ce qui donne à chaque fichier un chemin réel et fiable —
+     sans copier-coller manuel unitaire dans l'appli Fichiers du téléphone. -->
+<div class="modal-overlay" id="modalTransferCopy">
+  <div class="modal">
+    <div class="modal-head"><h2>Chemin fiable pour ces images ?</h2><button class="modal-close" data-close="modalTransferCopy">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" id="transferCopyIntro" style="margin-bottom:10px;"></p>
+      <p class="drive-note" id="transferCopyStatus" style="margin-top:10px;"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" id="btnTransferCopySkip">Continuer sans copier</button>
+      <button class="btn copper" id="btnTransferCopyConfirm">📥 Choisir le dossier et copier…</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============== MODAL: PARTAGER ============== -->
 <div class="modal-overlay" id="modalShare">
   <div class="modal">
@@ -1679,7 +1702,8 @@ function importSummaryMessage(stats){
     (stats.failedFiles.length ? ` ${stats.failedFiles.length} fichier(s) n'ont pas pu être lu(s) et ont été ignoré(s). ${stats.firstErrorDetail}` : "") +
     (stats.heicFailed && stats.heicFailed.length ? ` ⚠ ${stats.heicFailed.length} photo(s) HEIC non converties (bibliothèque de conversion indisponible — vérifiez votre connexion internet puis réimportez ce dossier) : elles restent illisibles pour l'instant.` : "") +
     (stats.videoDeferred ? ` 🎬 ${stats.videoDeferred} vidéo(s) de plus de 5 Mo importée(s) en vignette seulement — ouvrez-les pour charger leur contenu à la demande.` : "") +
-    (stats.orphaned ? ` 🗑 ${stats.orphaned} fiche(s) du catalogue dont le fichier est introuvable dans ce dossier ont été mises à la corbeille.` : "");
+    (stats.orphaned ? ` 🗑 ${stats.orphaned} fiche(s) du catalogue dont le fichier est introuvable dans ce dossier ont été mises à la corbeille.` : "") +
+    (stats.noPathWarning ? ` ⚠️ Import sans dossier : le chemin d'origine de ces fichiers ne sera PAS enregistré dans le catalogue (limite du sélecteur de photos Android, qui ne transmet pas l'emplacement) — pour un catalogue avec chemin fiable, comme sur PC, préférez « Choisir un dossier d'images… » si possible.` : "");
 }
 function celebrateImportComplete(stats, message, durationMs){
   celebrate((stats.added||0) + (stats.reused||0) > 0, message, durationMs);
@@ -4615,7 +4639,13 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // l'heuristique de nom de fichier — on ne veut jamais écraser une correction
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
-  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0, orphaned:orphanedCount };
+  const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0, orphaned:orphanedCount,
+    // Import sans dossier (repli Android "Sélectionner des images…", déclenché
+    // quand "Choisir un dossier" échoue) : le sélecteur de photos système ne
+    // transmet jamais l'emplacement d'origine, donc aucun chemin ne sera
+    // enregistré pour ces fichiers (voir importSummaryMessage). Prévenir
+    // dès l'import plutôt qu'à la découverte, bien plus tard, au diaporama/HOF.
+    noPathWarning: folderNameOverride === "Sélection manuelle" };
   const preImportMs = Math.round(performance.now() - preImportStart);
   console.log(`[Imago] Préparation avant la 1ère image (sélection du dossier, catalogue, tri) : ${preImportMs} ms pour ${files.length} fichier(s).`);
   const priorityStart = performance.now();
@@ -4677,7 +4707,87 @@ filePickerInput.multiple = true;
 filePickerInput.className = "hidden";
 document.body.appendChild(filePickerInput);
 document.getElementById("btnPickFiles").addEventListener("click", ()=> filePickerInput.click());
-filePickerInput.addEventListener("change", ()=> handleFilesSelected(filePickerInput.files, "Sélection manuelle", true));
+
+/* Le Sélecteur de photos système (filePickerInput ci-dessus) lit très bien
+   les fichiers même dans un dossier "cloisonné" comme Caméra, mais ne
+   transmet AUCUN chemin d'origine (restriction Android). Plutôt que de
+   laisser l'utilisateur recopier chaque fichier à la main vers un dossier
+   accessible (ex. "Transfert vers IMAGO") avec l'appli Fichiers, on le lui
+   propose ici : on écrit nous-mêmes une copie de chaque fichier choisi dans
+   un dossier qu'il désigne (via showDirectoryPicker, en écriture), ce qui
+   donne à chaque copie un chemin réel — exactement comme s'il avait été
+   importé avec "Choisir un dossier d'images…" directement dans ce dossier. */
+async function copySelectedFilesToTransferFolder(files, statusEl){
+  let dirHandle;
+  try{
+    // id fixe : Chrome ré-affiche ce même dossier ("Transfert vers IMAGO",
+    // par ex.) en tête de son sélecteur lors des prochains appels, pour
+    // éviter d'avoir à le rechercher à chaque fois dans l'arborescence.
+    dirHandle = await window.showDirectoryPicker({ id: "imago-mobile-transfer", mode: "readwrite" });
+  }catch(e){
+    if(e && e.name === "AbortError") return null; // annulé par l'utilisateur : on n'écrit rien
+    if(statusEl) statusEl.textContent = `Impossible d'ouvrir le sélecteur de dossier : ${(e&&e.message)||e}`;
+    console.warn("[Imago] Échec d'ouverture du dossier de transfert :", e);
+    return null;
+  }
+  const copiedFiles = [];
+  let failed = 0;
+  for(let i=0;i<files.length;i++){
+    const f = files[i];
+    if(statusEl) statusEl.textContent = `Copie vers « ${dirHandle.name} »… (${i+1}/${files.length})`;
+    try{
+      await writeFileToLocalDirectory(dirHandle, f.name, f);
+      const fh = await dirHandle.getFileHandle(f.name);
+      const copiedFile = await fh.getFile();
+      // Un fichier obtenu via la File System Access API n'a pas de
+      // webkitRelativePath (propriété propre à <input webkitdirectory>) : on
+      // la simule ici pour que TOUT le reste du code (calcul de sousDossier
+      // dans importOneFile, relocalisation…) fonctionne SANS AUCUNE
+      // adaptation, exactement comme pour un import par dossier classique.
+      Object.defineProperty(copiedFile, "webkitRelativePath", { value: `${dirHandle.name}/${f.name}`, configurable:true });
+      copiedFiles.push(copiedFile);
+    }catch(e){
+      failed++;
+      console.warn(`[Imago] Copie impossible pour "${f.name}" vers "${dirHandle.name}" :`, e);
+    }
+  }
+  if(failed) toast(`⚠️ ${failed} fichier(s) sur ${files.length} n'ont pas pu être copiés vers « ${dirHandle.name} » — voir la console (F12).`);
+  return { dirHandle, files: copiedFiles };
+}
+
+const transferCopyIntroEl = document.getElementById("transferCopyIntro");
+const transferCopyStatusEl = document.getElementById("transferCopyStatus");
+const btnTransferCopyConfirm = document.getElementById("btnTransferCopyConfirm");
+filePickerInput.addEventListener("change", ()=>{
+  const files = [...filePickerInput.files];
+  filePickerInput.value = "";
+  if(!files.length) return;
+  if(typeof window.showDirectoryPicker !== "function"){
+    // Navigateur sans File System Access API (hors Chrome/Edge) : la copie
+    // n'est de toute façon pas possible, inutile de proposer la modale.
+    handleFilesSelected(files, "Sélection manuelle", true);
+    return;
+  }
+  transferCopyIntroEl.textContent = `${files.length} fichier(s) sélectionné(s) via le sélecteur de photos système : leur emplacement d'origine ne sera pas connu du catalogue (limite d'Android). Copier ces fichiers vers un dossier accessible en écriture (ex. « Transfert vers IMAGO ») pour que le catalogue enregistre un chemin fiable, réutilisable ensuite pour le diaporama et le Hall of fame ?`;
+  transferCopyStatusEl.textContent = "";
+  btnTransferCopyConfirm.disabled = false;
+  btnTransferCopyConfirm.textContent = "📥 Choisir le dossier et copier…";
+  btnTransferCopyConfirm.onclick = async ()=>{
+    btnTransferCopyConfirm.disabled = true;
+    const result = await copySelectedFilesToTransferFolder(files, transferCopyStatusEl);
+    if(!result || !result.files.length){
+      btnTransferCopyConfirm.disabled = false;
+      return; // annulé, échec total, ou dossier inaccessible : la modale reste ouverte pour réessayer ou "Continuer sans copier"
+    }
+    closeModal("modalTransferCopy");
+    handleFilesSelected(result.files, result.dirHandle.name, true);
+  };
+  document.getElementById("btnTransferCopySkip").onclick = ()=>{
+    closeModal("modalTransferCopy");
+    handleFilesSelected(files, "Sélection manuelle", true);
+  };
+  openModal("modalTransferCopy");
+});
 
 /* Sélecteur dédié au fichier catalogue (.csv) : contrairement au filtre
    accept="image/*,video/…" de filePickerInput ci-dessus (volontairement
@@ -7858,7 +7968,17 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   // suffisent à elles seules à matérialiser de nouveaux lieux / maps —
   // plus besoin de fichiers annexes lieu.csv / map.csv.
   markCsvClean();
-  toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.`);
+  // Avertissement sur les entrées sans chemin enregistré : arrive quand des
+  // photos ont été importées via "Sélectionner des images…" (repli Android
+  // utilisé quand "Choisir un dossier" échoue) — ce sélecteur système ne
+  // transmet jamais l'emplacement d'origine (restriction de confidentialité
+  // d'Android, pas une limite d'Imago). Sans cet avertissement, l'absence de
+  // sous-dossier n'était découverte qu'au diaporama/HOF, bien plus tard.
+  const noPathCount = State.photos.filter(p=> !p.sousDossier).length;
+  const pathNote = noPathCount
+    ? ` ⚠️ ${noPathCount} photo(s)/vidéo(s) sans sous-dossier enregistré (importée(s) via « Sélectionner des images… » plutôt que « Choisir un dossier » — le sélecteur de photos d'Android ne transmet pas l'emplacement d'origine) : pour le diaporama ou le Hall of fame, elles ne seront retrouvées que si le dossier choisi à ce moment-là est EXACTEMENT celui où elles se trouvent (sans descendre dans un sous-dossier). Pour un chemin fiable comme sur PC, préférez « Choisir un dossier d'images… » à l'import.`
+    : "";
+  toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.${pathNote}`, pathNote ? 18000 : undefined);
   openCorbeilleDeleteModal();
 });
 
