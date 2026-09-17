@@ -2535,6 +2535,15 @@ const ALBUM_OUTPUT_FILE_RE = /^Album(-Favori|-Art|-Concert|-Culture|-Histoire|-P
 // fichiers Album-*.csv, qui sont des SORTIES) peut être coché. Les fichiers
 // nommés selon la convention habituelle restent cochés par défaut pour ne
 // rien changer au flux existant quand l'utilisateur ne touche à rien.
+// Résolution en attente de la modale ci-dessous, le temps que l'utilisateur
+// choisisse — utilisée pour débloquer proprement l'attente si la modale est
+// fermée autrement que par Continuer/Annuler (croix ×, tap en dehors), ce qui
+// sinon laissait pickHofCsvCandidates (et donc toute la génération) bloqué
+// indéfiniment SANS AUCUN message : sur mobile, viser la croix ou toucher à
+// côté de la modale par erreur est fréquent, et ce blocage silencieux se
+// manifestait par une absence totale de barre de progression ou de bouton
+// vert, sans que rien n'indique pourquoi.
+let hofCsvPickResolve = null;
 function pickHofCsvCandidates(csvFiles){
   return new Promise(resolve=>{
     const list = document.getElementById("hofCsvPickList");
@@ -2552,16 +2561,38 @@ function pickHofCsvCandidates(csvFiles){
       label.appendChild(span);
       list.appendChild(label);
     });
+    hofCsvPickResolve = resolve;
     document.getElementById("btnHOFCsvPickConfirm").onclick = ()=>{
       const sorted = csvFiles.slice().sort((a,b)=> a.name.localeCompare(b.name, "fr"));
       const checkedIdx = [...list.querySelectorAll("input[type=checkbox]:checked")].map(cb=> Number(cb.dataset.idx));
       closeModal("modalHOFCsvPick");
+      hofCsvPickResolve = null;
       resolve(checkedIdx.map(i=> sorted[i]));
     };
-    document.getElementById("btnHOFCsvPickCancel").onclick = ()=>{ closeModal("modalHOFCsvPick"); resolve([]); };
+    document.getElementById("btnHOFCsvPickCancel").onclick = ()=>{
+      closeModal("modalHOFCsvPick");
+      hofCsvPickResolve = null;
+      resolve([]);
+    };
     openModal("modalHOFCsvPick");
   });
 }
+// Filet de sécurité : si la modale se ferme par la croix × ou un tap sur le
+// fond assombri (gérés génériquement, voir plus bas §9 "Modales" — pas de
+// transition CSS ici pour s'y accrocher, donc écoute directe) plutôt que par
+// Continuer/Annuler, on débloque quand même l'attente — comme un Annuler
+// implicite — au lieu de laisser la génération bloquée indéfiniment.
+function hofCsvPickBail(){
+  if(hofCsvPickResolve){
+    const r = hofCsvPickResolve;
+    hofCsvPickResolve = null;
+    r([]);
+  }
+}
+document.querySelector('#modalHOFCsvPick .modal-close').addEventListener("click", hofCsvPickBail);
+document.getElementById("modalHOFCsvPick").addEventListener("click", (e)=>{
+  if(e.target === document.getElementById("modalHOFCsvPick")) hofCsvPickBail();
+});
 // Reconnaît, en plus du nom exact, les doublons créés par le navigateur
 // quand un fichier de même nom existe déjà là où il est téléchargé
 // ("Album-Favori (2).csv", "Album-Favori(2).csv"…) et renvoie le PLUS
