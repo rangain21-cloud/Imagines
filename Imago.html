@@ -7562,6 +7562,7 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
   }catch(e){
     if(e && e.name === "AbortError") return; // sélection annulée par l'utilisateur : rien à signaler
     statusEl.textContent = `Impossible d'ouvrir le sélecteur de dossier : ${e.message}`;
+    console.warn("[Imago] Échec d'ouverture du sélecteur de dossier pour vider la corbeille :", e);
     return;
   }
   confirmBtn.disabled = true;
