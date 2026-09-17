@@ -7881,6 +7881,14 @@ async function mergeCsvIntoCatalog(text){
   toast(`Import CSV : ${created} créée(s), ${updated} mise(s) à jour. (Les images sans fichier local associé resteront sans vignette.)`);
 }
 function parseCsvLine(line){
+  // Chaque CSV généré par Imago démarre par un BOM UTF-8 (\uFEFF, voir
+  // downloadCsvFile) pour qu'Excel l'ouvre correctement. Sans ce nettoyage,
+  // ce caractère invisible reste collé au tout premier champ de la ligne
+  // d'en-tête ("\uFEFFid" au lieu de "id") quand ce même fichier est
+  // relu par Imago (Hall of fame, Drive, import…) : la colonne "id" (ou
+  // toute autre colonne en 1ère position) n'est alors plus reconnue, et le
+  // fichier est à tort signalé comme "non généré par Imago".
+  if(line.charCodeAt(0) === 0xFEFF) line = line.slice(1);
   const out=[]; let cur=""; let inQ=false;
   for(let i=0;i<line.length;i++){
     const c=line[i];
