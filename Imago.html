@@ -4178,10 +4178,7 @@ function checkSlowStorage(fileCount, elapsedMs){
   const msPerFile = elapsedMs / fileCount;
   if(msPerFile < SLOW_STORAGE_MS_PER_FILE) return "";
   slowStorageWarningShown = true;
-  return ` ⏳ Chargement anormalement lent (~${Math.round(msPerFile)} ms/image en moyenne). ` +
-    `Si ce dossier vient de Google Drive sur Android, il n'est probablement pas téléchargé sur l'appareil : ` +
-    `ouvrez l'app Google Drive → appui long sur le dossier → ⋮ → « Rendre disponible hors connexion », ` +
-    `puis relancez l'import.`;
+  return ` ⏳ Chargement anormalement lent (~${Math.round(msPerFile)} ms/image en moyenne) : ces fichiers ne sont probablement pas réellement présents sur l'appareil, seulement sauvegardés en ligne (Google Photos avec « Libérer de l'espace » activé, Google Drive sans « disponible hors connexion », Samsung Cloud…). Ouvrez chaque photo dans la Galerie (ou Google Photos) et téléchargez/enregistrez-la sur l'appareil, ou désactivez l'optimisation de stockage dans les réglages de sauvegarde, puis relancez l'import.`;
 }
 
 /* Compteur persistant "images chargées / images restantes", affiché à la
@@ -4405,6 +4402,11 @@ async function importOneFile(file, csvRowByFileName, stats){
   }catch(err){
     console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
     stats.failedFiles.push(file.name);
+    // Référence au fichier lui-même (pas seulement son nom) conservée pour
+    // permettre une nouvelle tentative isolée en toute fin d'import, une
+    // fois la pression concurrente/système retombée (voir retryFailedFilesOnce).
+    if(!stats.failedFileObjects) stats.failedFileObjects = [];
+    stats.failedFileObjects.push(file);
     const detail = (err && err.message) || String(err);
     if(!stats.failedDetails) stats.failedDetails = [];
     if(stats.failedDetails.length < 3) stats.failedDetails.push(`"${file.name}" — ${detail}`);
@@ -4416,6 +4418,34 @@ async function importOneFile(file, csvRowByFileName, stats){
     importDoneCount++;
     updateGalleryCounter();
   }
+}
+
+/* Nouvelle tentative UNIQUE, isolée et strictement séquentielle, pour les
+   fichiers en échec — après que TOUT le reste de l'import est déjà terminé.
+   Rationale : IMPORT_CONCURRENCY est déjà à 1 (voir plus haut, suite à un
+   échec massif observé en parallèle), mais même en séquentiel, un très gros
+   dossier peut transitoirement saturer une ressource Android (handles/
+   transactions du fournisseur de documents) — l'échec d'un fichier isolé
+   n'a alors rien à voir avec CE fichier en particulier. Attendre la toute
+   fin, puis réessayer calmement, donne à ces fichiers une vraie 2de chance
+   sans réintroduire de concurrence. Ne s'applique qu'une fois (pas de boucle
+   infinie de nouvelles tentatives) : si ça échoue encore, c'est signalé tel
+   quel à l'utilisateur, comme avant. */
+async function retryFailedFilesOnce(stats, csvRowByFileName){
+  if(!stats.failedFileObjects || !stats.failedFileObjects.length) return 0;
+  const toRetry = stats.failedFileObjects.splice(0, stats.failedFileObjects.length);
+  await delay(800);
+  let recovered = 0;
+  for(const file of toRetry){
+    const before = stats.added;
+    await importOneFile(file, csvRowByFileName, stats);
+    if(stats.added > before){
+      recovered++;
+      const idx = stats.failedFiles.lastIndexOf(file.name);
+      if(idx !== -1) stats.failedFiles.splice(idx, 1);
+    }
+  }
+  return recovered;
 }
 
 /* Met à jour le message de statut (et, en fin d'import, le toast récap).
@@ -4476,9 +4506,12 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
       else setTimeout(step, 0);
     } else {
       importTotalCount = 0; importDoneCount = 0; updateGalleryCounter(); // import terminé : le compteur revient à l'affichage simple du total
+      const recovered = await retryFailedFilesOnce(stats, csvRowByFileName);
+      if(recovered){ populateFilterOptions(); renderGallery(); }
+      const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
       celebrateImportComplete(
         stats,
-        importSummaryMessage(stats),
+        importSummaryMessage(stats) + recoveredNote,
         stats.failedFiles.length ? 12000 : undefined
       );
       autoBuildCsv();
@@ -4665,9 +4698,12 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   reportImportProgress(folderName, catalogCandidates, stats, restFiles.length>0);
   if(restFiles.length===0){
     importTotalCount = 0; importDoneCount = 0; updateGalleryCounter(); // import terminé : le compteur revient à l'affichage simple du total
+    const recovered = await retryFailedFilesOnce(stats, csvRowByFileName);
+    if(recovered){ populateFilterOptions(); renderGrid(); }
+    const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
     celebrateImportComplete(
       stats,
-      importSummaryMessage(stats) + slowStorageNote,
+      importSummaryMessage(stats) + slowStorageNote + recoveredNote,
       (stats.failedFiles.length || slowStorageNote) ? 16000 : undefined
     );
     autoBuildCsv();
@@ -5068,16 +5104,29 @@ async function readFileAsDataURL(file){
   // 2) FileReader, plusieurs tentatives avec délai croissant entre chacune
   //    (utile en cas d'échec transitoire de permission), chacune bornée par
   //    un timeout pour ne jamais bloquer l'import sur un fichier fantôme.
+  const fileReaderMsgs = [];
   for(let attempt=1; attempt<=READ_MAX_ATTEMPTS; attempt++){
     try{
       return await withTimeout(readFileViaFileReader(file), READ_TIMEOUT_MS, `FileReader (tentative ${attempt}/${READ_MAX_ATTEMPTS})`);
     }catch(e){
-      log.push(`FileReader tentative ${attempt}/${READ_MAX_ATTEMPTS} : ${(e && e.message) || String(e)}`);
+      fileReaderMsgs.push((e && e.message) || String(e));
       if(attempt < READ_MAX_ATTEMPTS) await delay(250 * attempt); // 250ms, 500ms, 750ms…
     }
   }
+  // Le navigateur renvoie très souvent EXACTEMENT le même message à chaque
+  // tentative (ex. NotReadableError) : on regroupe les messages identiques
+  // au lieu de répéter N fois la même longue phrase, illisible sur mobile
+  // une fois cumulée avec l'essai arrayBuffer() ci-dessus.
+  if(fileReaderMsgs.length) log.push(summarizeRepeatedAttempts("FileReader", fileReaderMsgs));
 
   throw new Error(`Lecture impossible pour "${file.name}" (${file.size} o annoncé(s)) après ${1+READ_MAX_ATTEMPTS} tentative(s) — ${log.join(" | ")}`);
+}
+function summarizeRepeatedAttempts(label, messages){
+  const counts = new Map();
+  for(const m of messages) counts.set(m, (counts.get(m)||0)+1);
+  return [...counts.entries()]
+    .map(([msg,count])=> `${label} : ${msg}${count>1 ? ` (×${count} tentatives identiques)` : ""}`)
+    .join(" | ");
 }
 function getImageDimensions(dataUrl){
   return new Promise((resolve)=>{
