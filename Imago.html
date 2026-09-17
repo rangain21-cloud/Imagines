@@ -7571,6 +7571,9 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
   const deleteFailed = [];
   for(const p of candidates){
     const path = p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName;
+    let removed = false, lastErr = null;
+    // 1) résolution "normale" : le dossier choisi est censé être la racine
+    // d'import, et sousDossier son sous-dossier (ex. l'année).
     try{
       let target = dirHandle;
       if(p.sousDossier){
@@ -7579,14 +7582,26 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
         }
       }
       await target.removeEntry(p.fileName);
+      removed = true;
+    }catch(e){ lastErr = e; }
+    // 2) repli : le dossier choisi est peut-être déjà le sous-dossier
+    // lui-même (ex. on a directement désigné le dossier "2021", pas son
+    // parent) — on retente alors une suppression directe dedans.
+    if(!removed && p.sousDossier){
+      try{
+        await dirHandle.removeEntry(p.fileName);
+        removed = true;
+      }catch(e){ lastErr = e; }
+    }
+    if(removed){
       deleted++;
       // Le fichier n'existe plus sur disque : on retire aussi sa fiche du
       // catalogue (sinon cette même modale la re-proposerait indéfiniment).
       State.photos = State.photos.filter(x=> x.id !== p.id);
       await idbDelete("photos", p.id);
-    }catch(e){
-      deleteFailed.push({name: path, reason: e && e.message ? e.message : String(e)});
-      console.warn(`[Imago] Suppression de corbeille impossible pour « ${path} » :`, e);
+    }else{
+      deleteFailed.push({name: path, reason: lastErr && lastErr.message ? lastErr.message : String(lastErr)});
+      console.warn(`[Imago] Suppression de corbeille impossible pour « ${path} » :`, lastErr);
     }
   }
   if(deleted){
@@ -7602,6 +7617,13 @@ async function deleteCorbeilleFiles(candidates, statusEl, confirmBtn){
   toast(msg);
   if(!deleteFailed.length){
     setTimeout(()=> closeModal("modalCorbeilleDelete"), 900);
+  }else{
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "🗑️ Choisir un autre dossier et réessayer…";
+    // On ne retente que les fichiers encore en échec : on repart de l'état
+    // actuel du catalogue (les succès de cette passe en ont déjà été
+    // retirés) plutôt que de la liste figée passée en paramètre.
+    confirmBtn.onclick = ()=> openCorbeilleDeleteModal();
   }
 }
 
