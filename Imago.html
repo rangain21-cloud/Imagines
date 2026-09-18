@@ -4485,6 +4485,9 @@ function reportImportProgress(folderName, catalogCandidates, stats, stillLoading
 function importRestInBackground(restFiles, csvRowByFileName, stats, token, folderName, catalogCandidates){
   let offset = 0;
   const step = async ()=>{
+   try { // même filet de sécurité que handleFilesSelected : sans lui, une
+    // exception ici arrête la suite en arrière-plan sans le moindre signe,
+    // laissant l'utilisateur avec un lot partiel et aucune explication.
     if(token !== importToken) return; // un autre import a démarré entre-temps : on abandonne celui-ci
     const chunk = restFiles.slice(offset, offset + IMPORT_BACKGROUND_CHUNK);
     await runWithConcurrency(chunk, async (file)=>{
@@ -4516,6 +4519,11 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
       );
       autoBuildCsv();
     }
+   } catch(err) {
+    console.error("Import (arrière-plan) — échec inattendu :", err);
+    importTotalCount = 0; importDoneCount = 0; updateGalleryCounter();
+    toast(`⚠️ Échec de l'import (suite en arrière-plan) : ${err && err.message ? err.message : err}`, 16000);
+   }
   };
   step();
 }
@@ -4559,6 +4567,14 @@ function buildOrphanRecordFromCsvRow(row, fileName){
   };
 }
 async function handleFilesSelected(fileList, folderNameOverride, skipCatalogPrompt){
+ try { // filet de sécurité global : sans lui, toute exception non prévue
+  // pendant l'import (n'importe où entre le nettoyage initial et le rendu
+  // final) arrête tout net SANS AUCUN message — la galerie retombe sur son
+  // état "vide" par défaut, comme si aucun import n'avait jamais eu lieu,
+  // sans que rien n'indique qu'une erreur en est la cause. C'est très
+  // probablement ce qui explique un import qui progresse (compteur "X
+  // chargées / Y restantes") puis se termine sur "Aucune image à afficher"
+  // sans le moindre toast d'erreur.
   const myImportToken = ++importToken;
   const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
   slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
@@ -4718,6 +4734,16 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     );
     importRestInBackground(restFiles, csvRowByFileName, stats, myImportToken, folderName, catalogCandidates);
   }
+ } catch(err) {
+  // Voir le commentaire en tête de fonction : cette exception aurait sinon
+  // été perdue en silence, laissant la galerie vide sans explication.
+  console.error("Import — échec inattendu :", err);
+  importTotalCount = 0; importDoneCount = 0; updateGalleryCounter();
+  const msg = `Échec de l'import : ${err && err.message ? err.message : err}`;
+  const statusNode = document.getElementById("folderStatus");
+  if(statusNode) statusNode.textContent = msg;
+  toast(`⚠️ ${msg}`, 16000);
+ }
 }
 folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.files));
 
