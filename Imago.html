@@ -4150,6 +4150,16 @@ async function runWithConcurrency(items, worker, concurrency){
     while(cursor < items.length){
       const i = cursor++;
       await worker(items[i], i);
+      // Pause courte après chaque fichier : laisse le moteur JS l'occasion
+      // de garbage-collecter les gros buffers temporaires du fichier qui
+      // vient d'être traité (décodage HEIC notamment, très coûteux en
+      // mémoire — voir heicBlobToJpegDataUrl / loadAndMaybeDownscaleImage)
+      // avant d'entamer le suivant. Sans ce répit, des allocations lourdes
+      // qui s'enchaînent sans la moindre pause peuvent épuiser la mémoire
+      // disponible sur un appareil d'entrée/milieu de gamme (~Android
+      // "Mémoire insuffisante"), même en traitement strictement séquentiel
+      // (IMPORT_CONCURRENCY = 1) où la concurrence n'est pourtant pas en cause.
+      await new Promise(r=> setTimeout(r, 30));
     }
   }
   await Promise.all(Array.from({length: Math.min(concurrency, items.length)}, lane));
@@ -5175,7 +5185,15 @@ function getImageDimensions(dataUrl){
    principal) même sur un moniteur 4K, tout en divisant la mémoire
    utilisée par photo par un facteur de 5 à 15 selon la résolution
    d'origine. */
-const IMPORT_MAX_DIM = 2400;
+const IMPORT_MAX_DIM = (navigator.deviceMemory && navigator.deviceMemory <= 4) ? 1600 : 2400;
+/* navigator.deviceMemory (Chrome/Android uniquement, absent ailleurs — d'où
+   le premier test) donne une estimation approximative, en Go, de la RAM de
+   l'appareil. En dessous de 4 Go (cas typique d'un Samsung Galaxy A51,
+   milieu/entrée de gamme), on vise une taille de sortie plus petite : moins
+   de pixels à décoder par <canvas> ci-dessous, moins de mémoire occupée par
+   chaque dataUrl stocké en mémoire/IndexedDB, donc moins de risque
+   d'épuiser la mémoire disponible sur un import de plusieurs dizaines de
+   photos (voir l'avertissement Android "Mémoire insuffisante" observé). */
 const IMPORT_JPEG_QUALITY = 0.86;
 /* Décode une photo pour mesurer ses dimensions et, si nécessaire, la
    redimensionne via <canvas> pour ramener son plus grand côté à
@@ -5198,7 +5216,15 @@ function loadAndMaybeDownscaleImage(dataUrl){
         const canvas = document.createElement("canvas");
         canvas.width = nw; canvas.height = nh;
         canvas.getContext("2d").drawImage(img, 0, 0, nw, nh);
-        resolve({dataUrl: canvas.toDataURL("image/jpeg", IMPORT_JPEG_QUALITY), width: nw, height: nh});
+        const out = canvas.toDataURL("image/jpeg", IMPORT_JPEG_QUALITY);
+        // Libère explicitement les plus gros objets dès qu'ils ne servent
+        // plus (le pixel buffer décodé de <img>, potentiellement énorme
+        // pour une photo pleine résolution, et le canvas lui-même) plutôt
+        // que de compter uniquement sur le garbage collector pour les
+        // repérer — utile sur un appareil à mémoire limitée où plusieurs
+        // photos s'enchaînent (voir IMPORT_MAX_DIM ci-dessus).
+        img.src = ""; canvas.width = 0; canvas.height = 0;
+        resolve({dataUrl: out, width: nw, height: nh});
       }catch(e){
         // Échec du redimensionnement (image corrompue pour le canvas,
         // restriction navigateur…) : on garde l'original plutôt que de
