@@ -1323,10 +1323,15 @@ button{font-family:inherit;}
       <div class="edit-panel" data-panel="suggestions">
         <div class="suggestion-list" id="suggestionList"></div>
         <button class="btn" id="edRedEyeBtn" type="button" style="width:100%; margin-top:10px;">👁️ Correctif yeux rouges</button>
+        <div class="slider-row hidden" id="redEyeBrushRow" style="margin-top:10px; margin-bottom:0;">
+          <label for="redEyeBrushSize">Taille du pinceau <span id="redEyeBrushSizeVal">100%</span></label>
+          <input type="range" id="redEyeBrushSize" min="30" max="250" value="100">
+        </div>
         <p class="drive-note" id="redEyeHint" style="margin-top:6px;">
           Activez, puis touchez chaque œil concerné sur l'aperçu ci-dessus —
           la zone rougie est neutralisée à chaque appui, autant de fois que
-          nécessaire. Touchez à nouveau le bouton pour arrêter.
+          nécessaire. Ajustez la taille du pinceau ci-dessus pour ne pas
+          déborder sur la peau. Touchez à nouveau le bouton pour arrêter.
         </p>
       </div>
 
@@ -6811,6 +6816,7 @@ document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
    fondu doux vers le bord du disque pour ne pas laisser de frontière nette.
    ----------------------------------------------------------------- */
 let redEyeModeOn = false;
+let redEyeBrushFactor = 1; // 0.3 à 2.5, piloté par le curseur "Taille du pinceau"
 function exitRedEyeMode(){
   redEyeModeOn = false;
   const btn = document.getElementById("edRedEyeBtn");
@@ -6818,7 +6824,12 @@ function exitRedEyeMode(){
   btn.classList.remove("copper");
   btn.textContent = "👁️ Correctif yeux rouges";
   img.style.cursor = "";
+  document.getElementById("redEyeBrushRow").classList.add("hidden");
 }
+document.getElementById("redEyeBrushSize").addEventListener("input", (e)=>{
+  redEyeBrushFactor = e.target.value / 100;
+  document.getElementById("redEyeBrushSizeVal").textContent = e.target.value + "%";
+});
 function applyRedEyeFix(cx, cy){
   const img = document.getElementById("edPreviewImg");
   // Repart de l'aperçu actuellement affiché (déjà recadré/retouché le cas
@@ -6829,7 +6840,11 @@ function applyRedEyeFix(cx, cy){
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0);
 
-  const radius = Math.max(10, Math.round(Math.min(canvas.width, canvas.height) * 0.018));
+  // Taille de base (~1,8% du plus petit côté) modulée par le curseur "Taille
+  // du pinceau" (30% à 250%) : permet de resserrer le disque sur une petite
+  // pupille pour ne pas déborder sur la peau, ou de l'élargir pour un œil
+  // plus grand/une photo haute résolution.
+  const radius = Math.max(6, Math.round(Math.min(canvas.width, canvas.height) * 0.018 * redEyeBrushFactor));
   const x0 = Math.max(0, cx - radius), y0 = Math.max(0, cy - radius);
   const w = Math.min(canvas.width, cx + radius) - x0;
   const h = Math.min(canvas.height, cy + radius) - y0;
@@ -6874,6 +6889,7 @@ document.getElementById("edRedEyeBtn").addEventListener("click", ()=>{
   btn.classList.toggle("copper", redEyeModeOn); // ".active" n'a pas de style dédié pour .btn — on réutilise le même surlignage orange que "Générer" ailleurs dans l'app pour signaler un mode actif
   btn.textContent = redEyeModeOn ? "👁️ Touchez chaque œil… (appuyer ici pour arrêter)" : "👁️ Correctif yeux rouges";
   img.style.cursor = redEyeModeOn ? "crosshair" : "";
+  document.getElementById("redEyeBrushRow").classList.toggle("hidden", !redEyeModeOn);
 });
 document.getElementById("edPreviewImg").addEventListener("click", (e)=>{
   if(!redEyeModeOn) return;
