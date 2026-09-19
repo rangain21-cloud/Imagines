@@ -876,6 +876,14 @@ button{font-family:inherit;}
       au choix, comme pour « Choisir un dossier… ».
     </p>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
+    <!-- Bouton de nouvelle tentative MANUELLE (pas automatique) pour les
+         fichiers en échec d'un précédent import : certains blocages Android
+         semblent exiger un vrai geste utilisateur (un appui) pour redonner
+         l'autorisation de lecture — une reprise déclenchée toute seule par
+         le script, même après une pause, ne suffit pas toujours. Masqué par
+         défaut ; affiché uniquement s'il reste des fichiers en échec (voir
+         showRetryFailedButton / hideRetryFailedButton). -->
+    <button class="btn copper hidden" id="btnRetryFailedImports" style="width:100%; margin-top:8px;"></button>
   </div>
 
   <div class="pave">
@@ -1257,6 +1265,12 @@ button{font-family:inherit;}
       <!-- Panneau Suggestions -->
       <div class="edit-panel" data-panel="suggestions">
         <div class="suggestion-list" id="suggestionList"></div>
+        <button class="btn" id="edRedEyeBtn" type="button" style="width:100%; margin-top:10px;">👁️ Correctif yeux rouges</button>
+        <p class="drive-note" id="redEyeHint" style="margin-top:6px;">
+          Activez, puis touchez chaque œil concerné sur l'aperçu ci-dessus —
+          la zone rougie est neutralisée à chaque appui, autant de fois que
+          nécessaire. Touchez à nouveau le bouton pour arrêter.
+        </p>
       </div>
 
       <!-- Panneau Recadrer / pivoter -->
@@ -4458,6 +4472,48 @@ async function retryFailedFilesOnce(stats, csvRowByFileName){
   return recovered;
 }
 
+/* Bouton "Réessayer" MANUEL pour les fichiers toujours en échec après la
+   tentative automatique ci-dessus. Certains blocages de lecture Android
+   semblent liés à l'absence d'un geste utilisateur récent plutôt qu'à une
+   simple question de délai : une reprise déclenchée par le script seul,
+   même après une pause, ne suffit pas toujours, alors qu'un appui réel de
+   l'utilisateur peut redonner l'accès. Reste affiché tant qu'il reste des
+   échecs, avec un compteur à jour à chaque tentative. */
+let lastFailedRetryContext = null;
+function showRetryFailedButton(stats, csvRowByFileName){
+  lastFailedRetryContext = { stats, csvRowByFileName };
+  const btn = document.getElementById("btnRetryFailedImports");
+  btn.textContent = `🔄 Réessayer les ${stats.failedFiles.length} fichier(s) en échec…`;
+  btn.classList.remove("hidden");
+}
+function hideRetryFailedButton(){
+  lastFailedRetryContext = null;
+  document.getElementById("btnRetryFailedImports").classList.add("hidden");
+}
+document.getElementById("btnRetryFailedImports").addEventListener("click", async ()=>{
+  if(!lastFailedRetryContext) return;
+  const { stats, csvRowByFileName } = lastFailedRetryContext;
+  const btn = document.getElementById("btnRetryFailedImports");
+  btn.disabled = true;
+  const before = stats.failedFiles.length;
+  const recovered = await retryFailedFilesOnce(stats, csvRowByFileName);
+  btn.disabled = false;
+  if(recovered){
+    populateFilterOptions();
+    renderGrid();
+    if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+  }
+  if(stats.failedFiles.length === 0){
+    hideRetryFailedButton();
+    toast(`✅ ${recovered} fichier(s) récupéré(s) — tous les fichiers en échec ont finalement pu être lus.`);
+  } else if(recovered){
+    showRetryFailedButton(stats, csvRowByFileName);
+    toast(`✅ ${recovered} fichier(s) récupéré(s) sur ${before}. ${stats.failedFiles.length} toujours en échec — vous pouvez réessayer.`);
+  } else {
+    toast(`⚠️ Toujours aucun succès sur ces ${stats.failedFiles.length} fichier(s). Peut-être un blocage plus profond (voir Chrome à jour, ou un autre navigateur).`);
+  }
+});
+
 /* Met à jour le message de statut (et, en fin d'import, le toast récap).
    `stillLoading` indique qu'il reste des photos à traiter en arrière-plan. */
 function reportImportProgress(folderName, catalogCandidates, stats, stillLoading){
@@ -4522,6 +4578,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
       const recovered = await retryFailedFilesOnce(stats, csvRowByFileName);
       if(recovered){ populateFilterOptions(); renderGallery(); }
       const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
+      if(stats.failedFiles.length) showRetryFailedButton(stats, csvRowByFileName); else hideRetryFailedButton();
       celebrateImportComplete(
         stats,
         importSummaryMessage(stats) + recoveredNote,
@@ -4586,6 +4643,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // chargées / Y restantes") puis se termine sur "Aucune image à afficher"
   // sans le moindre toast d'erreur.
   const myImportToken = ++importToken;
+  hideRetryFailedButton(); // un nouvel import démarre : le bouton d'un précédent échec n'a plus de sens
   const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
   slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
   const allFiles = [...fileList];
@@ -4727,6 +4785,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     const recovered = await retryFailedFilesOnce(stats, csvRowByFileName);
     if(recovered){ populateFilterOptions(); renderGrid(); }
     const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
+    if(stats.failedFiles.length) showRetryFailedButton(stats, csvRowByFileName); else hideRetryFailedButton();
     celebrateImportComplete(
       stats,
       importSummaryMessage(stats) + slowStorageNote + recoveredNote,
@@ -6536,6 +6595,7 @@ document.querySelectorAll(".edit-tab").forEach(tab=>{
     document.querySelectorAll(".edit-panel").forEach(p=>p.classList.add("hidden"));
     tab.classList.add("active");
     document.querySelector(`.edit-panel[data-panel="${tab.dataset.tab}"]`).classList.remove("hidden");
+    if(tab.dataset.tab !== "suggestions") exitRedEyeMode(); // le mode "toucher pour corriger" n'a de sens que sur cet onglet
   });
 });
 
@@ -6562,6 +6622,7 @@ function startCropMode(){
     toast("Réinitialisez d'abord la rotation avant de rogner l'image.");
     return;
   }
+  exitRedEyeMode(); // les deux modes de retouche à la souris/au doigt ne peuvent pas être actifs en même temps
   document.getElementById("editPreviewWrap").classList.add("cropping");
   document.getElementById("cropOverlay").classList.remove("hidden");
   document.getElementById("cropToolbar").classList.remove("hidden");
@@ -6659,11 +6720,99 @@ document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
   toast("Recadrage appliqué à l'aperçu — cliquez sur « Enregistrer » pour le conserver.");
 });
 
+/* -----------------------------------------------------------------
+   Correctif yeux rouges : pas de détection automatique des visages/yeux
+   (hors de portée raisonnable ici) — l'utilisateur touche lui-même
+   l'endroit à corriger sur l'aperçu, comme il viserait avec le doigt sur
+   une photo papier. Chaque appui neutralise, dans un petit disque autour
+   du point touché, les pixels nettement plus rouges que verts/bleus
+   (signature colorimétrique typique d'un reflet de flash dans la pupille,
+   assez différente d'un ton de peau normal pour éviter les faux positifs
+   grossiers) — ramenés à un gris légèrement assombri et neutre, avec un
+   fondu doux vers le bord du disque pour ne pas laisser de frontière nette.
+   ----------------------------------------------------------------- */
+let redEyeModeOn = false;
+function exitRedEyeMode(){
+  redEyeModeOn = false;
+  const btn = document.getElementById("edRedEyeBtn");
+  const img = document.getElementById("edPreviewImg");
+  btn.classList.remove("copper");
+  btn.textContent = "👁️ Correctif yeux rouges";
+  img.style.cursor = "";
+}
+function applyRedEyeFix(cx, cy){
+  const img = document.getElementById("edPreviewImg");
+  // Repart de l'aperçu actuellement affiché (déjà recadré/retouché le cas
+  // échéant) : simple et fiable, quitte à redessiner l'image entière à
+  // chaque appui plutôt que de ne toucher que le disque ciblé.
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+
+  const radius = Math.max(10, Math.round(Math.min(canvas.width, canvas.height) * 0.018));
+  const x0 = Math.max(0, cx - radius), y0 = Math.max(0, cy - radius);
+  const w = Math.min(canvas.width, cx + radius) - x0;
+  const h = Math.min(canvas.height, cy + radius) - y0;
+  if(w <= 0 || h <= 0) return;
+  const imgData = ctx.getImageData(x0, y0, w, h);
+  const d = imgData.data;
+  const r2 = radius*radius;
+  for(let py=0; py<h; py++){
+    for(let px=0; px<w; px++){
+      const dx = (x0+px) - cx, dy = (y0+py) - cy;
+      const distSq = dx*dx + dy*dy;
+      if(distSq > r2) continue; // hors du disque ciblé : pixel inchangé
+      const i = (py*w + px) * 4;
+      const r = d[i], g = d[i+1], b = d[i+2];
+      const redness = r - (g+b)/2;
+      if(redness > 35){ // seuil empirique : rouge nettement dominant, typique d'un reflet de flash — une peau normale reste bien en dessous
+        const falloff = 1 - (Math.sqrt(distSq)/radius) * 0.5; // fondu doux vers le bord du disque, pas de frontière nette
+        const target = ((g+b)/2) * 0.72; // légèrement assombri : une pupille corrigée reste sombre, pas gris clair
+        d[i]   = r   + (target - r)   * falloff;
+        d[i+1] = g   + (target*0.97 - g) * falloff;
+        d[i+2] = b   + (target*0.97 - b) * falloff;
+      }
+    }
+  }
+  ctx.putImageData(imgData, x0, y0);
+  const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  editDraft.dataUrl = newDataUrl;
+  editDraft.width = canvas.width;
+  editDraft.height = canvas.height;
+  editDraft.cropped = true; // réutilise le même indicateur "pixels déjà modifiés" que le recadrage : "Enregistrer" reprend ce dataUrl sans distinction
+  img.src = newDataUrl;
+}
+document.getElementById("edRedEyeBtn").addEventListener("click", ()=>{
+  if((editDraft.rotation||0) % 360 !== 0){
+    toast("Réinitialisez d'abord la rotation avant le correctif yeux rouges.");
+    return;
+  }
+  redEyeModeOn = !redEyeModeOn;
+  if(redEyeModeOn) exitCropMode(); // les deux modes ne peuvent pas être actifs en même temps
+  const btn = document.getElementById("edRedEyeBtn");
+  const img = document.getElementById("edPreviewImg");
+  btn.classList.toggle("copper", redEyeModeOn); // ".active" n'a pas de style dédié pour .btn — on réutilise le même surlignage orange que "Générer" ailleurs dans l'app pour signaler un mode actif
+  btn.textContent = redEyeModeOn ? "👁️ Touchez chaque œil… (appuyer ici pour arrêter)" : "👁️ Correctif yeux rouges";
+  img.style.cursor = redEyeModeOn ? "crosshair" : "";
+});
+document.getElementById("edPreviewImg").addEventListener("click", (e)=>{
+  if(!redEyeModeOn) return;
+  const img = e.currentTarget;
+  const bounds = img.getBoundingClientRect();
+  const scaleX = img.naturalWidth / img.clientWidth;
+  const scaleY = img.naturalHeight / img.clientHeight;
+  const cx = Math.round((e.clientX - bounds.left) * scaleX);
+  const cy = Math.round((e.clientY - bounds.top) * scaleY);
+  applyRedEyeFix(cx, cy);
+});
+
 document.getElementById("btnEdit").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
   editDraft = Object.assign({}, p); // copie de travail — rien n'est écrit tant que "Enregistrer" n'est pas cliqué
   editDraft.cropped = false;
   exitCropMode();
+  exitRedEyeMode();
   document.getElementById("edPreviewImg").src = p.dataUrl;
   document.getElementById("edFileName").value = p.fileName || "";
   document.getElementById("edDate").value = toDateTimeLocalValue(p.dateAchat);
