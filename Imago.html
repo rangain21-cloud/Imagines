@@ -515,8 +515,8 @@ button{font-family:inherit;}
   #modalEdit .modal-head{ flex:0 0 auto; }
   #modalEdit .edit-preview-wrap{ flex:1 1 55%; min-height:0; overflow:auto; }
   #modalEdit .crop-toolbar{ flex:0 0 auto; }
-  #modalEdit .edit-tabs{ flex:0 0 auto; }
-  #modalEdit .modal-body{ flex:1 1 45%; min-height:0; overflow-y:auto; }
+  #modalEdit .edit-tabs-row{ flex:1 1 45%; min-height:0; }
+  #modalEdit .modal-body{ flex:1 1 auto; min-height:0; overflow-y:auto; }
   #modalEdit .modal-foot{ flex:0 0 auto; }
 }
 .modal-head{
@@ -618,17 +618,25 @@ button{font-family:inherit;}
   border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap;
 }
 .crop-toolbar .hint{font-size:12px; color:var(--ink-dim); margin-right:auto;}
+.edit-tabs-row{
+  display:flex; flex-direction:row; /* onglets en colonne à gauche, contenu de l'onglet actif à droite */
+}
+.edit-tabs-row .modal-body{ flex:1 1 auto; min-width:0; } /* laisse le panneau actif occuper tout l'espace restant à droite des onglets, sur mobile comme sur PC */
 .edit-tabs{
-  display:flex; border-bottom:1px solid var(--line); background:var(--bg-panel-2);
+  display:flex; flex-direction:column; flex:0 0 auto;
+  border-bottom:none; border-right:1px solid var(--line);
+  background:var(--bg-panel-2);
 }
 .edit-tab{
-  flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;
-  padding:10px 6px; background:none; border:none; border-bottom:2px solid transparent;
+  flex:0 0 auto; width:76px; /* plus flex:1 (répartition sur toute la largeur) : chaque onglet garde sa hauteur naturelle, empilé verticalement */
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:10px 6px; background:none; border:none;
+  border-right:3px solid transparent; border-bottom:none;
   color:var(--ink-dim); cursor:pointer; font-size:18px;
 }
 .edit-tab span{font-size:10.5px; letter-spacing:.02em;}
 .edit-tab:hover{color:var(--ink);}
-.edit-tab.active{color:var(--copper-hi); border-bottom-color:var(--copper);}
+.edit-tab.active{color:var(--copper-hi); border-right-color:var(--copper);}
 .edit-panel{padding:2px;}
 .suggestion-list{display:flex; flex-direction:column; gap:8px;}
 .suggestion-item{
@@ -1300,6 +1308,7 @@ button{font-family:inherit;}
       <button class="btn copper" id="cropApplyBtn" type="button">Appliquer le recadrage</button>
     </div>
 
+    <div class="edit-tabs-row" id="editTabsRow">
     <div class="edit-tabs" role="tablist">
       <button class="edit-tab active" data-tab="suggestions" title="Suggestions">✨<span>Suggestions</span></button>
       <button class="edit-tab" data-tab="recadrer" title="Recadrer / pivoter">⤾<span>Recadrer</span></button>
@@ -1392,6 +1401,7 @@ button{font-family:inherit;}
         </div>
       </div>
 
+    </div>
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalEdit">Annuler</button>
