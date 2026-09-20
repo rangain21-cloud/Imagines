@@ -8141,7 +8141,7 @@ window.addEventListener("mouseup", ()=> loupeDrag=false);
 function renderFinalImageDataUrl(p){
   return new Promise((resolve, reject)=>{
     const img = new Image();
-    img.onload = ()=>{
+    img.onload = async ()=>{
       const rot = ((p.rotation||0) % 360 + 360) % 360;
       const rad = rot * Math.PI/180;
       const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
@@ -8154,7 +8154,17 @@ function renderFinalImageDataUrl(p){
       ctx.translate(w/2, h/2);
       ctx.rotate(rad);
       ctx.drawImage(img, -img.naturalWidth/2, -img.naturalHeight/2);
-      resolve(canvas.toDataURL("image/jpeg", 0.92));
+      let out = canvas.toDataURL("image/jpeg", 0.92);
+      // canvas.toDataURL() efface systématiquement tout l'EXIF de la photo
+      // d'origine (aucune métadonnée ne "survit" à un passage par un canvas)
+      // — sans cette réinjection, une photo tournée/filtrée perdait Caméra/
+      // Lieu/Map au téléchargement, même juste après les avoir écrits.
+      try{
+        out = await writeMetadataIntoJpegDataUrl(out, {
+          cameraModel: p.optique, lieu: p.lieu, mapField: p.map
+        });
+      }catch(e){ console.warn("[Imago] Réinjection EXIF après aplatissement impossible :", e); }
+      resolve(out);
     };
     img.onerror = reject;
     img.src = p.dataUrl;
