@@ -5554,6 +5554,21 @@ function ensurePiexifLoaded(){
 async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField}){
   if(!dataUrl || !dataUrl.startsWith("data:image/jpeg")) return dataUrl;
   if(!cameraModel && !lieu && !mapField) return dataUrl; // rien à écrire
+  // Normalise vers EXACTEMENT le préfixe attendu par piexifjs
+  // ("data:image/jpeg;base64,"), quitte à corriger une variante proche —
+  // ex. "image/jpg" (non standard mais parfois rencontré) que la
+  // vérification interne de la bibliothèque (splitIntoSegments) ne
+  // reconnaît pas toujours, contrairement à sa vérification de façade
+  // (insert), d'où un échec "Given data isn't JPEG." malgré un fichier
+  // JPEG tout à fait valide.
+  const commaIdx = dataUrl.indexOf(",");
+  if(commaIdx < 0) return dataUrl;
+  const prefix = dataUrl.slice(0, commaIdx).toLowerCase();
+  if(!prefix.includes("base64")){
+    console.warn(`[Imago] Écriture EXIF ignorée : dataUrl non base64 (préfixe "${dataUrl.slice(0,40)}").`);
+    return dataUrl;
+  }
+  const normalizedDataUrl = "data:image/jpeg;base64," + dataUrl.slice(commaIdx+1);
   try{
     await ensurePiexifLoaded();
     const zeroth = {};
@@ -5571,14 +5586,14 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     }
     if(!Object.keys(zeroth).length && !Object.keys(gps).length) return dataUrl;
     let exifObj;
-    try{ exifObj = piexif.load(dataUrl); }
+    try{ exifObj = piexif.load(normalizedDataUrl); }
     catch(e){ exifObj = {"0th":{}, "Exif":{}, "GPS":{}, "1st":{}, "thumbnail":null}; }
     exifObj["0th"] = Object.assign({}, exifObj["0th"], zeroth);
     if(Object.keys(gps).length) exifObj["GPS"] = Object.assign({}, exifObj["GPS"], gps);
     const exifBytes = piexif.dump(exifObj);
-    return piexif.insert(exifBytes, dataUrl);
+    return piexif.insert(exifBytes, normalizedDataUrl);
   }catch(e){
-    console.warn("[Imago] Écriture des métadonnées EXIF impossible (fichier enregistré sans, catalogue Imago inchangé) :", e);
+    console.warn(`[Imago] Écriture des métadonnées EXIF impossible (fichier enregistré sans, catalogue Imago inchangé) — préfixe reçu : "${dataUrl.slice(0,40)}" :`, e);
     return dataUrl;
   }
 }
