@@ -520,6 +520,13 @@ button{font-family:inherit;}
   #modalEdit .modal-body{ flex:1 1 auto; min-height:0; overflow-y:auto; }
   #modalEdit .modal-foot{ flex:0 0 auto; }
 }
+/* En-tête et pied de page réduits au minimum pour cette modale précisément
+   (pas les autres) : ici, contrairement aux modales de formulaire, chaque
+   pixel de hauteur gagné profite directement à la zone d'aperçu de l'image
+   — l'objectif affiché par la demande. */
+#modalEdit .modal-head{ padding:8px 12px; }
+#modalEdit .modal-head h2{ font-size:15px; }
+#modalEdit .modal-foot{ padding:8px 12px; gap:8px; }
 .modal-head{
   display:flex; align-items:center; justify-content:space-between;
   padding:16px 20px; border-bottom:1px solid var(--line);
