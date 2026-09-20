@@ -514,10 +514,10 @@ button{font-family:inherit;}
     resize:both; /* poignée native en bas à droite pour agrandir/réduire la modale à la souris — la barre latérale des onglets garde une largeur fixe (54px, voir .edit-tab), donc tout agrandissement profite d'abord à l'aperçu et au panneau actif */
   }
   #modalEdit .modal-head{ flex:0 0 auto; }
-  #modalEdit .edit-preview-wrap{ flex:1 1 55%; min-height:0; overflow:auto; }
+  #modalEdit .edit-preview-wrap{ flex:1 1 auto; min-height:0; overflow:auto; }
   #modalEdit .crop-toolbar{ flex:0 0 auto; }
-  #modalEdit .edit-tabs-row{ flex:1 1 45%; min-height:0; }
-  #modalEdit .modal-body{ flex:1 1 auto; min-height:0; overflow-y:auto; }
+  #modalEdit .edit-tabs-row{ flex:0 1 auto; max-height:42%; min-height:0; } /* ne prend plus une part fixe (45%) de la hauteur : se limite à son contenu réel, l'aperçu récupère tout le reste ; plafond de 42% pour rester utilisable si un onglet a beaucoup de contenu */
+  #modalEdit .modal-body{ flex:0 1 auto; min-height:0; overflow-y:auto; }
   #modalEdit .modal-foot{ flex:0 0 auto; }
 }
 /* En-tête et pied de page réduits au minimum pour cette modale précisément
@@ -527,6 +527,7 @@ button{font-family:inherit;}
 #modalEdit .modal-head{ padding:8px 12px; }
 #modalEdit .modal-head h2{ font-size:15px; }
 #modalEdit .modal-foot{ padding:8px 12px; gap:8px; }
+#modalEdit .modal-body{ padding:8px 12px; }
 .modal-head{
   display:flex; align-items:center; justify-content:space-between;
   padding:16px 20px; border-bottom:1px solid var(--line);
@@ -636,13 +637,13 @@ button{font-family:inherit;}
   background:var(--bg-panel-2);
 }
 .edit-tab{
-  flex:0 0 auto; width:76px; /* doublé (voir demande) par rapport à la taille alignée sur les puces de suggestion */
-  display:flex; flex-direction:column; align-items:center; gap:2px;
-  padding:6px 4px; background:none; border:none;
+  flex:0 0 auto; width:52px; /* réduite à nouveau (voir demande) : moitié de la taille doublée précédemment */
+  display:flex; flex-direction:column; align-items:center; gap:1px;
+  padding:4px 3px; background:none; border:none;
   border-right:2px solid transparent; border-bottom:none;
-  color:var(--ink-dim); cursor:pointer; font-size:24px; line-height:1;
+  color:var(--ink-dim); cursor:pointer; font-size:16px; line-height:1;
 }
-.edit-tab span{font-size:13px; letter-spacing:0; line-height:1.1;}
+.edit-tab span{font-size:8.5px; letter-spacing:0; line-height:1.1;}
 .edit-tab:hover{color:var(--ink);}
 .edit-tab.active{color:var(--copper-hi); border-right-color:var(--copper);}
 .edit-panel{padding:2px;}
@@ -1331,12 +1332,12 @@ button{font-family:inherit;}
       <!-- Panneau Suggestions -->
       <div class="edit-panel" data-panel="suggestions">
         <div class="suggestion-list" id="suggestionList"></div>
-        <button class="btn" id="edRedEyeBtn" type="button" style="width:100%; margin-top:10px; font-size:6.5px;">👁️ Correctif yeux rouges</button>
-        <div class="slider-row hidden" id="redEyeBrushRow" style="margin-top:10px; margin-bottom:0;">
+        <button class="btn" id="edRedEyeBtn" type="button" style="width:100%; margin-top:5px; padding:5px; font-size:6.5px;">👁️ Correctif yeux rouges</button>
+        <div class="slider-row hidden" id="redEyeBrushRow" style="margin-top:5px; margin-bottom:0;">
           <label for="redEyeBrushSize">Taille du pinceau <span id="redEyeBrushSizeVal">100%</span></label>
           <input type="range" id="redEyeBrushSize" min="30" max="250" value="100">
         </div>
-        <p class="drive-note" id="redEyeHint" style="margin-top:6px; font-size:6.5px; line-height:1.3;">
+        <p class="drive-note" id="redEyeHint" style="margin-top:3px; margin-bottom:0; font-size:6.5px; line-height:1.25;">
           Activez, puis touchez chaque œil concerné sur l'aperçu ci-dessus —
           la zone rougie est neutralisée à chaque appui, autant de fois que
           nécessaire. Ajustez la taille du pinceau ci-dessus pour ne pas
