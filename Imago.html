@@ -627,34 +627,34 @@ button{font-family:inherit;}
 }
 .crop-toolbar .hint{font-size:12px; color:var(--ink-dim); margin-right:auto;}
 .edit-tabs-row{
-  display:flex; flex-direction:row; align-items:flex-start; /* la colonne d'onglets ne s'étire plus sur toute la hauteur : elle se limite à la taille de son contenu (très réduite ci-dessous), au lieu de gonfler artificiellement "la hauteur de la side-bar" */
+  display:flex; flex-direction:row; /* onglets en colonne à gauche, contenu de l'onglet actif à droite */
 }
-.edit-tabs-row .modal-body{ flex:1 1 auto; min-width:0; align-self:stretch; } /* le panneau de contenu, lui, continue de remplir toute la hauteur disponible */
+.edit-tabs-row .modal-body{ flex:1 1 auto; min-width:0; } /* laisse le panneau actif occuper tout l'espace restant à droite des onglets, sur mobile comme sur PC */
 .edit-tabs{
   display:flex; flex-direction:column; flex:0 0 auto;
   border-bottom:none; border-right:1px solid var(--line);
   background:var(--bg-panel-2);
 }
 .edit-tab{
-  flex:0 0 auto; width:34px; /* colonne très resserrée : hauteur divisée par ~3 (voir ci-dessous), donc plus besoin d'autant de largeur non plus */
-  display:flex; flex-direction:column; align-items:center; gap:0;
-  padding:2px 2px; background:none; border:none;
-  border-right:2px solid transparent; border-bottom:none;
-  color:var(--ink-dim); cursor:pointer; font-size:10px; line-height:1.05;
+  flex:0 0 auto; width:54px; /* libellés très courts (voir HTML) : la colonne reste étroite, laissant le maximum de place à l'aperçu de l'image */
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:9px 4px; background:none; border:none;
+  border-right:3px solid transparent; border-bottom:none;
+  color:var(--ink-dim); cursor:pointer; font-size:17px;
 }
-.edit-tab span{font-size:5px; letter-spacing:0; line-height:1.05;}
+.edit-tab span{font-size:9.5px; letter-spacing:.01em;}
 .edit-tab:hover{color:var(--ink);}
 .edit-tab.active{color:var(--copper-hi); border-right-color:var(--copper);}
 .edit-panel{padding:2px;}
-.suggestion-list{display:flex; flex-wrap:wrap; gap:6px;}
+.suggestion-list{display:flex; flex-wrap:wrap; gap:3px;}
 .suggestion-item{
-  display:flex; flex-direction:column; align-items:center; gap:2px; width:62px;
-  padding:8px 3px; border-radius:8px; text-align:center;
-  background:var(--bg-panel-2); border:1px solid var(--line); cursor:pointer; color:var(--ink); font-size:10px;
+  display:flex; flex-direction:column; align-items:center; gap:1px; width:38px;
+  padding:3px 2px; border-radius:6px; text-align:center;
+  background:var(--bg-panel-2); border:1px solid var(--line); cursor:pointer; color:var(--ink); font-size:6.5px; line-height:1.1;
 }
 .suggestion-item:hover{border-color:var(--copper);}
 .suggestion-item.active{border-color:var(--copper); background:#2a3d2f; color:var(--copper-hi);}
-.suggestion-item .s-ic{font-size:17px; width:auto;}
+.suggestion-item .s-ic{font-size:12px; width:auto; line-height:1;}
 .slider-row{margin-bottom:16px;}
 .slider-row label{display:flex; justify-content:space-between; font-size:12px; color:var(--ink-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:.04em;}
 .slider-row input[type=range]{width:100%;}
