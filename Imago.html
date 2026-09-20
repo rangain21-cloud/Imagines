@@ -6985,6 +6985,56 @@ window.addEventListener("mouseup", ()=>{
   document.getElementById("editPreviewWrap").classList.remove("panning");
 });
 
+/* -----------------------------------------------------------------
+   Déplacement de la modale "Modifier" elle-même sur l'écran, en glissant
+   son en-tête (comme une fenêtre de bureau) — s'ajoute au redimensionnement
+   déjà en place (poignée CSS "resize" en bas à droite). Par défaut la
+   modale est centrée via le flex du parent (.modal-overlay) ; au premier
+   glisser, on bascule vers un positionnement fixe explicite figé sur sa
+   position actuelle, pour ne pas qu'elle saute de place au moment où le
+   glisser commence. */
+function resetEditModalPositionAndSize(){
+  const modal = document.querySelector("#modalEdit .modal");
+  modal.style.position = "";
+  modal.style.left = "";
+  modal.style.top = "";
+  modal.style.margin = "";
+  modal.style.width = "";
+  modal.style.height = "";
+}
+(function enableEditModalDrag(){
+  const head = document.querySelector("#modalEdit .modal-head");
+  const modal = document.querySelector("#modalEdit .modal");
+  let dragging = false, startX=0, startY=0, startLeft=0, startTop=0;
+  head.style.cursor = "move";
+  head.addEventListener("mousedown", (e)=>{
+    if(e.target.closest(".modal-close")) return; // ne pas gêner le bouton de fermeture (×)
+    const rect = modal.getBoundingClientRect();
+    modal.style.position = "fixed";
+    modal.style.left = rect.left + "px";
+    modal.style.top = rect.top + "px";
+    modal.style.margin = "0";
+    dragging = true;
+    startX = e.clientX; startY = e.clientY;
+    startLeft = rect.left; startTop = rect.top;
+    e.preventDefault(); // évite la sélection de texte du titre pendant le glisser
+  });
+  window.addEventListener("mousemove", (e)=>{
+    if(!dragging) return;
+    let newLeft = startLeft + (e.clientX - startX);
+    let newTop = startTop + (e.clientY - startY);
+    // Garde toujours un peu de la modale accessible, pour ne jamais pouvoir
+    // la perdre complètement hors de l'écran (ex. la poignée de
+    // redimensionnement en bas à droite doit rester atteignable).
+    const margin = 60;
+    newLeft = Math.min(Math.max(newLeft, margin - modal.offsetWidth), window.innerWidth - margin);
+    newTop = Math.min(Math.max(newTop, 0), window.innerHeight - margin);
+    modal.style.left = newLeft + "px";
+    modal.style.top = newTop + "px";
+  });
+  window.addEventListener("mouseup", ()=>{ dragging = false; });
+})();
+
 document.getElementById("btnEdit").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
   editDraft = Object.assign({}, p); // copie de travail — rien n'est écrit tant que "Enregistrer" n'est pas cliqué
@@ -6992,6 +7042,7 @@ document.getElementById("btnEdit").addEventListener("click", ()=>{
   exitCropMode();
   exitRedEyeMode();
   editViewScale = 1; // repart toujours d'une vue "ajustée" (100%) à l'ouverture, jamais du zoom laissé par une précédente retouche
+  resetEditModalPositionAndSize(); // toujours recentrée à l'ouverture, même si on l'avait déplacée/redimensionnée la fois précédente
   document.getElementById("edPreviewImg").src = p.dataUrl;
   document.getElementById("edFileName").value = p.fileName || "";
   document.getElementById("edDate").value = toDateTimeLocalValue(p.dateAchat);
