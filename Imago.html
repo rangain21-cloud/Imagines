@@ -507,10 +507,11 @@ button{font-family:inherit;}
    l'aperçu et le panneau d'onglets se partageant le reste. */
 @media (min-width: 761px){
   #modalEdit .modal{
-    width:80vw; max-width:80vw;
-    height:80vh; max-height:80vh;
+    width:80vw; max-width:95vw; min-width:480px;
+    height:80vh; max-height:95vh; min-height:420px;
     display:flex; flex-direction:column;
-    overflow:hidden; /* le défilement se fait dans les zones internes ci-dessous, pas sur toute la modale */
+    overflow:hidden; /* le défilement se fait dans les zones internes ci-dessous, pas sur toute la modale ; nécessaire aussi pour que "resize" ci-dessous fonctionne */
+    resize:both; /* poignée native en bas à droite pour agrandir/réduire la modale à la souris — la barre latérale des onglets garde une largeur fixe (54px, voir .edit-tab), donc tout agrandissement profite d'abord à l'aperçu et au panneau actif */
   }
   #modalEdit .modal-head{ flex:0 0 auto; }
   #modalEdit .edit-preview-wrap{ flex:1 1 55%; min-height:0; overflow:auto; }
@@ -6942,6 +6943,15 @@ function setEditZoom(scale, anchor){
 }
 document.getElementById("edPreviewImg").addEventListener("load", ()=>{ editViewScale = 1; applyEditZoom(); });
 window.addEventListener("resize", ()=> applyEditZoom());
+// La modale "Modifier" peut désormais être redimensionnée à la souris (CSS
+// "resize", voir plus haut) : ce redimensionnement ne déclenche PAS
+// l'événement "resize" de la fenêtre (qui ne concerne que la fenêtre du
+// navigateur elle-même), donc sans cette observation dédiée, l'aperçu
+// resterait affiché à son ancienne taille tant qu'aucune autre action ne
+// forçait un recalcul.
+if("ResizeObserver" in window){
+  new ResizeObserver(()=> applyEditZoom()).observe(document.getElementById("editPreviewWrap"));
+}
 document.getElementById("edZoomIn").addEventListener("click", ()=> setEditZoom(editViewScale + 0.2));
 document.getElementById("edZoomOut").addEventListener("click", ()=> setEditZoom(editViewScale - 0.2));
 document.getElementById("edZoomResetBtn").addEventListener("click", ()=>{
