@@ -2921,7 +2921,18 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   let recoveredCount = 0;
 
   try{
-  if(existingAlbumFile){
+  // Pour "animaux", on NE récupère PAS l'éventuel Album-Animaux.csv existant
+  // comme base : contrairement aux autres rubriques (case à cocher "favori"/
+  // "art"/…, qui peut être manuellement activée sur une photo dont le
+  // catalogue source a depuis disparu, d'où l'intérêt de préserver ces
+  // entrées d'une génération à l'autre), "animaux" est intégralement
+  // recalculable à chaque fois à partir de la colonne "titre" des catalogues
+  // relus. Fusionner avec l'ancien fichier ferait perdurer des entrées
+  // correspondant à un intitulé précédemment saisi (ex. "Anima") même après
+  // avoir changé l'intitulé recherché (ex. "Travau"), puisque ces anciennes
+  // entrées ne seraient retirées que si leur catalogue d'origine est relu
+  // ET entièrement sélectionné cette fois-ci (voir la purge plus bas).
+  if(existingAlbumFile && !isAnimaux){
     try{
       const text = await existingAlbumFile.text();
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
@@ -3043,7 +3054,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   document.getElementById("btnHOFGenerate").classList.add("done"); // fond vert : étape 1 terminée avec succès
   const totalOut = rowsById.size;
   statusEl.textContent =
-    (existingAlbumFile
+    (existingAlbumFile && !isAnimaux
       ? `« ${targetName} » existant récupéré (${recoveredCount} entrée(s)) et mis à jour`
       : `« ${targetName} » généré`) +
     ` : ${totalOut} entrée(s) au total, ${totalFav} « ${criterionLabel} » repris depuis ${files.length - skippedFiles} catalogue(s)` +
