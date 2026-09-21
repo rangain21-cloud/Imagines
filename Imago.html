@@ -5596,9 +5596,24 @@ function reencodeAsGenuineJpeg(dataUrl){
     img.src = dataUrl;
   });
 }
-async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField}){
+/* Encode une chaîne au format attendu par les tags "XP*" propres à Windows
+   (XPTitle/XPAuthor/XPSubject/XPComment/XPKeywords, tags 0x9C9B-0x9C9F) :
+   UTF-16LE, PAS de simple ASCII comme les autres tags EXIF, sous forme d'un
+   tableau d'octets terminé par un caractère nul (2 octets). Sans cet
+   encodage précis, Windows Explorer n'affiche rien dans le champ concerné
+   même si la donnée est techniquement présente dans le fichier. */
+function toXPBytes(str){
+  const bytes = [];
+  for(let i=0;i<str.length;i++){
+    const code = str.charCodeAt(i);
+    bytes.push(code & 0xFF, (code>>8) & 0xFF);
+  }
+  bytes.push(0,0); // terminateur nul (UTF-16 : 2 octets)
+  return bytes;
+}
+async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage}){
   if(!dataUrl || !dataUrl.startsWith("data:image/jpeg")) return dataUrl;
-  if(!cameraModel && !lieu && !mapField) return dataUrl; // rien à écrire
+  if(!cameraModel && !lieu && !mapField && !auteur && !personnage) return dataUrl; // rien à écrire
   // Normalise vers EXACTEMENT le préfixe attendu par piexifjs
   // ("data:image/jpeg;base64,"), quitte à corriger une variante proche —
   // ex. "image/jpg" (non standard mais parfois rencontré) que la
@@ -5629,7 +5644,14 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     }
     const zeroth = {};
     if(cameraModel) zeroth[piexif.ImageIFD.Model] = cameraModel;
-    if(lieu) zeroth[piexif.ImageIFD.ImageDescription] = lieu;
+    // "Titre" (Windows) provient d'ImageDescription — et non de XPTitle, qui
+    // est ignoré par l'Explorateur Windows dès qu'ImageDescription existe.
+    if(personnage) zeroth[piexif.ImageIFD.ImageDescription] = personnage;
+    // "Droits d'auteur"/Copyright (Windows) — tag EXIF standard, ASCII simple.
+    if(auteur) zeroth[piexif.ImageIFD.Copyright] = auteur;
+    // "Objet"/Subject (Windows) n'a pas d'équivalent EXIF standard : c'est
+    // XPSubject (propre à Windows), à encoder en UTF-16LE (voir toXPBytes).
+    if(lieu) zeroth[piexif.ImageIFD.XPSubject] = toXPBytes(lieu);
     const gps = {};
     const q = mapField ? mapEmbedQueryFromMapField(mapField) : "";
     const coordsMatch = q && q.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
@@ -7383,7 +7405,7 @@ async function applyEditFormToSelectedPhoto(){
   if(!p.isVideo){
     const before = p.dataUrl;
     p.dataUrl = await writeMetadataIntoJpegDataUrl(p.dataUrl, {
-      cameraModel: p.optique, lieu: p.lieu, mapField: p.map
+      cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage
     });
     if(p.dataUrl !== before){
       p.poids = Math.round((p.dataUrl.length * 0.75) / 1024);
@@ -8232,7 +8254,7 @@ function renderFinalImageDataUrl(p){
       // Lieu/Map au téléchargement, même juste après les avoir écrits.
       try{
         out = await writeMetadataIntoJpegDataUrl(out, {
-          cameraModel: p.optique, lieu: p.lieu, mapField: p.map
+          cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage
         });
       }catch(e){ console.warn("[Imago] Réinjection EXIF après aplatissement impossible :", e); }
       resolve(out);
@@ -8688,7 +8710,7 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
     try{
       const before = p.dataUrl;
       p.dataUrl = await writeMetadataIntoJpegDataUrl(p.dataUrl, {
-        cameraModel: p.optique, lieu: p.lieu, mapField: p.map
+        cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage
       });
       if(p.dataUrl !== before){
         p.poids = Math.round((p.dataUrl.length * 0.75) / 1024);
