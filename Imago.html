@@ -4650,7 +4650,12 @@ function reportImportProgress(folderName, catalogCandidates, stats, stillLoading
    (requestIdleCallback) pour ne jamais geler l'interface — la planche-contact
    se complète alors progressivement sous les yeux de l'utilisateur au lieu
    de le faire attendre un import complet avant tout affichage. */
-function importRestInBackground(restFiles, csvRowByFileName, stats, token, folderName, catalogCandidates){
+function markImportButtonDone(sourceButtonId, stats){
+  if(!sourceButtonId) return;
+  const btn = document.getElementById(sourceButtonId);
+  if(btn) btn.classList.toggle("done", stats.added > 0); // fond vert : au moins une photo importée avec succès
+}
+function importRestInBackground(restFiles, csvRowByFileName, stats, token, folderName, catalogCandidates, sourceButtonId){
   let offset = 0;
   const step = async ()=>{
    try { // même filet de sécurité que handleFilesSelected : sans lui, une
@@ -4681,6 +4686,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
       if(recovered){ populateFilterOptions(); renderGallery(); }
       const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
       if(stats.failedFiles.length) showRetryFailedButton(stats, csvRowByFileName); else hideRetryFailedButton();
+      markImportButtonDone(sourceButtonId, stats); // fond vert (même logique que "Connecter à Drive") : au moins une photo importée avec succès
       celebrateImportComplete(
         stats,
         importSummaryMessage(stats) + recoveredNote,
@@ -4735,7 +4741,7 @@ function buildOrphanRecordFromCsvRow(row, fileName){
     gpsLat: null, gpsLon: null
   };
 }
-async function handleFilesSelected(fileList, folderNameOverride, skipCatalogPrompt){
+async function handleFilesSelected(fileList, folderNameOverride, skipCatalogPrompt, sourceButtonId){
  try { // filet de sécurité global : sans lui, toute exception non prévue
   // pendant l'import (n'importe où entre le nettoyage initial et le rendu
   // final) arrête tout net SANS AUCUN message — la galerie retombe sur son
@@ -4888,6 +4894,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     if(recovered){ populateFilterOptions(); renderGrid(); }
     const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
     if(stats.failedFiles.length) showRetryFailedButton(stats, csvRowByFileName); else hideRetryFailedButton();
+    markImportButtonDone(sourceButtonId, stats); // fond vert (même logique que "Connecter à Drive") : au moins une photo importée avec succès
     celebrateImportComplete(
       stats,
       importSummaryMessage(stats) + slowStorageNote + recoveredNote,
@@ -4903,7 +4910,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
       `${priorityFiles.length} photo(s) récente(s) affichée(s) — chargement des ${restFiles.length} autre(s) en arrière-plan…${slowStorageNote}`,
       slowStorageNote ? 16000 : undefined
     );
-    importRestInBackground(restFiles, csvRowByFileName, stats, myImportToken, folderName, catalogCandidates);
+    importRestInBackground(restFiles, csvRowByFileName, stats, myImportToken, folderName, catalogCandidates, sourceButtonId);
   }
  } catch(err) {
   // Voir le commentaire en tête de fonction : cette exception aurait sinon
@@ -4916,7 +4923,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   toast(`⚠️ ${msg}`, 16000);
  }
 }
-folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.files));
+folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.files, undefined, undefined, "btnPickFolder"));
 
 /* Solution de repli pour Android : certains dossiers (notamment les médias
    WhatsApp, sous stockage cloisonné "scoped storage") renvoient une erreur
@@ -4998,7 +5005,7 @@ filePickerInput.addEventListener("change", ()=>{
   if(typeof window.showDirectoryPicker !== "function"){
     // Navigateur sans File System Access API (hors Chrome/Edge) : la copie
     // n'est de toute façon pas possible, inutile de proposer la modale.
-    handleFilesSelected(files, "Sélection manuelle", true);
+    handleFilesSelected(files, "Sélection manuelle", true, "btnPickFiles");
     return;
   }
   transferCopyIntroEl.textContent = `${files.length} fichier(s) sélectionné(s) via le sélecteur de photos système : leur emplacement d'origine ne sera pas connu du catalogue (limite d'Android). Copier ces fichiers vers un dossier accessible en écriture (ex. « Transfert vers IMAGO ») pour que le catalogue enregistre un chemin fiable, réutilisable ensuite pour le diaporama et le Hall of fame ?`;
@@ -5013,11 +5020,11 @@ filePickerInput.addEventListener("change", ()=>{
       return; // annulé, échec total, ou dossier inaccessible : la modale reste ouverte pour réessayer ou "Continuer sans copier"
     }
     closeModal("modalTransferCopy");
-    handleFilesSelected(result.files, result.dirHandle.name, true);
+    handleFilesSelected(result.files, result.dirHandle.name, true, "btnPickFiles");
   };
   document.getElementById("btnTransferCopySkip").onclick = ()=>{
     closeModal("modalTransferCopy");
-    handleFilesSelected(files, "Sélection manuelle", true);
+    handleFilesSelected(files, "Sélection manuelle", true, "btnPickFiles");
   };
   openModal("modalTransferCopy");
 });
@@ -5042,6 +5049,8 @@ document.getElementById("btnPickCatalog").addEventListener("click", ()=> csvPick
 csvPickerInput.addEventListener("change", ()=>{
   pendingCatalogFiles = [...csvPickerInput.files];
   csvPickerInput.value = ""; // permet de resélectionner le(s) même(s) fichier(s) plus tard si besoin
+  const btn = document.getElementById("btnPickCatalog");
+  btn.classList.toggle("done", pendingCatalogFiles.length > 0); // même retour visuel (vert) que "Connecter à Drive" et les boutons du Hall of fame
   if(pendingCatalogFiles.length){
     toast(pendingCatalogFiles.length > 1
       ? `${pendingCatalogFiles.length} fichiers catalogue retenus — un choix vous sera proposé au prochain import d'images.`
@@ -8705,6 +8714,7 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   // suffisent à elles seules à matérialiser de nouveaux lieux / maps —
   // plus besoin de fichiers annexes lieu.csv / map.csv.
   markCsvClean();
+  document.getElementById("btnExportCsv").classList.add("done"); // même retour visuel (vert) que "Connecter à Drive"
   // Avertissement sur les entrées sans chemin enregistré : arrive quand des
   // photos ont été importées via "Sélectionner des images…" (repli Android
   // utilisé quand "Choisir un dossier" échoue) — ce sélecteur système ne
@@ -8736,6 +8746,7 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
   }
   const btn = document.getElementById("btnWriteExifBatch");
   btn.disabled = true;
+  btn.classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
   let done = 0, changed = 0, failed = 0;
   btn.textContent = `🖊️ Écriture EXIF… (0/${targets.length})`;
   for(const p of targets){
@@ -8760,6 +8771,7 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
   }
   btn.disabled = false;
   btn.textContent = "🖊️ Reporter Caméra/Lieu/Map dans les métadonnées EXIF (tout le catalogue)";
+  btn.classList.toggle("done", changed > 0); // fond vert : au moins une photo mise à jour avec succès
   renderGrid();
   autoBuildCsv();
   toast(`✅ Métadonnées EXIF à jour pour ${changed} photo(s) sur ${targets.length}.` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 8000);
@@ -8837,6 +8849,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
   }
   const btn = document.getElementById("btnExportAllPhotos");
   const resetLabel = ()=>{ btn.disabled = false; btn.textContent = "📤 Exporter toutes les photos (dossier ou .zip)"; };
+  btn.classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
   if(typeof window.showDirectoryPicker === "function"){
     let dirHandle;
     try{
@@ -8849,6 +8862,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
       btn.disabled = true;
       await exportAllPhotosAsZip(targets, btn);
       resetLabel();
+      btn.classList.add("done");
       return;
     }
     btn.disabled = true;
@@ -8865,6 +8879,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
       await delay(20);
     }
     resetLabel();
+    btn.classList.toggle("done", (done-failed) > 0); // fond vert : au moins une photo exportée avec succès
     toast(`✅ ${done-failed} photo(s) exportée(s) vers « ${dirHandle.name} ».` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 8000);
   } else {
     // Navigateur sans File System Access API (Firefox, Safari…) : seul le
@@ -8872,6 +8887,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     btn.disabled = true;
     await exportAllPhotosAsZip(targets, btn);
     resetLabel();
+    btn.classList.add("done");
   }
 });
 
@@ -9342,6 +9358,11 @@ function pushExitGuard(){
 function markCsvDirty(){
   State.dirty = true;
   if(!exitGuardPushed) pushExitGuard();
+  // Le catalogue vient de changer : l'export précédent n'est plus à jour —
+  // même logique que les boutons "done" du Hall of fame, qui repassent au
+  // gris dès qu'une nouvelle tentative démarre.
+  const btn = document.getElementById("btnExportCsv");
+  if(btn) btn.classList.remove("done");
 }
 function markCsvClean(){
   State.dirty = false;
