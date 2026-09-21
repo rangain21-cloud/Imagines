@@ -5359,12 +5359,18 @@ function loadAndMaybeDownscaleImage(dataUrl){
     const img = new Image();
     img.onload = ()=>{
       const w = img.naturalWidth, h = img.naturalHeight;
-      if(!w || !h || Math.max(w,h) <= IMPORT_MAX_DIM){
-        resolve({dataUrl, width:w, height:h});
-        return;
-      }
+      if(!w || !h){ resolve({dataUrl, width:w, height:h}); return; }
       try{
-        const scale = IMPORT_MAX_DIM / Math.max(w,h);
+        // Toujours re-encodée via <canvas> en vrai JPEG (scale=1, donc
+        // dimensions inchangées, si l'image est déjà assez petite) : avant,
+        // une image déjà sous IMPORT_MAX_DIM passait telle quelle, sans
+        // repasser par un encodage JPEG garanti — un fichier réellement en
+        // PNG mais étiqueté ".jpeg"/"image/jpeg" (rencontré en pratique,
+        // ex. via un renommage ou un outil tiers) se retrouvait alors
+        // stocké avec une étiquette trompeuse, ce qui cassait ensuite
+        // l'écriture EXIF (piexifjs refuse, à juste titre, d'insérer de
+        // l'EXIF dans des octets qui ne sont pas réellement un JPEG).
+        const scale = Math.min(1, IMPORT_MAX_DIM / Math.max(w,h));
         const nw = Math.round(w*scale), nh = Math.round(h*scale);
         const canvas = document.createElement("canvas");
         canvas.width = nw; canvas.height = nh;
@@ -5551,6 +5557,37 @@ function ensurePiexifLoaded(){
    dataUrl non-JPEG restent inchangés. N'importe quelle erreur (bibliothèque
    indisponible, fichier non conforme…) laisse le dataUrl tel quel plutôt
    que de faire échouer l'enregistrement dans le catalogue. */
+/* Vérifie que les octets réels d'un dataUrl commencent bien par la
+   signature JPEG (FF D8), indépendamment de l'étiquette "image/jpeg"
+   déclarée — celle-ci peut être trompeuse (voir loadAndMaybeDownscaleImage
+   plus haut : fichier réellement en PNG mais nommé/étiqueté comme un JPEG).
+   Quelques octets décodés suffisent, pas besoin de tout décoder. */
+function looksLikeGenuineJpeg(dataUrl){
+  try{
+    const commaIdx = dataUrl.indexOf(",");
+    const head = atob(dataUrl.slice(commaIdx+1, commaIdx+9));
+    return head.charCodeAt(0) === 0xFF && head.charCodeAt(1) === 0xD8;
+  }catch(e){ return false; }
+}
+/* Re-encode réellement en JPEG (via <canvas>, comme à l'import) un dataUrl
+   dont l'étiquette dit "image/jpeg" mais dont le contenu ne l'est pas
+   vraiment — répare à la volée une photo déjà importée avec ce défaut,
+   sans que l'utilisateur ait à la réimporter. */
+function reencodeAsGenuineJpeg(dataUrl){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      try{
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        canvas.getContext("2d").drawImage(img, 0, 0);
+        resolve(canvas.toDataURL("image/jpeg", 0.92));
+      }catch(e){ resolve(dataUrl); }
+    };
+    img.onerror = ()=> resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
 async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField}){
   if(!dataUrl || !dataUrl.startsWith("data:image/jpeg")) return dataUrl;
   if(!cameraModel && !lieu && !mapField) return dataUrl; // rien à écrire
@@ -5571,6 +5608,17 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
   const normalizedDataUrl = "data:image/jpeg;base64," + dataUrl.slice(commaIdx+1);
   try{
     await ensurePiexifLoaded();
+    // Vérifie que ce sont bien de VRAIS octets JPEG, pas juste une étiquette
+    // qui le prétend (voir loadAndMaybeDownscaleImage) — sinon, re-encode
+    // avant d'aller plus loin. Cette version corrigée sera systématiquement
+    // renvoyée (même si zeroth/gps s'avèrent vides plus bas), pour que
+    // l'appelant récupère un dataUrl réparé plutôt qu'un dataUrl encore
+    // trompeur, quoi qu'il arrive.
+    let jpegDataUrl = normalizedDataUrl;
+    if(!looksLikeGenuineJpeg(jpegDataUrl)){
+      console.warn(`[Imago] "${dataUrl.slice(0,40)}..." est étiqueté JPEG mais ne l'est pas réellement — nouvel encodage en vrai JPEG avant écriture des métadonnées.`);
+      jpegDataUrl = await reencodeAsGenuineJpeg(jpegDataUrl);
+    }
     const zeroth = {};
     if(cameraModel) zeroth[piexif.ImageIFD.Model] = cameraModel;
     if(lieu) zeroth[piexif.ImageIFD.ImageDescription] = lieu;
@@ -5584,14 +5632,14 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
       gps[piexif.GPSIFD.GPSLongitudeRef] = lon >= 0 ? "E" : "W";
       gps[piexif.GPSIFD.GPSLongitude] = piexif.GPSHelper.degToDmsRational(Math.abs(lon));
     }
-    if(!Object.keys(zeroth).length && !Object.keys(gps).length) return dataUrl;
+    if(!Object.keys(zeroth).length && !Object.keys(gps).length) return jpegDataUrl;
     let exifObj;
-    try{ exifObj = piexif.load(normalizedDataUrl); }
+    try{ exifObj = piexif.load(jpegDataUrl); }
     catch(e){ exifObj = {"0th":{}, "Exif":{}, "GPS":{}, "1st":{}, "thumbnail":null}; }
     exifObj["0th"] = Object.assign({}, exifObj["0th"], zeroth);
     if(Object.keys(gps).length) exifObj["GPS"] = Object.assign({}, exifObj["GPS"], gps);
     const exifBytes = piexif.dump(exifObj);
-    return piexif.insert(exifBytes, normalizedDataUrl);
+    return piexif.insert(exifBytes, jpegDataUrl);
   }catch(e){
     console.warn(`[Imago] Écriture des métadonnées EXIF impossible (fichier enregistré sans, catalogue Imago inchangé) — préfixe reçu : "${dataUrl.slice(0,40)}" :`, e);
     return dataUrl;
