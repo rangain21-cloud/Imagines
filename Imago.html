@@ -942,7 +942,7 @@ button{font-family:inherit;}
          le script, même après une pause, ne suffit pas toujours. Masqué par
          défaut ; affiché uniquement s'il reste des fichiers en échec (voir
          showRetryFailedButton / hideRetryFailedButton). -->
-    <button class="btn hidden" id="btnRetryFailedImports" style="width:100%; margin-top:8px;"></button>
+    <button class="btn copper hidden" id="btnRetryFailedImports" style="width:100%; margin-top:8px;"></button>
   </div>
 
   <div class="pave">
@@ -1102,10 +1102,6 @@ button{font-family:inherit;}
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="histoire"> 📜 Culture</label>
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="partition"> 🎼 Partition</label>
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="animaux"> 🐾 Animaux</label>
-      </div>
-      <div id="hofAnimauxPrefixWrap" class="hidden" style="display:flex; align-items:center; gap:6px; margin:4px 0 4px; font-size:13px;">
-        <label for="hofAnimauxPrefix" style="white-space:nowrap;">Intitulé recherché (colonne « titre ») :</label>
-        <input type="text" id="hofAnimauxPrefix" value="Anima" placeholder="ex : Anima, Travaux…" style="flex:1; min-width:0; padding:4px 6px; border-radius:4px; border:1px solid var(--line); background:var(--bg-panel); color:inherit;">
       </div>
       <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
 
@@ -2773,21 +2769,6 @@ function dedupeCatalogFilesByYear(files){
   return { files: chosen, staleDuplicates };
 }
 
-// Le champ de saisie de l'intitulé recherché (colonne "titre") n'a de sens
-// que pour la rubrique "animaux" : masqué pour les autres rubriques, affiché
-// dès que "🐾 Animaux" est sélectionné (y compris à l'ouverture de la modale,
-// si ce choix a été fait puis la modale rouverte).
-(function initHofAnimauxPrefixToggle(){
-  const wrap = document.getElementById("hofAnimauxPrefixWrap");
-  const radios = document.querySelectorAll('input[name="hofCriterion"]');
-  const sync = ()=>{
-    const checked = document.querySelector('input[name="hofCriterion"]:checked');
-    wrap.classList.toggle("hidden", !checked || checked.value !== "animaux");
-  };
-  radios.forEach(r=> r.addEventListener("change", sync));
-  sync();
-})();
-
 // ---- 1) GÉNÉRER ----------------------------------------------------
 hofGenerateFolderInput.addEventListener("change", async ()=>{
  try { // filet de sécurité : toute exception ici (radio non trouvé, accès
@@ -2802,9 +2783,6 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   const criterionInput = document.querySelector('input[name="hofCriterion"]:checked');
   if(!criterionInput) throw new Error("Aucune rubrique sélectionnée (bouton radio introuvable).");
   const criterion = criterionInput.value;
-  // Pour "animaux" : intitulé de titre à rechercher, saisi par l'utilisateur
-  // (repli sur "Anima" si le champ est laissé vide) — voir generateAlbumFromCsvFiles.
-  const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "").trim() || "Anima";
   const targetName = hofAlbumFileName(criterion);
   // Un éventuel fichier Album déjà présent à la racine du dossier choisi
   // (sous le nom correspondant à la rubrique choisie — ou encore
@@ -2838,7 +2816,7 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
     return;
   }
   const { files: csvFiles, staleDuplicates: staleCatalogDuplicates } = dedupeCatalogFilesByYear(selectedCsvFiles);
-  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates, animauxPrefix);
+  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates);
  } catch(err) {
   console.error("Hall of fame — échec de la génération :", err);
   const msg = `Échec de la génération : ${err && err.message ? err.message : err}`;
@@ -2857,16 +2835,13 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
 function nextFrame(){ return new Promise(r=> requestAnimationFrame(r)); }
 function sleep(ms){ return new Promise(r=> setTimeout(r, ms)); }
 
-async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates, animauxPrefix){
+async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates){
   // "animaux" est différent des autres rubriques : ce n'est pas une case à
   // cocher par photo (colonne booléenne "true"/"false" dans le catalogue),
   // mais une recherche automatique sur le TITRE de chaque photo — toute
-  // ligne dont la colonne "titre" commence par l'intitulé saisi par
-  // l'utilisateur (champ "hofAnimauxPrefix", "Anima" par défaut — repli ici
-  // aussi si la fonction est appelée sans ce paramètre), insensible à la
-  // casse, est incluse, sans action manuelle préalable sur chaque photo.
+  // ligne dont la colonne "titre" commence par "Anima" (insensible à la
+  // casse) est incluse, sans action manuelle préalable sur chaque photo.
   const isAnimaux = criterion === "animaux";
-  const animauxPrefixNorm = (animauxPrefix || "Anima").trim().toLowerCase();
   const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Culture" : (criterion === "partition" ? "Partition" : (isAnimaux ? "Animaux" : "Favori"))));
   const targetName = hofAlbumFileName(criterion);
   const statusEl = document.getElementById("hofStatus");
@@ -2921,18 +2896,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   let recoveredCount = 0;
 
   try{
-  // Pour "animaux", on NE récupère PAS l'éventuel Album-Animaux.csv existant
-  // comme base : contrairement aux autres rubriques (case à cocher "favori"/
-  // "art"/…, qui peut être manuellement activée sur une photo dont le
-  // catalogue source a depuis disparu, d'où l'intérêt de préserver ces
-  // entrées d'une génération à l'autre), "animaux" est intégralement
-  // recalculable à chaque fois à partir de la colonne "titre" des catalogues
-  // relus. Fusionner avec l'ancien fichier ferait perdurer des entrées
-  // correspondant à un intitulé précédemment saisi (ex. "Anima") même après
-  // avoir changé l'intitulé recherché (ex. "Travau"), puisque ces anciennes
-  // entrées ne seraient retirées que si leur catalogue d'origine est relu
-  // ET entièrement sélectionné cette fois-ci (voir la purge plus bas).
-  if(existingAlbumFile && !isAnimaux){
+  if(existingAlbumFile){
     try{
       const text = await existingAlbumFile.text();
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
@@ -2986,11 +2950,11 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
         const id = cells[idColIdx];
         if(!id) continue;
         seenIds.add(id);
-        // Pour "animaux" : préfixe de titre (insensible à la casse, saisi
-        // par l'utilisateur), pas une valeur "true"/"false" — pour toutes
-        // les autres rubriques, inchangé (case à cocher classique).
+        // Pour "animaux" : préfixe de titre (insensible à la casse), pas une
+        // valeur "true"/"false" — pour toutes les autres rubriques,
+        // inchangé (case à cocher classique).
         const included = isAnimaux
-          ? (cells[favIdx] || "").trim().toLowerCase().startsWith(animauxPrefixNorm)
+          ? (cells[favIdx] || "").trim().toLowerCase().startsWith("anima")
           : cells[favIdx] === "true";
         if(included){
           const outCells = remapRowToCanonical(cells, normalizedCols);
@@ -3054,7 +3018,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   document.getElementById("btnHOFGenerate").classList.add("done"); // fond vert : étape 1 terminée avec succès
   const totalOut = rowsById.size;
   statusEl.textContent =
-    (existingAlbumFile && !isAnimaux
+    (existingAlbumFile
       ? `« ${targetName} » existant récupéré (${recoveredCount} entrée(s)) et mis à jour`
       : `« ${targetName} » généré`) +
     ` : ${totalOut} entrée(s) au total, ${totalFav} « ${criterionLabel} » repris depuis ${files.length - skippedFiles} catalogue(s)` +
