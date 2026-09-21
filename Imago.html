@@ -953,6 +953,14 @@ button{font-family:inherit;}
       (Excel…) plutôt que dans la modale « Modifier », qui n'écrit
       automatiquement les métadonnées que photo par photo, à l'enregistrement.
     </p>
+    <button class="btn copper" id="btnExportAllPhotos" style="width:100%; margin-top:10px;">📤 Exporter toutes les photos (dossier ou .zip)</button>
+    <p class="drive-note" style="margin-top:6px;">
+      Écrit chaque photo du catalogue (avec ses métadonnées à jour) dans un
+      dossier de votre choix sur ce PC (les fichiers de même nom sont
+      remplacés), ou dans un .zip téléchargeable si l'écriture directe n'est
+      pas possible sur cet appareil/navigateur — pour éviter de repasser par
+      « Enregistrer + télécharger » photo par photo.
+    </p>
   </div>
 
   <div class="pave">
@@ -8701,6 +8709,116 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
   renderGrid();
   autoBuildCsv();
   toast(`✅ Métadonnées EXIF à jour pour ${changed} photo(s) sur ${targets.length}.` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 8000);
+});
+
+/* -----------------------------------------------------------------
+   Export en lot de TOUT le catalogue photo (pas les vidéos) — soit
+   directement dans un dossier du disque choisi par l'utilisateur (via la
+   File System Access API, déjà utilisée ailleurs dans l'app pour "Transfert
+   vers IMAGO"/le partage HOF), soit, si ce n'est pas possible sur cet
+   appareil/navigateur, dans un .zip téléchargeable en un seul fichier.
+   Évite d'avoir à repasser par "Enregistrer + télécharger" photo par photo
+   après un traitement en lot (ex. la réécriture EXIF ci-dessus). */
+function dataURLtoBlob(dataUrl){
+  const commaIdx = dataUrl.indexOf(",");
+  const mimeMatch = dataUrl.slice(0, commaIdx).match(/data:(.*?);base64/);
+  const mime = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+  const bin = atob(dataUrl.slice(commaIdx+1));
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], {type: mime});
+}
+let jszipLoadPromise = null;
+function ensureJSZipLoaded(){
+  if(window.JSZip) return Promise.resolve();
+  if(jszipLoadPromise) return jszipLoadPromise;
+  const JSZIP_SOURCES = [
+    "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js",
+    "https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"
+  ];
+  function tryLoad(index){
+    return new Promise((resolve, reject)=>{
+      if(index >= JSZIP_SOURCES.length){
+        reject(new Error("Impossible de charger la bibliothèque .zip (connexion internet requise)."));
+        return;
+      }
+      const s = document.createElement("script");
+      s.src = JSZIP_SOURCES[index];
+      s.onload = ()=> resolve();
+      s.onerror = ()=>{ s.remove(); tryLoad(index+1).then(resolve, reject); };
+      document.head.appendChild(s);
+    });
+  }
+  jszipLoadPromise = tryLoad(0).catch(err=>{ jszipLoadPromise = null; throw err; });
+  return jszipLoadPromise;
+}
+async function exportAllPhotosAsZip(targets, btn){
+  try{
+    await ensureJSZipLoaded();
+  }catch(e){
+    toast(`⚠️ ${e.message}`);
+    return;
+  }
+  const zip = new JSZip();
+  for(let i=0;i<targets.length;i++){
+    const p = targets[i];
+    zip.file(p.fileName || `photo_${i+1}.jpg`, dataURLtoBlob(p.dataUrl));
+    btn.textContent = `📦 Préparation du .zip… (${i+1}/${targets.length})`;
+    if(i % 20 === 0) await delay(10); // laisse l'interface respirer sur un gros catalogue
+  }
+  btn.textContent = "📦 Compression…";
+  const blob = await zip.generateAsync({type:"blob"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "Imago-export.zip";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 30000);
+  toast(`✅ ${targets.length} photo(s) exportée(s) dans « Imago-export.zip ».`);
+}
+document.getElementById("btnExportAllPhotos").addEventListener("click", async ()=>{
+  const targets = State.photos.filter(p=> !p.isVideo && p.dataUrl);
+  if(!targets.length){
+    toast("Aucune photo à exporter.");
+    return;
+  }
+  const btn = document.getElementById("btnExportAllPhotos");
+  const resetLabel = ()=>{ btn.disabled = false; btn.textContent = "📤 Exporter toutes les photos (dossier ou .zip)"; };
+  if(typeof window.showDirectoryPicker === "function"){
+    let dirHandle;
+    try{
+      // id fixe : Chrome propose ce même dossier en premier lors des
+      // prochains exports, pour éviter d'avoir à le rechercher à chaque fois.
+      dirHandle = await window.showDirectoryPicker({ id: "imago-export-all", mode: "readwrite" });
+    }catch(e){
+      if(e && e.name === "AbortError") return; // annulé par l'utilisateur
+      toast(`⚠️ Dossier inaccessible (${(e&&e.message)||e}) — export en .zip à la place.`);
+      btn.disabled = true;
+      await exportAllPhotosAsZip(targets, btn);
+      resetLabel();
+      return;
+    }
+    btn.disabled = true;
+    let done = 0, failed = 0;
+    for(const p of targets){
+      try{
+        await writeFileToLocalDirectory(dirHandle, p.fileName || `photo_${done+1}.jpg`, dataURLtoBlob(p.dataUrl));
+      }catch(e){
+        failed++;
+        console.warn(`[Imago] Export impossible pour "${p.fileName}" :`, e);
+      }
+      done++;
+      btn.textContent = `📤 Export vers « ${dirHandle.name} »… (${done}/${targets.length})`;
+      await delay(20);
+    }
+    resetLabel();
+    toast(`✅ ${done-failed} photo(s) exportée(s) vers « ${dirHandle.name} ».` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 8000);
+  } else {
+    // Navigateur sans File System Access API (Firefox, Safari…) : seul le
+    // .zip est possible.
+    btn.disabled = true;
+    await exportAllPhotosAsZip(targets, btn);
+    resetLabel();
+  }
 });
 
 async function mergeCsvIntoCatalog(text){
