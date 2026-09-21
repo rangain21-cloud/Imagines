@@ -5159,6 +5159,13 @@ function mapEmbedQueryFromMapField(url){
     if(q) return q;
     const m = u.pathname.match(/\/maps\/place\/([^/]+)/i);
     if(m) return decodeURIComponent(m[1].replace(/\+/g, " "));
+    // Format "@lat,lng,zoom" — très courant quand l'URL est copiée
+    // directement depuis la barre d'adresse du navigateur en consultant un
+    // lieu sur Google Maps (ex. ".../maps/place/Paris/@48.8566,2.3522,12z/…"
+    // ou ".../maps/@48.8566,2.3522,15z"), plutôt que construite via le bouton
+    // "carte" de cette app (qui utilise "?q=lat,lon").
+    const at = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if(at) return `${at[1]},${at[2]}`;
   }catch(e){ /* URL non standard : pas d'aperçu extrait, on retombe sur lieu */ }
   return "";
 }
@@ -5611,9 +5618,9 @@ function toXPBytes(str){
   bytes.push(0,0); // terminateur nul (UTF-16 : 2 octets)
   return bytes;
 }
-async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage}){
+async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage, etiquette}){
   if(!dataUrl || !dataUrl.startsWith("data:image/jpeg")) return dataUrl;
-  if(!cameraModel && !lieu && !mapField && !auteur && !personnage) return dataUrl; // rien à écrire
+  if(!cameraModel && !lieu && !mapField && !auteur && !personnage && !etiquette) return dataUrl; // rien à écrire
   // Normalise vers EXACTEMENT le préfixe attendu par piexifjs
   // ("data:image/jpeg;base64,"), quitte à corriger une variante proche —
   // ex. "image/jpg" (non standard mais parfois rencontré) que la
@@ -5652,8 +5659,14 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     // "Objet"/Subject (Windows) n'a pas d'équivalent EXIF standard : c'est
     // XPSubject (propre à Windows), à encoder en UTF-16LE (voir toXPBytes).
     if(lieu) zeroth[piexif.ImageIFD.XPSubject] = toXPBytes(lieu);
+    // "Mots clés"/Keywords (Windows) — même famille de tags que XPSubject.
+    if(etiquette) zeroth[piexif.ImageIFD.XPKeywords] = toXPBytes(etiquette);
     const gps = {};
     const q = mapField ? mapEmbedQueryFromMapField(mapField) : "";
+    // "Commentaires"/Comments (Windows) reçoit la rubrique Map — la valeur
+    // lisible extraite (coordonnées "lat,lon" ou nom de lieu) si possible,
+    // sinon l'URL brute telle quelle en repli.
+    if(mapField) zeroth[piexif.ImageIFD.XPComment] = toXPBytes(q || mapField);
     const coordsMatch = q && q.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
     if(coordsMatch){
       const lat = parseFloat(coordsMatch[1]), lon = parseFloat(coordsMatch[2]);
@@ -5661,6 +5674,13 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
       gps[piexif.GPSIFD.GPSLatitude] = piexif.GPSHelper.degToDmsRational(Math.abs(lat));
       gps[piexif.GPSIFD.GPSLongitudeRef] = lon >= 0 ? "E" : "W";
       gps[piexif.GPSIFD.GPSLongitude] = piexif.GPSHelper.degToDmsRational(Math.abs(lon));
+    } else if(mapField){
+      // Utile pour diagnostiquer un futur cas où le GPS n'apparaît toujours
+      // pas : indique si la rubrique Map n'a simplement rien donné à
+      // extraire (q vide, ex. lien raccourci "maps.app.goo.gl/…") ou si
+      // l'extraction a donné quelque chose qui ne ressemble pas à des
+      // coordonnées "lat,lon" (ex. un nom de lieu en clair).
+      console.warn(`[Imago] GPS EXIF non écrit pour ce fichier : la rubrique Map ("${mapField}") n'a pas donné de coordonnées "lat,lon" exploitables (valeur extraite : "${q}").`);
     }
     if(!Object.keys(zeroth).length && !Object.keys(gps).length) return jpegDataUrl;
     let exifObj;
@@ -7405,7 +7425,7 @@ async function applyEditFormToSelectedPhoto(){
   if(!p.isVideo){
     const before = p.dataUrl;
     p.dataUrl = await writeMetadataIntoJpegDataUrl(p.dataUrl, {
-      cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage
+      cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette
     });
     if(p.dataUrl !== before){
       p.poids = Math.round((p.dataUrl.length * 0.75) / 1024);
@@ -8254,7 +8274,7 @@ function renderFinalImageDataUrl(p){
       // Lieu/Map au téléchargement, même juste après les avoir écrits.
       try{
         out = await writeMetadataIntoJpegDataUrl(out, {
-          cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage
+          cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette
         });
       }catch(e){ console.warn("[Imago] Réinjection EXIF après aplatissement impossible :", e); }
       resolve(out);
@@ -8710,7 +8730,7 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
     try{
       const before = p.dataUrl;
       p.dataUrl = await writeMetadataIntoJpegDataUrl(p.dataUrl, {
-        cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage
+        cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette
       });
       if(p.dataUrl !== before){
         p.poids = Math.round((p.dataUrl.length * 0.75) / 1024);
