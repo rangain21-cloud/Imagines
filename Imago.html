@@ -5659,6 +5659,18 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
       jpegDataUrl = await reencodeAsGenuineJpeg(jpegDataUrl);
     }
     const zeroth = {};
+    // Force l'étiquette EXIF "Orientation" à sa valeur "normale" (1),
+    // systématiquement — pas seulement quand une rotation a été demandée.
+    // Toutes les images qui arrivent ici ont déjà des pixels correctement
+    // orientés (le dessin sur <canvas>, ici comme à l'import, corrige
+    // automatiquement l'orientation au moment du décodage) : si une
+    // étiquette Orientation d'un import ou d'un enregistrement antérieur
+    // survivait telle quelle (recopiée par piexif.load() ci-dessous), un
+    // logiciel qui la respecte re-tournerait l'image une 2e fois en plus,
+    // sur des pixels déjà correctement orientés — d'où l'impression que la
+    // rotation "ne se fixe jamais", même en repassant par la modale
+    // Modifier.
+    zeroth[piexif.ImageIFD.Orientation] = 1;
     if(cameraModel) zeroth[piexif.ImageIFD.Model] = cameraModel;
     // "Titre" (Windows) provient d'ImageDescription — et non de XPTitle, qui
     // est ignoré par l'Explorateur Windows dès qu'ImageDescription existe.
@@ -6923,10 +6935,10 @@ document.querySelectorAll(".edit-tab").forEach(tab=>{
 });
 
 document.getElementById("edRotateLeftBtn").addEventListener("click", ()=>{
-  editDraft.rotation = ((editDraft.rotation||0) - 45) % 360; refreshEditPreview();
+  editDraft.rotation = ((editDraft.rotation||0) - 90) % 360; refreshEditPreview();
 });
 document.getElementById("edRotateRightBtn").addEventListener("click", ()=>{
-  editDraft.rotation = ((editDraft.rotation||0) + 45) % 360; refreshEditPreview();
+  editDraft.rotation = ((editDraft.rotation||0) + 90) % 360; refreshEditPreview();
 });
 document.getElementById("edRotateResetBtn").addEventListener("click", ()=>{
   editDraft.rotation = 0; refreshEditPreview();
@@ -8356,10 +8368,10 @@ document.getElementById("btnSlideshowSettingsStart").addEventListener("click", (
 });
 document.getElementById("actRotateLeft").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
-  p.rotation = ((p.rotation||0) - 45) % 360;
+  p.rotation = ((p.rotation||0) - 90) % 360;
   await idbPut("photos", p);
   renderGrid();
-  toast("Image pivotée de 45° vers la gauche.");
+  toast("Image pivotée de 90° vers la gauche.");
 });
 document.getElementById("actAddAlbum").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
