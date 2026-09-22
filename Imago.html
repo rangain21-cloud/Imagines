@@ -6958,15 +6958,30 @@ function startCropMode(){
     return;
   }
   exitRedEyeMode(); // les deux modes de retouche à la souris/au doigt ne peuvent pas être actifs en même temps
+  document.getElementById("editPreviewWrap").classList.add("cropping");
+  document.getElementById("cropOverlay").classList.remove("hidden");
+  // La barre d'outils de recadrage doit être affichée AVANT le calcul de mise
+  // à l'échelle ci-dessous : elle réduit la hauteur disponible pour l'aperçu,
+  // et ce calcul doit refléter la taille finale réellement affichée — sinon
+  // le calque de sélection est dimensionné sur une image plus grande que
+  // celle effectivement montrée à l'écran (elle est ensuite rétrécie de
+  // façon asynchrone par le ResizeObserver de la zone d'aperçu), ce qui
+  // décale et tronque le résultat au moment d'"Appliquer le recadrage".
+  document.getElementById("cropToolbar").classList.remove("hidden");
+  document.getElementById("cropRect").classList.add("hidden");
   // Le recadrage suppose une vue non zoomée/défilée (les coordonnées du
   // cadre sont calculées par rapport à l'image affichée en entier) : on
   // repart donc toujours d'une vue à 100%, quel que soit le zoom en cours.
-  editViewScale = 1; applyEditZoom();
+  // Appelé seulement maintenant, une fois la barre d'outils déjà affichée,
+  // pour que la hauteur qu'elle occupe soit déjà déduite du calcul. Plusieurs
+  // passes de suite : chaque passe peut elle-même faire apparaître (ou
+  // disparaître) une fine barre de défilement verticale — l'image occupant
+  // alors tout juste un peu plus/moins que la hauteur disponible — ce qui
+  // change encore la largeur utile ; les passes suivantes relisent cette
+  // taille déjà stabilisée pour converger vers la taille finale, sans
+  // dépendre du ResizeObserver asynchrone de la zone d'aperçu.
+  editViewScale = 1; applyEditZoom(); applyEditZoom(); applyEditZoom();
   document.getElementById("editPreviewWrap").scrollTo(0,0);
-  document.getElementById("editPreviewWrap").classList.add("cropping");
-  document.getElementById("cropOverlay").classList.remove("hidden");
-  document.getElementById("cropToolbar").classList.remove("hidden");
-  document.getElementById("cropRect").classList.add("hidden");
   const img = document.getElementById("edPreviewImg");
   const overlay = document.getElementById("cropOverlay");
   // L'overlay calque exactement le rectangle affiché de l'image
