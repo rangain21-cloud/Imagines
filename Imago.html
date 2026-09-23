@@ -761,6 +761,14 @@ button{font-family:inherit;}
   backdrop-filter:blur(3px);
 }
 .slideshow-fill-toggle:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
+.slideshow-fullscreen-toggle{
+  position:absolute; top:14px; right:118px; z-index:5;
+  background:rgba(20,20,20,.7); border:1px solid rgba(255,255,255,.25); color:#e8dcc2;
+  font-size:14px; width:32px; height:32px; border-radius:50%; cursor:pointer;
+  backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center;
+}
+.slideshow-fullscreen-toggle:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
+.slideshow-fullscreen-toggle.active{border-color:var(--copper); background:rgba(199,125,59,.35); color:var(--copper-hi);}
 .slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em; z-index:5; transition:opacity .6s ease;}
 /* Date (bas-gauche) et lieu (bas-droite) incrustés sur chaque photo du
    diaporama, mis à jour en même temps que le fondu enchaîné (voir
@@ -1660,6 +1668,7 @@ button{font-family:inherit;}
     <div class="slide-caption slide-caption-date" id="slideCaptionDate"></div>
     <div class="slide-caption slide-caption-lieu" id="slideCaptionLieu"></div>
     <div class="slide-caption slide-caption-titre" id="slideCaptionTitre"></div>
+    <button class="slideshow-fullscreen-toggle" id="slideshowFullscreenToggle" title="Basculer le plein écran du navigateur">⛶</button>
     <button class="slideshow-fill-toggle" id="slideshowFillToggle" title="Basculer entre image entière (bandes noires possibles), équilibré et plein écran (léger recadrage)">⛶ Ajusté</button>
     <div class="slideshow-hint" id="slideshowHint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
   </div>
@@ -8438,6 +8447,55 @@ function applySlideshowTimingVars(){
   document.documentElement.style.setProperty("--ss-fondu", fondu+"s");
   return {plateau, fondu};
 }
+/* Demande le vrai plein écran du navigateur (Fullscreen API) au lancement
+   du diaporama, pour masquer barre d'adresse/onglets/favoris de Chrome (et
+   équivalents des autres navigateurs) — pas seulement l'interface propre à
+   Imago, qui occupait déjà tout l'écran mais SOUS ces barres. Doit être
+   appelée SYNCHRONE, directement depuis le gestionnaire de clic (voir
+   btnSlideshowSettingsStart, appelée AVANT le setTimeout qui ouvre le
+   diaporama) : certains navigateurs refusent silencieusement la demande
+   dès qu'elle n'est plus perçue comme découlant directement d'un geste de
+   l'utilisateur — d'où le fait qu'une 1ère version, qui l'appelait après
+   coup depuis openDiaporama(), pouvait échouer sans que rien ne le
+   signale, et donner l'impression trompeuse que l'image était juste
+   agrandie DANS la fenêtre Chrome plutôt que de vraiment en sortir.
+   Échoue proprement (message dans la console, préfixé "[Imago]") si
+   refusée (ex. iframe sans l'attribut allow="fullscreen", permissions
+   policy du navigateur/site désactivant le plein écran, ou navigateur qui
+   ne supporte pas l'API) : le diaporama continue de fonctionner comme
+   avant, sans masquer les barres du navigateur. */
+function requestSlideshowFullscreen(){
+  const el = document.documentElement;
+  const request = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+  if(!request){
+    console.warn("[Imago] Plein écran : API indisponible dans ce navigateur.");
+    return;
+  }
+  if(document.fullscreenEnabled === false){
+    console.warn("[Imago] Plein écran désactivé pour cette page (document.fullscreenEnabled = false) — probablement une politique de permissions du navigateur, d'une extension, ou d'un cadre parent si la page est intégrée dans un iframe.");
+    return;
+  }
+  try{
+    const result = request.call(el);
+    if(result && result.catch){
+      result.catch(err=>{
+        console.warn("[Imago] Plein écran refusé par le navigateur :", err && err.message ? err.message : err);
+      });
+    }
+  }catch(e){
+    console.warn("[Imago] Plein écran impossible :", e && e.message ? e.message : e);
+  }
+}
+function exitSlideshowFullscreen(){
+  const isFs = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
+  if(!isFs) return;
+  const exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+  if(!exit) return;
+  try{
+    const result = exit.call(document);
+    if(result && result.catch) result.catch(()=>{});
+  }catch(e){}
+}
 function openLoupe(id){
   State.slideshowMode = "loupe";
   State.slideshowList = activePhotos();
@@ -8474,6 +8532,7 @@ function openDiaporama(id){
   buildSlideshowRail();
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
+  requestSlideshowFullscreen();
   armSlideshowHint();
   clearTimeout(State.slideshowTimer);
   State.slideshowTimer = null;
@@ -8619,6 +8678,7 @@ function stepSlideshow(dir){
 }
 function closeSlideshow(){
   slideshowEl.classList.remove("show");
+  exitSlideshowFullscreen();
   clearTimeout(slideshowHintTimer);
   slideshowFrameToken++; // invalide tout onload encore en attente pour l'image en cours de chargement
   clearTimeout(State.slideshowTimer);
@@ -8759,6 +8819,27 @@ document.getElementById("slideshowFillToggle").addEventListener("click", ()=>{
   applySlideshowImageSizing(slideshowImgB);
 });
 applySlideshowFillMode();
+/* Bouton ⛶ manuel du diaporama/loupe : permet de redemander le plein écran
+   si le lancement automatique (voir requestSlideshowFullscreen, appelée
+   depuis btnSlideshowSettingsStart) a échoué — un clic ICI, dans le
+   diaporama déjà ouvert, reste un geste utilisateur tout aussi valable
+   pour l'API Fullscreen. Bascule aussi dans l'autre sens : sortir du plein
+   écran sans fermer le diaporama. Le style "actif" (encadré cuivré)
+   reflète l'état RÉEL du plein écran signalé par le navigateur
+   (fullscreenchange), pas une simple supposition côté appli. */
+function isBrowserFullscreen(){
+  return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+}
+function updateSlideshowFullscreenToggleState(){
+  document.getElementById("slideshowFullscreenToggle").classList.toggle("active", isBrowserFullscreen());
+}
+document.getElementById("slideshowFullscreenToggle").addEventListener("click", ()=>{
+  if(isBrowserFullscreen()) exitSlideshowFullscreen();
+  else requestSlideshowFullscreen();
+});
+["fullscreenchange","webkitfullscreenchange","mozfullscreenchange","MSFullscreenChange"].forEach(evt=>{
+  document.addEventListener(evt, updateSlideshowFullscreenToggleState);
+});
 document.addEventListener("keydown", (e)=>{
   if(!slideshowEl.classList.contains("show")) return;
   if(e.key==="Escape") closeSlideshow();
@@ -8874,6 +8955,7 @@ document.getElementById("btnSlideshowSettingsStart").addEventListener("click", (
   localStorage.setItem("imago_slideshow_plateau", plateau);
   localStorage.setItem("imago_slideshow_fondu", fondu);
   closeModal("modalSlideshowSettings");
+  requestSlideshowFullscreen(); // appelé ICI, en tout premier, pour rester au plus près du geste de clic (voir commentaire de la fonction)
   const loading = document.getElementById("diaporamaLoading");
   loading.classList.remove("hidden");
   setTimeout(()=>{
