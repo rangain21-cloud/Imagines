@@ -540,7 +540,7 @@ button{font-family:inherit;}
 #catalogPickList .btn.active{border-color:var(--copper); background:rgba(199,125,59,.15); color:var(--copper-hi);}
 #catalogPickPersonnageList{text-align:left;}
 #catalogPickPersonnageList label{display:flex; align-items:center; justify-content:flex-start; gap:6px; font-size:13px; padding:3px 0; cursor:pointer; text-align:left; width:100%;}
-#catalogPickPersonnageList input{margin:0;}
+#catalogPickPersonnageList input{margin:0; flex-shrink:0;}
 
 /* ---------- panneau Infos ancré à droite de l'image (grand écran) ---------- */
 @media (min-width: 761px){
@@ -862,7 +862,6 @@ button{font-family:inherit;}
     <button class="tool-btn" id="btnHOF" title="Hall of fame" style="background:#4a2a7a; border-color:#6b3fb0;"><span>HOF</span></button>
     <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
     <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
-    <button class="tool-btn" id="btnPersonnages" title="Personnages"><span class="ic">🧑</span><span>Personnages</span></button>
     <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
     <button class="tool-btn" id="btnArt" title="Art"><span class="ic">🎨</span><span>Art</span></button>
     <button class="tool-btn" id="btnConcert" title="Concert"><span class="ic">🎤</span><span>Concert</span></button>
@@ -1220,7 +1219,7 @@ button{font-family:inherit;}
       <div id="catalogPickList"></div>
 
       <div id="catalogPickFilters" class="hidden" style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
-        <p class="drive-note" style="margin-bottom:10px;">Pour ne charger qu'une partie du catalogue (import plus rapide sur un gros dossier) : un fichier est retenu dès qu'il correspond au Critère choisi <strong>OU</strong> à l'un des Personnages cochés — les deux filtres sont indépendants, pas besoin des deux à la fois.</p>
+        <p class="drive-note" style="margin-bottom:10px;">Pour ne charger qu'une partie du catalogue (import plus rapide sur un gros dossier) : les filtres Critère et Personnage se combinent selon la case « ET » ci-dessous.</p>
         <div class="field-row">
           <label for="catalogPickTri">Tri</label>
           <select id="catalogPickTri">
@@ -1241,6 +1240,10 @@ button{font-family:inherit;}
             <option value="partition">🎼 Partitions</option>
           </select>
         </div>
+        <label id="catalogPickCombineLabel" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; margin:-4px 0 14px;">
+          <input type="checkbox" id="catalogPickCombineEt" style="margin:0; flex-shrink:0;">
+          <span id="catalogPickCombineText">Combiner Critère <strong>ET</strong> Personnage (intersection) — décoché : Critère <strong>OU</strong> Personnage (union)</span>
+        </label>
         <div class="field-row">
           <label>Personnage <span id="catalogPickPersonnageToggle" style="text-transform:none; letter-spacing:0; cursor:pointer; color:var(--copper); text-decoration:underline;">(tout / aucun)</span></label>
           <div id="catalogPickPersonnageList" style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">
@@ -1503,6 +1506,8 @@ button{font-family:inherit;}
         <button class="btn" id="actSlideshow">▶ Diaporama</button>
         <button class="btn" id="actRotateLeft">↺ Pivoter à gauche</button>
         <button class="btn" id="actAddAlbum">＋ Ajouter à un Album</button>
+        <button class="btn" id="btnPersonnages">🧑 Personnages</button>
+        <button class="btn" id="btnLieux">📍 Lieux</button>
       </div>
     </div>
     <div class="modal-foot"><button class="btn" data-close="modalMore">Fermer</button></div>
@@ -1551,6 +1556,32 @@ button{font-family:inherit;}
       <p class="drive-note hidden" id="personnageEmpty">Aucun personnage renseigné pour l'instant.</p>
     </div>
     <div class="modal-foot"><button class="btn" data-close="modalPersonnages">Fermer</button></div>
+  </div>
+</div>
+
+<!-- ============== MODAL: LIEUX ============== -->
+<div class="modal-overlay" id="modalLieux">
+  <div class="modal wide">
+    <div class="modal-head"><h2>Lieux</h2><button class="modal-close" data-close="modalLieux">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" style="margin:0 0 12px;">
+        Chaque ligne correspond à une valeur du champ « Lieu ». Éditer ou supprimer un lieu le
+        répercute dans toutes les images du catalogue qui le portent — la correspondance est
+        exacte et sensible à la casse. Cochez plusieurs lignes pour les regrouper ou les
+        supprimer en une seule opération.
+      </p>
+      <div class="pt-bulk-bar hidden" id="ltBulkBar">
+        <span class="pt-bulk-count" id="ltBulkCount"></span>
+        <button class="btn copper" id="ltBulkEdit" type="button">Corriger la sélection…</button>
+        <button class="btn reset" id="ltBulkDelete" type="button">Supprimer la sélection</button>
+      </div>
+      <table class="personnage-table" id="lieuTable">
+        <thead><tr><th style="width:30px;"><input type="checkbox" id="ltSelectAll" title="Tout sélectionner"></th><th>Lieu</th><th>Images</th><th></th></tr></thead>
+        <tbody id="lieuTableBody"></tbody>
+      </table>
+      <p class="drive-note hidden" id="lieuEmpty">Aucun lieu renseigné pour l'instant.</p>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close="modalLieux">Fermer</button></div>
   </div>
 </div>
 
@@ -2729,21 +2760,27 @@ function catalogRowMatchesPersonnages(row, personnages){
   if(!personnages) return true;
   return personnageTokens(row.personnage).some(tok=> personnages.has(tok));
 }
-/* Combine les filtres "Critère" et "Personnage" en OU, et non en ET : les
-   deux sont INDÉPENDANTS l'un de l'autre plutôt que cumulatifs — une ligne
-   est retenue dès qu'elle correspond à l'un OU à l'autre (ex. "Favoris" +
-   personnage "Léa" charge TOUTES les photos de Léa, même celles qui ne sont
-   pas favorites, en plus de tous les favoris). Si un seul des deux filtres
-   est actif, cela revient bien à ne tester que celui-là (l'autre, inactif,
-   ne "matche" jamais et n'influe donc pas sur le OU). Si aucun des deux
-   n'est actif, aucune restriction (comme avant l'ajout de ces filtres). */
-function catalogRowMatchesFilters(row, critere, personnages){
+/* Combine les filtres "Critère" et "Personnage" selon le mode choisi par la
+   case à cocher "ET" de la modale :
+   - mode "ou" (case décochée, par défaut) : UNION — une ligne est retenue
+     dès qu'elle correspond à l'un OU à l'autre (ex. Critère "Favoris" +
+     Personnage "Léa" charge TOUTES les photos de Léa, même celles qui ne
+     sont pas favorites, en plus de tous les favoris).
+   - mode "et" (case cochée) : INTERSECTION — une ligne n'est retenue que si
+     elle correspond aux DEUX à la fois (ex. Critère "Favoris" + Personnage
+     "Léa" ne charge que les photos de Léa qui sont aussi favorites).
+   Si un seul des deux filtres est actif, le mode n'a pas d'effet : cela
+   revient à ne tester que celui-là. Si aucun des deux n'est actif, aucune
+   restriction (comme avant l'ajout de ces filtres). */
+function catalogRowMatchesFilters(row, critere, personnages, mode){
   const critereActive = !!critere;
   const personnagesActive = !!personnages;
   if(!critereActive && !personnagesActive) return true;
-  const matchesCritere = critereActive && catalogRowMatchesCritere(row, critere);
-  const matchesPersonnage = personnagesActive && catalogRowMatchesPersonnages(row, personnages);
-  return matchesCritere || matchesPersonnage;
+  if(critereActive && !personnagesActive) return catalogRowMatchesCritere(row, critere);
+  if(!critereActive && personnagesActive) return catalogRowMatchesPersonnages(row, personnages);
+  const matchesCritere = catalogRowMatchesCritere(row, critere);
+  const matchesPersonnage = catalogRowMatchesPersonnages(row, personnages);
+  return mode === "et" ? (matchesCritere && matchesPersonnage) : (matchesCritere || matchesPersonnage);
 }
 /* Modale "Quel fichier est le catalogue ?", avec ses 3 filtres Tri/Critère/
    Personnage pour ne charger qu'une partie d'un gros catalogue (import
@@ -2760,7 +2797,7 @@ function catalogRowMatchesFilters(row, critere, personnages){
    - personnages : Set de personnages cochés, ou null si tous cochés (aucune restriction) */
 function pickCatalogFromCandidates(csvFiles){
   return new Promise(resolve=>{
-    if(csvFiles.length === 0){ resolve({file:null, tri:catalogPickDefaultTri(), critere:"", personnages:null}); return; }
+    if(csvFiles.length === 0){ resolve({file:null, tri:catalogPickDefaultTri(), critere:"", personnages:null, combineMode:"ou"}); return; }
     const list = document.getElementById("catalogPickList");
     const filters = document.getElementById("catalogPickFilters");
     const triSelect = document.getElementById("catalogPickTri");
@@ -2772,6 +2809,7 @@ function pickCatalogFromCandidates(csvFiles){
     filters.classList.remove("hidden");
     triSelect.value = catalogPickDefaultTri();
     critereSelect.value = "";
+    document.getElementById("catalogPickCombineEt").checked = false;
     let selected = null;
     let readToken = 0; // annule un peuplement de la liste Personnage devenu obsolète si l'utilisateur reclique vite sur un autre fichier
     async function selectFile(file, btn){
@@ -2797,7 +2835,7 @@ function pickCatalogFromCandidates(csvFiles){
     selectFile(sorted[0], list.children[0]); // présélection du plus récent (ou de l'unique fichier trouvé)
     document.getElementById("btnCatalogPickNone").onclick = ()=>{
       closeModal("modalCatalogPick");
-      resolve({file:null, tri:triSelect.value, critere:"", personnages:null});
+      resolve({file:null, tri:triSelect.value, critere:"", personnages:null, combineMode:"ou"});
     };
     document.getElementById("btnCatalogPickLoad").onclick = ()=>{
       const boxes = [...document.querySelectorAll("#catalogPickPersonnageList input[type=checkbox]")];
@@ -2810,8 +2848,9 @@ function pickCatalogFromCandidates(csvFiles){
       // restriction, comme si le filtre n'existait pas — seules les cases
       // explicitement décochées par l'utilisateur excluent quoi que ce soit.
       const personnages = unchecked.length ? new Set(boxes.filter(b=>b.checked).map(b=>b.value)) : null;
+      const combineMode = document.getElementById("catalogPickCombineEt").checked ? "et" : "ou";
       closeModal("modalCatalogPick");
-      resolve({file:selected, tri:triSelect.value, critere:critereSelect.value, personnages});
+      resolve({file:selected, tri:triSelect.value, critere:critereSelect.value, personnages, combineMode});
     };
     openModal("modalCatalogPick");
   });
@@ -5110,7 +5149,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const filesToImport = restrictionActive
     ? files.filter(f=>{
         const row = csvRowByFileName.get(f.name);
-        return !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages);
+        return !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
       })
     : files;
   if(restrictionActive){
@@ -6393,8 +6432,182 @@ function finishPersonnageBulkEdit(message){
   toast(message);
 }
 document.getElementById("btnPersonnages").addEventListener("click", ()=>{
+  closeModal("modalMore");
   renderPersonnagesTable();
   openModal("modalPersonnages");
+});
+
+/* ---------------------------------------------------------------
+   Modale « Lieux » : même principe que la modale « Personnages »
+   ci-dessus, mais sur le champ Lieu — qui, contrairement à Personnage,
+   contient UNE SEULE valeur par image (pas de liste séparée par
+   virgules) : chaque ligne de la table correspond donc directement à
+   une valeur distincte de p.lieu, sans étape de tokenisation.
+   Renommer ou supprimer un lieu regénère aussi l'URL Map de chaque
+   image concernée quand elle avait été déduite automatiquement de ce
+   lieu (mapUrlFromLieu), pour rester cohérent avec elle — exactement
+   comme le fait déjà l'édition individuelle d'une image (voir
+   edLieu / applyEditFormToSelectedPhoto).
+   --------------------------------------------------------------- */
+function lieuStats(){
+  const map = new Map(); // lieu exact -> nombre d'images
+  State.photos.filter(p=>!p.corbeille).forEach(p=>{
+    const lieu = (p.lieu||"").trim();
+    if(!lieu) return;
+    map.set(lieu, (map.get(lieu)||0) + 1);
+  });
+  return [...map.entries()].sort((a,b)=> a[0].localeCompare(b[0], "fr"));
+}
+let lieuSelection = new Set();
+function updateLieuBulkBar(){
+  const bar = document.getElementById("ltBulkBar");
+  const count = document.getElementById("ltBulkCount");
+  const n = lieuSelection.size;
+  if(n===0){ bar.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  count.textContent = `${n} lieu${n>1?"x":""} sélectionné${n>1?"s":""}`;
+}
+function renderLieuxTable(){
+  lieuSelection = new Set();
+  document.getElementById("ltSelectAll").checked = false;
+  updateLieuBulkBar();
+  const stats = lieuStats();
+  const table = document.getElementById("lieuTable");
+  const tbody = document.getElementById("lieuTableBody");
+  const empty = document.getElementById("lieuEmpty");
+  tbody.innerHTML = "";
+  if(stats.length===0){
+    table.classList.add("hidden");
+    empty.classList.remove("hidden");
+    return;
+  }
+  table.classList.remove("hidden");
+  empty.classList.add("hidden");
+  stats.forEach(([lieu, count])=>{
+    const tr = document.createElement("tr");
+
+    const tdCheck = document.createElement("td");
+    const check = document.createElement("input");
+    check.type = "checkbox"; check.className = "lt-row-check"; check.dataset.lieu = lieu;
+    check.addEventListener("change", ()=>{
+      if(check.checked) lieuSelection.add(lieu); else lieuSelection.delete(lieu);
+      document.getElementById("ltSelectAll").checked = lieuSelection.size===stats.length;
+      updateLieuBulkBar();
+    });
+    tdCheck.appendChild(check);
+    tr.appendChild(tdCheck);
+
+    const tdName = document.createElement("td");
+    tdName.textContent = lieu;
+    tr.appendChild(tdName);
+
+    const tdCount = document.createElement("td");
+    tdCount.className = "pt-count";
+    tdCount.textContent = `${count} image${count>1?"s":""}`;
+    tr.appendChild(tdCount);
+
+    const tdActions = document.createElement("td");
+    tdActions.className = "pt-actions";
+    const btnEdit = document.createElement("button");
+    btnEdit.className = "btn"; btnEdit.type = "button"; btnEdit.textContent = "Éditer";
+    btnEdit.addEventListener("click", ()=> promptEditLieu(lieu));
+    const btnDel = document.createElement("button");
+    btnDel.className = "btn reset"; btnDel.type = "button"; btnDel.textContent = "Supprimer";
+    btnDel.addEventListener("click", ()=> promptDeleteLieu(lieu));
+    tdActions.appendChild(btnEdit);
+    tdActions.appendChild(btnDel);
+    tr.appendChild(tdActions);
+
+    tbody.appendChild(tr);
+  });
+}
+document.getElementById("ltSelectAll").addEventListener("change", (e)=>{
+  const checked = e.target.checked;
+  document.querySelectorAll(".lt-row-check").forEach(cb=>{
+    cb.checked = checked;
+    if(checked) lieuSelection.add(cb.dataset.lieu); else lieuSelection.delete(cb.dataset.lieu);
+  });
+  updateLieuBulkBar();
+});
+document.getElementById("ltBulkEdit").addEventListener("click", ()=>{
+  if(lieuSelection.size===0) return;
+  const list = [...lieuSelection];
+  const val = prompt(
+    list.length>1
+      ? `Regrouper ces ${list.length} lieux (${list.join(", ")}) sous le nom :`
+      : `Remplacer le lieu « ${list[0]} » par :`,
+    list.length===1 ? list[0] : ""
+  );
+  if(val===null) return; // annulé
+  const newLieu = val.trim();
+  if(!newLieu){ toast("Le nouveau lieu ne peut pas être vide."); return; }
+  renameLieuxEverywhere(list, newLieu);
+});
+document.getElementById("ltBulkDelete").addEventListener("click", ()=>{
+  if(lieuSelection.size===0) return;
+  const list = [...lieuSelection];
+  if(!confirm(`Supprimer ${list.length} lieu${list.length>1?"x":""} (${list.join(", ")}) de toutes les images du catalogue ?`)) return;
+  deleteLieuxEverywhere(list);
+});
+function promptEditLieu(oldLieu){
+  const val = prompt(`Remplacer le lieu « ${oldLieu} » par :`, oldLieu);
+  if(val===null) return; // annulé
+  const newLieu = val.trim();
+  if(!newLieu){ toast("Le nouveau lieu ne peut pas être vide."); return; }
+  if(newLieu === oldLieu) return;
+  renameLieuxEverywhere([oldLieu], newLieu);
+}
+function promptDeleteLieu(lieu){
+  if(!confirm(`Supprimer le lieu « ${lieu} » de toutes les images du catalogue ?`)) return;
+  deleteLieuxEverywhere([lieu]);
+}
+/* oldLieux : un ou plusieurs lieux EXACTS (sensibles à la casse) à
+   fusionner/renommer en une seule nouvelle valeur newLieu, en une seule
+   passe sur le catalogue — c'est ce qui permet la correction groupée. */
+async function renameLieuxEverywhere(oldLieux, newLieu){
+  const oldSet = new Set(oldLieux);
+  let touched = 0;
+  for(const p of State.photos){
+    const lieu = (p.lieu||"").trim();
+    if(!oldSet.has(lieu)) continue; // correspondance exacte, sensible à la casse
+    const wasAutoMap = !p.map || p.map === mapUrlFromLieu(lieu); // carte non personnalisée par l'utilisateur
+    p.lieu = newLieu;
+    if(wasAutoMap) p.map = mapUrlFromLieu(newLieu);
+    p.titre = buildTitre(p.lieu, p.personnage);
+    await idbPut("photos", p);
+    touched++;
+  }
+  const label = oldLieux.length>1 ? `${oldLieux.length} lieux (${oldLieux.join(", ")})` : `« ${oldLieux[0]} »`;
+  finishLieuBulkEdit(`${label} regroupé(s) en « ${newLieu} » sur ${touched} image${touched>1?"s":""}.`);
+}
+async function deleteLieuxEverywhere(lieux){
+  const lieuSet = new Set(lieux);
+  let touched = 0;
+  for(const p of State.photos){
+    const lieu = (p.lieu||"").trim();
+    if(!lieuSet.has(lieu)) continue; // correspondance exacte, sensible à la casse
+    const wasAutoMap = !p.map || p.map === mapUrlFromLieu(lieu);
+    p.lieu = "";
+    if(wasAutoMap) p.map = "";
+    p.titre = buildTitre(p.lieu, p.personnage);
+    await idbPut("photos", p);
+    touched++;
+  }
+  const label = lieux.length>1 ? `${lieux.length} lieux (${lieux.join(", ")})` : `« ${lieux[0]} »`;
+  finishLieuBulkEdit(`${label} supprimé(s) de ${touched} image${touched>1?"s":""}.`);
+}
+function finishLieuBulkEdit(message){
+  populateFilterOptions();
+  renderGrid();
+  renderGallery();
+  renderLieuxTable();
+  autoBuildCsv();
+  toast(message);
+}
+document.getElementById("btnLieux").addEventListener("click", ()=>{
+  closeModal("modalMore");
+  renderLieuxTable();
+  openModal("modalLieux");
 });
 
 /* Lecteur EXIF minimal (JPEG uniquement) — Make, Model, FNumber,
