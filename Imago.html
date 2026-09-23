@@ -538,7 +538,8 @@ button{font-family:inherit;}
 .modal-body{padding:18px 20px;}
 .modal-foot{padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:10px;}
 #catalogPickList .btn.active{border-color:var(--copper); background:rgba(199,125,59,.15); color:var(--copper-hi);}
-#catalogPickPersonnageList label{display:flex; align-items:center; gap:6px; font-size:13px; padding:3px 0; cursor:pointer;}
+#catalogPickPersonnageList{text-align:left;}
+#catalogPickPersonnageList label{display:flex; align-items:center; justify-content:flex-start; gap:6px; font-size:13px; padding:3px 0; cursor:pointer; text-align:left; width:100%;}
 #catalogPickPersonnageList input{margin:0;}
 
 /* ---------- panneau Infos ancré à droite de l'image (grand écran) ---------- */
@@ -1219,7 +1220,7 @@ button{font-family:inherit;}
       <div id="catalogPickList"></div>
 
       <div id="catalogPickFilters" class="hidden" style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
-        <p class="drive-note" style="margin-bottom:10px;">Pour ne charger qu'une partie du catalogue (import plus rapide sur un gros dossier) :</p>
+        <p class="drive-note" style="margin-bottom:10px;">Pour ne charger qu'une partie du catalogue (import plus rapide sur un gros dossier) : un fichier est retenu dès qu'il correspond au Critère choisi <strong>OU</strong> à l'un des Personnages cochés — les deux filtres sont indépendants, pas besoin des deux à la fois.</p>
         <div class="field-row">
           <label for="catalogPickTri">Tri</label>
           <select id="catalogPickTri">
@@ -2632,13 +2633,33 @@ async function readCatalogCsvRows(file){
   }
   return rows;
 }
+/* Mémorisation, d'un import à l'autre, des personnages décochés par
+   l'utilisateur dans la modale de choix du catalogue (voir demande : "se
+   contenter de modifier la précédente liste"). On enregistre les jetons
+   DÉCOCHÉS plutôt que les cochés : la case par défaut d'un personnage
+   inédit (jamais vu dans une session précédente) reste "cochée" — cohérent
+   avec le comportement "tout coché par défaut" déjà en place — au lieu de
+   devoir deviner s'il doit être inclus ou non. */
+const CATALOG_PICK_PERSONNAGES_KEY = "imago_catalog_pick_personnages_unchecked";
+function loadStoredUncheckedPersonnages(){
+  try{
+    const raw = localStorage.getItem(CATALOG_PICK_PERSONNAGES_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  }catch(e){ return new Set(); }
+}
+function saveUncheckedPersonnages(tokens){
+  try{ localStorage.setItem(CATALOG_PICK_PERSONNAGES_KEY, JSON.stringify(tokens)); }
+  catch(e){ console.warn("Mémorisation des personnages décochés impossible.", e); }
+}
 /* Remplit la liste à cases à cocher "Personnage" de la modale de choix du
    catalogue, à partir des valeurs distinctes trouvées dans les lignes du
    .csv sélectionné (mêmes jetons qu'ailleurs dans l'appli — voir
    personnageTokens, un même champ pouvant cumuler plusieurs personnages
-   séparés par une virgule). Toutes les cases démarrent cochées : par
-   défaut, aucune restriction n'est appliquée (comportement identique à
-   avant l'ajout de ce filtre) tant que l'utilisateur n'en décoche pas. */
+   séparés par une virgule). Une case démarre décochée si CE personnage
+   avait déjà été décoché lors d'un import précédent (voir
+   CATALOG_PICK_PERSONNAGES_KEY) ; sinon elle démarre cochée — l'utilisateur
+   n'a donc plus qu'à ajuster la liste précédente plutôt que de tout
+   redécocher à chaque import. */
 function populateCatalogPickPersonnages(rows){
   const set = new Set();
   rows.forEach(row=> personnageTokens(row.personnage).forEach(tok=> set.add(tok)));
@@ -2652,11 +2673,12 @@ function populateCatalogPickPersonnages(rows){
     return;
   }
   empty.classList.add("hidden");
+  const previouslyUnchecked = loadStoredUncheckedPersonnages();
   tokens.forEach(tok=>{
     const label = document.createElement("label");
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = true;
+    cb.checked = !previouslyUnchecked.has(tok);
     cb.value = tok;
     label.appendChild(cb);
     label.appendChild(document.createTextNode(tok));
@@ -2706,6 +2728,22 @@ function catalogRowMatchesCritere(row, critere){
 function catalogRowMatchesPersonnages(row, personnages){
   if(!personnages) return true;
   return personnageTokens(row.personnage).some(tok=> personnages.has(tok));
+}
+/* Combine les filtres "Critère" et "Personnage" en OU, et non en ET : les
+   deux sont INDÉPENDANTS l'un de l'autre plutôt que cumulatifs — une ligne
+   est retenue dès qu'elle correspond à l'un OU à l'autre (ex. "Favoris" +
+   personnage "Léa" charge TOUTES les photos de Léa, même celles qui ne sont
+   pas favorites, en plus de tous les favoris). Si un seul des deux filtres
+   est actif, cela revient bien à ne tester que celui-là (l'autre, inactif,
+   ne "matche" jamais et n'influe donc pas sur le OU). Si aucun des deux
+   n'est actif, aucune restriction (comme avant l'ajout de ces filtres). */
+function catalogRowMatchesFilters(row, critere, personnages){
+  const critereActive = !!critere;
+  const personnagesActive = !!personnages;
+  if(!critereActive && !personnagesActive) return true;
+  const matchesCritere = critereActive && catalogRowMatchesCritere(row, critere);
+  const matchesPersonnage = personnagesActive && catalogRowMatchesPersonnages(row, personnages);
+  return matchesCritere || matchesPersonnage;
 }
 /* Modale "Quel fichier est le catalogue ?", avec ses 3 filtres Tri/Critère/
    Personnage pour ne charger qu'une partie d'un gros catalogue (import
@@ -2764,6 +2802,10 @@ function pickCatalogFromCandidates(csvFiles){
     document.getElementById("btnCatalogPickLoad").onclick = ()=>{
       const boxes = [...document.querySelectorAll("#catalogPickPersonnageList input[type=checkbox]")];
       const unchecked = boxes.filter(b=> !b.checked);
+      // Mémorisé pour le prochain import (voir populateCatalogPickPersonnages) :
+      // l'utilisateur retrouvera ces mêmes personnages décochés la prochaine
+      // fois, et n'aura plus qu'à ajuster la liste plutôt que tout redécocher.
+      saveUncheckedPersonnages(unchecked.map(b=>b.value));
       // Aucune case décochée (ou aucun personnage dans ce catalogue) : pas de
       // restriction, comme si le filtre n'existait pas — seules les cases
       // explicitement décochées par l'utilisateur excluent quoi que ce soit.
@@ -5068,7 +5110,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const filesToImport = restrictionActive
     ? files.filter(f=>{
         const row = csvRowByFileName.get(f.name);
-        return !!row && catalogRowMatchesCritere(row, pick.critere) && catalogRowMatchesPersonnages(row, pick.personnages);
+        return !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages);
       })
     : files;
   if(restrictionActive){
