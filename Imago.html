@@ -537,6 +537,9 @@ button{font-family:inherit;}
 .modal-close:hover{color:var(--copper-hi);}
 .modal-body{padding:18px 20px;}
 .modal-foot{padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:10px;}
+#catalogPickList .btn.active{border-color:var(--copper); background:rgba(199,125,59,.15); color:var(--copper-hi);}
+#catalogPickPersonnageList label{display:flex; align-items:center; gap:6px; font-size:13px; padding:3px 0; cursor:pointer;}
+#catalogPickPersonnageList input{margin:0;}
 
 /* ---------- panneau Infos ancré à droite de l'image (grand écran) ---------- */
 @media (min-width: 761px){
@@ -1212,11 +1215,42 @@ button{font-family:inherit;}
   <div class="modal">
     <div class="modal-head"><h2>Quel fichier est le catalogue ?</h2><button class="modal-close" data-close="modalCatalogPick">×</button></div>
     <div class="modal-body">
-      <p class="drive-note" style="margin-bottom:10px;">Plusieurs fichiers .csv ont été trouvés dans ce dossier — choisissez celui à utiliser comme catalogue :</p>
+      <p class="drive-note" style="margin-bottom:10px;" id="catalogPickIntro">Plusieurs fichiers .csv ont été trouvés dans ce dossier — choisissez celui à utiliser comme catalogue :</p>
       <div id="catalogPickList"></div>
+
+      <div id="catalogPickFilters" class="hidden" style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
+        <p class="drive-note" style="margin-bottom:10px;">Pour ne charger qu'une partie du catalogue (import plus rapide sur un gros dossier) :</p>
+        <div class="field-row">
+          <label for="catalogPickTri">Tri</label>
+          <select id="catalogPickTri">
+            <option value="antichrono">⇅ Tri anti-chronologique (plus récent → plus ancien)</option>
+            <option value="chrono">⇅ Tri chronologique (plus ancien → plus récent)</option>
+            <option value="filename">🔤 Tri par nom d'image/vidéo</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="catalogPickCritere">Critère</label>
+          <select id="catalogPickCritere">
+            <option value="">— Tous —</option>
+            <option value="favori">★ Favoris</option>
+            <option value="nonfavori">Non favoris</option>
+            <option value="art">🎨 Arts</option>
+            <option value="concert">🎵 Concerts</option>
+            <option value="histoire">📜 Culture</option>
+            <option value="partition">🎼 Partitions</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label>Personnage <span id="catalogPickPersonnageToggle" style="text-transform:none; letter-spacing:0; cursor:pointer; color:var(--copper); text-decoration:underline;">(tout / aucun)</span></label>
+          <div id="catalogPickPersonnageList" style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">
+            <p class="drive-note hidden" id="catalogPickPersonnageEmpty">Aucun personnage renseigné dans ce catalogue.</p>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn reset" id="btnCatalogPickNone">Aucun (nouveau catalogue)</button>
+      <button class="btn copper" id="btnCatalogPickLoad">Charger</button>
     </div>
   </div>
 </div>
@@ -2577,25 +2611,170 @@ document.getElementById("btnPickFolder").addEventListener("click", ()=> folderIn
    le navigateur car déclenché après un `await`, hors du geste utilisateur
    d'origine). Les File des .csv sont déjà dans `allFiles`, gratuitement,
    depuis le sélecteur de DOSSIER lui-même. */
+/* Lit un fichier .csv catalogue et renvoie ses lignes sous forme de Map
+   fileName -> row (mêmes en-têtes que le catalogue Imago). Utilisé à la
+   fois pour peupler la liste des personnages dans la modale de choix du
+   catalogue (ci-dessous) et, une fois le fichier confirmé, par
+   handleFilesSelected lui-même — lu deux fois (fichier .csv minuscule,
+   coût négligeable) plutôt que de complexifier le passage de données entre
+   les deux. */
+async function readCatalogCsvRows(file){
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+  const rows = [];
+  if(lines.length >= 2){
+    const header = parseCsvLine(lines[0]);
+    for(let i=1;i<lines.length;i++){
+      const cells = parseCsvLine(lines[i]);
+      const row = {}; header.forEach((h,idx)=> row[h]=cells[idx]);
+      if(row.fileName) rows.push(row);
+    }
+  }
+  return rows;
+}
+/* Remplit la liste à cases à cocher "Personnage" de la modale de choix du
+   catalogue, à partir des valeurs distinctes trouvées dans les lignes du
+   .csv sélectionné (mêmes jetons qu'ailleurs dans l'appli — voir
+   personnageTokens, un même champ pouvant cumuler plusieurs personnages
+   séparés par une virgule). Toutes les cases démarrent cochées : par
+   défaut, aucune restriction n'est appliquée (comportement identique à
+   avant l'ajout de ce filtre) tant que l'utilisateur n'en décoche pas. */
+function populateCatalogPickPersonnages(rows){
+  const set = new Set();
+  rows.forEach(row=> personnageTokens(row.personnage).forEach(tok=> set.add(tok)));
+  const tokens = [...set].sort((a,b)=> a.localeCompare(b, "fr"));
+  const list = document.getElementById("catalogPickPersonnageList");
+  const empty = document.getElementById("catalogPickPersonnageEmpty");
+  list.innerHTML = "";
+  if(tokens.length === 0){
+    empty.classList.remove("hidden");
+    list.appendChild(empty);
+    return;
+  }
+  empty.classList.add("hidden");
+  tokens.forEach(tok=>{
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.value = tok;
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(tok));
+    list.appendChild(label);
+  });
+}
+document.getElementById("catalogPickPersonnageToggle").addEventListener("click", ()=>{
+  const boxes = document.querySelectorAll("#catalogPickPersonnageList input[type=checkbox]");
+  if(!boxes.length) return;
+  const allChecked = [...boxes].every(b=>b.checked);
+  boxes.forEach(b=> b.checked = !allChecked); // bascule : tout coché → tout décoché, et inversement
+});
+/* Valeur par défaut du sélecteur "Tri" de la modale : reflète le tri
+   actuellement actif dans l'appli (State.sortOrder/State.sortByFileName),
+   pour que "ne rien toucher" reproduise exactement le comportement d'avant
+   l'ajout de ce filtre. */
+function catalogPickDefaultTri(){
+  if(State.sortByFileName) return "filename";
+  return State.sortOrder === "antichrono" ? "antichrono" : "chrono";
+}
+/* Applique le choix de tri de la modale à l'état global de l'appli (mêmes
+   clés localStorage que les boutons ⇅/🔤 habituels, pour rester cohérent
+   partout ailleurs — planche-contact, visualiseur, prochain import). */
+function applyCatalogPickTri(value){
+  if(value === "filename"){
+    State.sortByFileName = true;
+    localStorage.setItem("imago_sort_by_filename", "1");
+  } else {
+    State.sortByFileName = false;
+    localStorage.setItem("imago_sort_by_filename", "0");
+    State.sortOrder = value === "chrono" ? "chrono" : "antichrono";
+    localStorage.setItem("imago_sort_order", State.sortOrder);
+  }
+  updateSortByFileNameBtn();
+  updateSortOrderBtn();
+}
+/* Teste si une ligne de catalogue satisfait le filtre "Critère" choisi. */
+function catalogRowMatchesCritere(row, critere){
+  if(!critere) return true;
+  if(critere === "favori") return row.favori === "true";
+  if(critere === "nonfavori") return row.favori !== "true";
+  return row[critere] === "true"; // "art" | "concert" | "histoire" | "partition"
+}
+/* Teste si une ligne de catalogue satisfait le filtre "Personnage" choisi
+   (Set de jetons cochés, ou null si aucune restriction — cases toutes
+   cochées ou catalogue sans personnage renseigné). */
+function catalogRowMatchesPersonnages(row, personnages){
+  if(!personnages) return true;
+  return personnageTokens(row.personnage).some(tok=> personnages.has(tok));
+}
+/* Modale "Quel fichier est le catalogue ?", avec ses 3 filtres Tri/Critère/
+   Personnage pour ne charger qu'une partie d'un gros catalogue (import
+   plus rapide — voir échange utilisateur sur un dossier de 4500+ photos).
+   Affichée dès qu'AU MOINS UN .csv est trouvé (et non plus seulement à
+   partir de 2, comme avant l'ajout des filtres) : avec un seul candidat,
+   il est présélectionné automatiquement, mais les filtres restent
+   proposés — sinon ils ne seraient jamais accessibles dans le cas, très
+   courant, d'un seul catalogue par dossier. Résout un objet
+   {file, tri, critere, personnages} :
+   - file : le fichier .csv choisi (ou null pour "Aucun (nouveau catalogue)")
+   - tri : "chrono" | "antichrono" | "filename"
+   - critere : "" (tous) | "favori" | "nonfavori" | "art" | "concert" | "histoire" | "partition"
+   - personnages : Set de personnages cochés, ou null si tous cochés (aucune restriction) */
 function pickCatalogFromCandidates(csvFiles){
   return new Promise(resolve=>{
-    if(csvFiles.length === 0){ resolve(null); return; }
-    if(csvFiles.length === 1){ resolve(csvFiles[0]); return; } // un seul .csv trouvé : pas d'ambiguïté, pas besoin de demander
+    if(csvFiles.length === 0){ resolve({file:null, tri:catalogPickDefaultTri(), critere:"", personnages:null}); return; }
     const list = document.getElementById("catalogPickList");
+    const filters = document.getElementById("catalogPickFilters");
+    const triSelect = document.getElementById("catalogPickTri");
+    const critereSelect = document.getElementById("catalogPickCritere");
+    document.getElementById("catalogPickIntro").textContent = csvFiles.length > 1
+      ? "Plusieurs fichiers .csv ont été trouvés dans ce dossier — choisissez celui à utiliser comme catalogue :"
+      : "Fichier catalogue trouvé dans ce dossier :";
     list.innerHTML = "";
-    csvFiles.slice().sort((a,b)=> (b.lastModified||0) - (a.lastModified||0)).forEach(f=>{
+    filters.classList.remove("hidden");
+    triSelect.value = catalogPickDefaultTri();
+    critereSelect.value = "";
+    let selected = null;
+    let readToken = 0; // annule un peuplement de la liste Personnage devenu obsolète si l'utilisateur reclique vite sur un autre fichier
+    async function selectFile(file, btn){
+      selected = file;
+      list.querySelectorAll(".btn").forEach(b=> b.classList.remove("active"));
+      btn.classList.add("active");
+      const myToken = ++readToken;
+      populateCatalogPickPersonnages([]); // vide pendant la lecture, pour ne pas laisser la liste précédente induire en erreur
+      const rows = await readCatalogCsvRows(file).catch(()=>[]);
+      if(myToken !== readToken) return; // un autre fichier a été sélectionné entre-temps
+      populateCatalogPickPersonnages(rows);
+    }
+    const sorted = csvFiles.slice().sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
+    sorted.forEach((f,i)=>{
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn";
       btn.style.cssText = "display:block; width:100%; text-align:left; margin-bottom:8px;";
       btn.textContent = `${f.name} (${fmtSize(f.size)})`;
-      btn.addEventListener("click", ()=>{ closeModal("modalCatalogPick"); resolve(f); });
+      btn.addEventListener("click", ()=> selectFile(f, btn));
       list.appendChild(btn);
     });
-    document.getElementById("btnCatalogPickNone").onclick = ()=>{ closeModal("modalCatalogPick"); resolve(null); };
+    selectFile(sorted[0], list.children[0]); // présélection du plus récent (ou de l'unique fichier trouvé)
+    document.getElementById("btnCatalogPickNone").onclick = ()=>{
+      closeModal("modalCatalogPick");
+      resolve({file:null, tri:triSelect.value, critere:"", personnages:null});
+    };
+    document.getElementById("btnCatalogPickLoad").onclick = ()=>{
+      const boxes = [...document.querySelectorAll("#catalogPickPersonnageList input[type=checkbox]")];
+      const unchecked = boxes.filter(b=> !b.checked);
+      // Aucune case décochée (ou aucun personnage dans ce catalogue) : pas de
+      // restriction, comme si le filtre n'existait pas — seules les cases
+      // explicitement décochées par l'utilisateur excluent quoi que ce soit.
+      const personnages = unchecked.length ? new Set(boxes.filter(b=>b.checked).map(b=>b.value)) : null;
+      closeModal("modalCatalogPick");
+      resolve({file:selected, tri:triSelect.value, critere:critereSelect.value, personnages});
+    };
     openModal("modalCatalogPick");
   });
 }
+
 
 /* -----------------------------------------------------------------
    "Hall of fame" — deux actions bien distinctes :
@@ -4816,8 +4995,10 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // des images…" puisque son propre sélecteur filtre les .csv.
   const csvFiles = [...pendingCatalogFiles, ...allFiles.filter(f=>/\.csv$/i.test(f.name))];
   pendingCatalogFiles = []; // usage unique : ne pas les réappliquer silencieusement à un import ultérieur
-  const chosen = await pickCatalogFromCandidates(csvFiles);
+  const pick = await pickCatalogFromCandidates(csvFiles);
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
+  applyCatalogPickTri(pick.tri); // "Tri" de la modale : appliqué tout de suite, avant le tri prioritaire ci-dessous qui en dépend
+  const chosen = pick.file;
   let csvRowByFileName = new Map();
   const catalogCandidates = chosen ? [chosen] : [];
   if(chosen){
@@ -4856,7 +5037,11 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // n'est PAS retrouvé dans cette sélection est conservée (pas de perte
   // silencieuse de métadonnées lors du prochain export) mais basculée en
   // corbeille — un fichier disparu du dossier ne doit plus apparaître comme
-  // une photo active dans la planche-contact.
+  // une photo active dans la planche-contact. Repose volontairement sur
+  // `files` (TOUS les fichiers du dossier), et non sur `filesToImport`
+  // ci-dessous : un fichier écarté par les filtres Critère/Personnage de la
+  // modale reste bel et bien présent sur le disque et ne doit jamais être
+  // pris, à tort, pour un fichier disparu.
   let orphanedCount = 0;
   if(csvRowByFileName.size){
     const foundFileNames = new Set(files.map(f=>f.name));
@@ -4872,18 +5057,45 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     if(orphanedCount) renderGrid();
   }
 
-  // ---- 2) Tri par date estimée (sans lire le contenu des fichiers, donc
+  // ---- Filtres "Critère"/"Personnage" de la modale de choix du catalogue :
+  // ne retient, PARMI LES FICHIERS PRÉSENTS SUR LE DISQUE, que ceux dont la
+  // ligne de catalogue correspond aux critères choisis — pour ne charger
+  // qu'une partie d'un gros catalogue (ex. seulement les Favoris, ou
+  // seulement un Personnage donné) plutôt que tout le dossier. Un fichier
+  // absent du catalogue (jamais encore importé) est exclu dès qu'un filtre
+  // est actif : impossible de savoir s'il correspondrait au critère demandé.
+  const restrictionActive = !!(pick.critere || pick.personnages);
+  const filesToImport = restrictionActive
+    ? files.filter(f=>{
+        const row = csvRowByFileName.get(f.name);
+        return !!row && catalogRowMatchesCritere(row, pick.critere) && catalogRowMatchesPersonnages(row, pick.personnages);
+      })
+    : files;
+  if(restrictionActive){
+    if(filesToImport.length === 0){
+      toast("Aucune photo/vidéo du dossier ne correspond aux filtres Critère/Personnage choisis — rien à charger.");
+      return;
+    }
+    importTotalCount = filesToImport.length;
+    updateGalleryCounter();
+    document.getElementById("folderStatus").textContent = `Import filtré en cours : "${folderName}" (${filesToImport.length}/${files.length} fichier(s) retenu(s))…`;
+  }
+
+  // ---- 2) Tri par date estimée, ou par nom de fichier si "🔤 Tri par nom
+  // d'image/vidéo" a été choisi (sans lire le contenu des fichiers, donc
   // quasi instantané même sur plusieurs milliers de photos), pour isoler les
   // IMPORT_PRIORITY_COUNT premières images SELON LE TRI ACTUELLEMENT CHOISI
-  // par l'utilisateur (State.sortOrder — bouton ⇅ Chronologique/
-  // Anti-chronologique, mémorisé d'une session à l'autre) : ce sont elles
-  // qui sont traitées et affichées EN PREMIER, pour un 1er écran quasi
-  // immédiat quel que soit le nombre total de photos du dossier — et,
-  // surtout, pour qu'elles correspondent bien au DÉBUT de la planche-
-  // contact telle qu'elle sera affichée (voir galleryPhotos()), plutôt que
-  // de risquer un 1er écran vide si le tri choisi est "chronologique" alors
-  // que ce tri de priorité restait toujours "du plus récent au plus ancien".
-  const sortedFiles = files.slice().sort((a,b)=>{
+  // par l'utilisateur (State.sortOrder/State.sortByFileName — modale de
+  // choix du catalogue ou boutons ⇅/🔤 habituels, mémorisés d'une session à
+  // l'autre) : ce sont elles qui sont traitées et affichées EN PREMIER, pour
+  // un 1er écran quasi immédiat quel que soit le nombre total de photos du
+  // dossier — et, surtout, pour qu'elles correspondent bien au DÉBUT de la
+  // planche-contact telle qu'elle sera affichée (voir galleryPhotos()).
+  const sortedFiles = filesToImport.slice().sort((a,b)=>{
+    if(State.sortByFileName){
+      const cmp = naturalCompare(a.name, b.name);
+      return State.sortOrder === "antichrono" ? -cmp : cmp;
+    }
     const da = estimateFileDate(a, csvRowByFileName.get(a.name)) || "";
     const db = estimateFileDate(b, csvRowByFileName.get(b.name)) || "";
     const cmp = da < db ? -1 : da > db ? 1 : 0; // ordre chronologique croissant de base
