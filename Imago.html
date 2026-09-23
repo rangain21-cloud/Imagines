@@ -2045,7 +2045,7 @@ function galleryPhotos(){
 /* Affichage initial instantané limité aux images les plus récentes (déjà en
    tête grâce au tri ci-dessus), le reste du catalogue étant ajouté ensuite
    par petits paquets en arrière-plan — voir renderGallery() plus bas. */
-const GALLERY_INITIAL_BATCH = 40;
+const GALLERY_INITIAL_BATCH = 50; // aligné sur IMPORT_PRIORITY_COUNT (voir handleFilesSelected) : les 50 photos décodées en priorité sont exactement celles affichées d'emblée
 const GALLERY_BACKGROUND_BATCH = 40;
 let galleryRenderToken = 0; // incrémenté à chaque renderGallery() pour invalider un remplissage en arrière-plan devenu obsolète
 /* Ratio largeur/hauteur "d'affichage" d'une photo pour sa vignette dans la
@@ -2123,6 +2123,26 @@ function appendGalleryTiles(grid, photos){
   const frag = document.createDocumentFragment();
   photos.forEach(p=> frag.appendChild(buildGalleryTile(p)));
   grid.appendChild(frag);
+}
+/* Ajoute à la planche-contact les photos qui viennent d'être importées en
+   arrière-plan (voir importRestInBackground), SANS tout redessiner comme le
+   fait renderGallery(). Ces nouvelles photos arrivent déjà dans le même
+   ordre que l'affichage (importOneFile est appelé en série — IMPORT_
+   CONCURRENCY=1 — sur restFiles, lui-même trié comme galleryPhotos() grâce
+   à l'alignement sur State.sortOrder fait dans handleFilesSelected) : les
+   ajouter à la suite du DOM préserve donc l'ordre d'affichage. L'intérêt est
+   surtout de préserver la position de défilement de l'utilisateur, qui peut
+   ainsi commencer à parcourir/travailler sur les 1ères photos pendant que
+   le reste continue de charger, sans que la planche-contact ne "saute" ou
+   ne se vide brièvement à chaque paquet traité (plusieurs centaines de fois
+   sur un import de plusieurs milliers de photos). */
+function appendImportedPhotosToGallery(newRecords){
+  const visible = newRecords.filter(p=>!p.corbeille);
+  if(!visible.length) return;
+  const grid = document.getElementById("galleryGrid");
+  if(!grid.children.length) document.getElementById("galleryEmpty").classList.add("hidden");
+  appendGalleryTiles(grid, visible);
+  updateGalleryCounter();
 }
 function scheduleGalleryBackgroundFill(grid, rest, offset, token){
   const step = ()=>{
@@ -4662,6 +4682,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
     // exception ici arrête la suite en arrière-plan sans le moindre signe,
     // laissant l'utilisateur avec un lot partiel et aucune explication.
     if(token !== importToken) return; // un autre import a démarré entre-temps : on abandonne celui-ci
+    const beforeCount = State.photos.length;
     const chunk = restFiles.slice(offset, offset + IMPORT_BACKGROUND_CHUNK);
     await runWithConcurrency(chunk, async (file)=>{
       if(token !== importToken) return;
@@ -4670,7 +4691,12 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
     if(token !== importToken) return;
     offset += IMPORT_BACKGROUND_CHUNK;
     const stillLoading = offset < restFiles.length;
-    renderGallery(); // complète la planche-contact avec les photos du paquet qui vient d'être traité
+    // Ajout incrémental des seules photos qui viennent d'être traitées par
+    // CE paquet — plutôt que renderGallery(), qui viderait et reconstruirait
+    // toute la planche-contact à chaque paquet (voir commentaire de
+    // appendImportedPhotosToGallery : évite tout "saut" de l'ascenseur
+    // pendant que l'utilisateur consulte déjà les 1ères photos).
+    appendImportedPhotosToGallery(State.photos.slice(beforeCount));
     // Sans cet appel, les suggestions (Titre/Personnage/Lieu de la modale
     // Infos) et les filtres restaient figés sur le seul 1er lot prioritaire
     // (les photos les plus récentes) : toutes les valeurs des photos
@@ -4846,15 +4872,22 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     if(orphanedCount) renderGrid();
   }
 
-  // ---- 2) Tri par date estimée décroissante (sans lire le contenu des
-  // fichiers, donc quasi instantané même sur 700 photos), pour isoler les
-  // IMPORT_PRIORITY_COUNT images les plus récentes : ce sont elles qui sont
-  // traitées et affichées EN PREMIER, pour un 1er écran quasi immédiat quel
-  // que soit le nombre total de photos du dossier.
+  // ---- 2) Tri par date estimée (sans lire le contenu des fichiers, donc
+  // quasi instantané même sur plusieurs milliers de photos), pour isoler les
+  // IMPORT_PRIORITY_COUNT premières images SELON LE TRI ACTUELLEMENT CHOISI
+  // par l'utilisateur (State.sortOrder — bouton ⇅ Chronologique/
+  // Anti-chronologique, mémorisé d'une session à l'autre) : ce sont elles
+  // qui sont traitées et affichées EN PREMIER, pour un 1er écran quasi
+  // immédiat quel que soit le nombre total de photos du dossier — et,
+  // surtout, pour qu'elles correspondent bien au DÉBUT de la planche-
+  // contact telle qu'elle sera affichée (voir galleryPhotos()), plutôt que
+  // de risquer un 1er écran vide si le tri choisi est "chronologique" alors
+  // que ce tri de priorité restait toujours "du plus récent au plus ancien".
   const sortedFiles = files.slice().sort((a,b)=>{
-    const da = estimateFileDate(a, csvRowByFileName.get(a.name));
-    const db = estimateFileDate(b, csvRowByFileName.get(b.name));
-    return (db||"").localeCompare(da||"");
+    const da = estimateFileDate(a, csvRowByFileName.get(a.name)) || "";
+    const db = estimateFileDate(b, csvRowByFileName.get(b.name)) || "";
+    const cmp = da < db ? -1 : da > db ? 1 : 0; // ordre chronologique croissant de base
+    return State.sortOrder === "antichrono" ? -cmp : cmp;
   });
   const priorityFiles = sortedFiles.slice(0, IMPORT_PRIORITY_COUNT);
   const restFiles = sortedFiles.slice(IMPORT_PRIORITY_COUNT);
@@ -8756,19 +8789,20 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   openCorbeilleDeleteModal();
 });
 
-/* Réécriture en lot des métadonnées EXIF (Caméra/Lieu/Map) de TOUT le
-   catalogue — pour rattraper les photos dont ces rubriques ont été
-   modifiées directement dans le fichier .csv (Excel…) plutôt que via la
-   modale "Modifier", qui n'écrit les métadonnées que photo par photo, à
-   l'enregistrement (voir writeMetadataIntoJpegDataUrl). Traitement
-   séquentiel avec pause entre chaque photo (même logique que pour l'import
-   — voir runWithConcurrency) : réécrire l'EXIF de nombreuses photos
-   d'affilée sans répit peut solliciter la mémoire de la même façon qu'un
-   import, sur un appareil à ressources limitées. */
+/* Réécriture en lot des métadonnées EXIF (Caméra/Lieu/Map/Date cliché/
+   Auteur/Personnage) de TOUT le catalogue — pour rattraper les photos dont
+   ces rubriques ont été modifiées directement dans le fichier .csv
+   (Excel…) plutôt que via la modale "Modifier", qui n'écrit les
+   métadonnées que photo par photo, à l'enregistrement (voir
+   writeMetadataIntoJpegDataUrl). Traitement séquentiel avec pause entre
+   chaque photo (même logique que pour l'import — voir
+   runWithConcurrency) : réécrire l'EXIF de nombreuses photos d'affilée
+   sans répit peut solliciter la mémoire de la même façon qu'un import,
+   sur un appareil à ressources limitées. */
 document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=>{
-  const targets = State.photos.filter(p=> !p.isVideo && (p.optique || p.lieu || p.map));
+  const targets = State.photos.filter(p=> !p.isVideo && (p.optique || p.lieu || p.map || p.dateAchat || p.auteur || p.personnage));
   if(!targets.length){
-    toast("Aucune photo avec Caméra, Lieu ou Map renseigné(e) — rien à écrire.");
+    toast("Aucune photo avec Caméra, Lieu, Map, Date cliché, Auteur ou Personnage renseigné(e) — rien à écrire.");
     return;
   }
   const btn = document.getElementById("btnWriteExifBatch");
