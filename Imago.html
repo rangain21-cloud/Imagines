@@ -6428,11 +6428,13 @@ async function renamePersonnageKeywordsEverywhere(oldToks, newTok){
     const tokens = personnageTokens(p.personnage);
     if(!tokens.some(t => oldSet.has(t))) continue; // correspondance exacte, sensible à la casse
     const seen = new Set();
+    const previousAutoTitre = buildTitre(p.lieu, p.personnage);
     p.personnage = tokens
       .map(t => oldSet.has(t) ? newTok : t)
       .filter(t => seen.has(t) ? false : (seen.add(t), true)) // évite les doublons (plusieurs anciens mots ou newTok déjà présent)
       .join(", ");
-    p.titre = buildTitre(p.lieu, p.personnage);
+    // Titre personnalisé (ex. saisi dans la modale Infos) préservé : recalculé seulement s'il était vide ou encore identique au titre automatique d'avant modification.
+    if(!p.titre || p.titre === previousAutoTitre) p.titre = buildTitre(p.lieu, p.personnage);
     await idbPut("photos", p);
     touched++;
   }
@@ -6445,8 +6447,10 @@ async function deletePersonnageKeywordsEverywhere(toks){
   for(const p of State.photos){
     const tokens = personnageTokens(p.personnage);
     if(!tokens.some(t => tokSet.has(t))) continue; // correspondance exacte, sensible à la casse
+    const previousAutoTitre = buildTitre(p.lieu, p.personnage);
     p.personnage = tokens.filter(t => !tokSet.has(t)).join(", ");
-    p.titre = buildTitre(p.lieu, p.personnage);
+    // Titre personnalisé (ex. saisi dans la modale Infos) préservé : recalculé seulement s'il était vide ou encore identique au titre automatique d'avant modification.
+    if(!p.titre || p.titre === previousAutoTitre) p.titre = buildTitre(p.lieu, p.personnage);
     await idbPut("photos", p);
     touched++;
   }
@@ -6601,9 +6605,11 @@ async function renameLieuxEverywhere(oldLieux, newLieu){
     const lieu = (p.lieu||"").trim();
     if(!oldSet.has(lieu)) continue; // correspondance exacte, sensible à la casse
     const wasAutoMap = !p.map || p.map === mapUrlFromLieu(lieu); // carte non personnalisée par l'utilisateur
+    const previousAutoTitre = buildTitre(p.lieu, p.personnage);
     p.lieu = newLieu;
     if(wasAutoMap) p.map = mapUrlFromLieu(newLieu);
-    p.titre = buildTitre(p.lieu, p.personnage);
+    // Titre personnalisé (ex. saisi dans la modale Infos) préservé : recalculé seulement s'il était vide ou encore identique au titre automatique d'avant modification.
+    if(!p.titre || p.titre === previousAutoTitre) p.titre = buildTitre(p.lieu, p.personnage);
     await idbPut("photos", p);
     touched++;
   }
@@ -6617,9 +6623,11 @@ async function deleteLieuxEverywhere(lieux){
     const lieu = (p.lieu||"").trim();
     if(!lieuSet.has(lieu)) continue; // correspondance exacte, sensible à la casse
     const wasAutoMap = !p.map || p.map === mapUrlFromLieu(lieu);
+    const previousAutoTitre = buildTitre(p.lieu, p.personnage);
     p.lieu = "";
     if(wasAutoMap) p.map = "";
-    p.titre = buildTitre(p.lieu, p.personnage);
+    // Titre personnalisé (ex. saisi dans la modale Infos) préservé : recalculé seulement s'il était vide ou encore identique au titre automatique d'avant modification.
+    if(!p.titre || p.titre === previousAutoTitre) p.titre = buildTitre(p.lieu, p.personnage);
     await idbPut("photos", p);
     touched++;
   }
