@@ -2678,9 +2678,10 @@ async function readCatalogCsvRows(file){
   const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
   const rows = [];
   if(lines.length >= 2){
-    const header = parseCsvLine(lines[0]);
+    const delim = detectCsvDelimiter(lines[0]);
+    const header = parseCsvLine(lines[0], delim);
     for(let i=1;i<lines.length;i++){
-      const cells = parseCsvLine(lines[i]);
+      const cells = parseCsvLine(lines[i], delim);
       const row = {}; header.forEach((h,idx)=> row[h]=cells[idx]);
       if(row.fileName) rows.push(row);
     }
@@ -3206,11 +3207,12 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
       const text = await existingAlbumFile.text();
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
       if(lines.length){
-        const normalizedCols = normalizeCols(parseCsvLine(lines[0]));
+        const albumDelim = detectCsvDelimiter(lines[0]);
+        const normalizedCols = normalizeCols(parseCsvLine(lines[0], albumDelim));
         const idIdx = normalizedCols.indexOf("id");
         if(idIdx >= 0){
           for(let i=1;i<lines.length;i++){
-            const cells = parseCsvLine(lines[i]);
+            const cells = parseCsvLine(lines[i], albumDelim);
             const id = cells[idIdx];
             if(id) rowsById.set(id, remapRowToCanonical(cells, normalizedCols).map(csvEscape).join(";"));
           }
@@ -3231,7 +3233,8 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
       const text = await file.text();
       const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
       if(lines.length < 1) continue;
-      const normalizedCols = normalizeCols(parseCsvLine(lines[0]));
+      const sourceDelim = detectCsvDelimiter(lines[0]);
+      const normalizedCols = normalizeCols(parseCsvLine(lines[0], sourceDelim));
       // Pour "animaux", on cherche dans la colonne "titre" plutôt que dans
       // une colonne portant le nom du critère (qui n'existe pas pour lui).
       const favIdx = normalizedCols.indexOf(isAnimaux ? "titre" : criterion);
@@ -3251,7 +3254,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
       const yearMatch = /^Catalogue-(.+)\.csv$/i.exec(file.name);
       const yearLabel = yearMatch ? yearMatch[1] : "";
       for(let i=1;i<lines.length;i++){
-        const cells = parseCsvLine(lines[i]);
+        const cells = parseCsvLine(lines[i], sourceDelim);
         const id = cells[idColIdx];
         if(!id) continue;
         seenIds.add(id);
@@ -3381,7 +3384,8 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     const text = await albumFile.text();
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
     if(lines.length < 2){ statusEl.textContent = `« ${albumFile.name} » ne contient aucune entrée.`; return; }
-    const header = normalizeColNames(parseCsvLine(lines[0]));
+    const albumReadDelim = detectCsvDelimiter(lines[0]);
+    const header = normalizeColNames(parseCsvLine(lines[0], albumReadDelim));
     const fileNameIdx = header.indexOf("fileName");
     const sousDossierIdx = header.indexOf("sousDossier");
     // Colonnes de métadonnées à réinjecter dans les JPEG à l'étape 3 (voir
@@ -3411,7 +3415,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
     // réinjecter dans le JPEG correspondant à l'étape 3) Partager.
     csvRows = [];
     for(let i=1;i<lines.length;i++){
-      const cells = parseCsvLine(lines[i]);
+      const cells = parseCsvLine(lines[i], albumReadDelim);
       const name = cells[fileNameIdx];
       if(!name) continue;
       wantedNamesOnly.add(name);
@@ -5119,9 +5123,10 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     console.log(`[Imago] Lecture du catalogue "${chosen.name}" (${(chosen.size/1024).toFixed(0)} Ko) : ${catalogReadMs} ms`);
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
     if(lines.length >= 2){
-      const header = parseCsvLine(lines[0]);
+      const importDelim = detectCsvDelimiter(lines[0]);
+      const header = parseCsvLine(lines[0], importDelim);
       for(let i=1;i<lines.length;i++){
-        const cells = parseCsvLine(lines[i]);
+        const cells = parseCsvLine(lines[i], importDelim);
         const row = {}; header.forEach((h,idx)=> row[h]=cells[idx]);
         if(row.fileName) csvRowByFileName.set(row.fileName, row);
       }
@@ -9520,10 +9525,11 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
 async function mergeCsvIntoCatalog(text){
   const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
   if(lines.length<2) return toast("Fichier CSV vide.");
-  const header = parseCsvLine(lines[0]);
+  const mergeDelim = detectCsvDelimiter(lines[0]);
+  const header = parseCsvLine(lines[0], mergeDelim);
   let updated=0, created=0;
   for(let i=1;i<lines.length;i++){
-    const cells = parseCsvLine(lines[i]);
+    const cells = parseCsvLine(lines[i], mergeDelim);
     const row = {}; header.forEach((h,idx)=> row[h]=cells[idx]);
     if(!row.fileName) continue;
     let rec = State.photos.find(p=>p.fileName===row.fileName);
@@ -9558,7 +9564,25 @@ async function mergeCsvIntoCatalog(text){
   openGallery();
   toast(`Import CSV : ${created} créée(s), ${updated} mise(s) à jour. (Les images sans fichier local associé resteront sans vignette.)`);
 }
-function parseCsvLine(line){
+/* Détecte automatiquement le séparateur de champs d'une ligne d'en-tête de
+   catalogue CSV : ';' (format natif Imago), mais aussi ',' ou une
+   TABULATION (fichiers réenregistrés depuis Excel/Numbers/Google Sheets
+   dans un autre format — voir échange utilisateur : liste "Personnage"
+   vide car le fichier choisi était en réalité tabulé). On compte les
+   occurrences de chaque candidat dans la ligne d'en-tête et on retient le
+   plus fréquent ; ';' reste la valeur par défaut si aucun des trois n'est
+   trouvé (comportement identique à avant cette détection, pour ne rien
+   casser sur les catalogues déjà en circulation). */
+function detectCsvDelimiter(headerLine){
+  const candidates = [";", ",", "\t"];
+  let best = ";", bestCount = 0;
+  candidates.forEach(d=>{
+    const count = headerLine.split(d).length - 1;
+    if(count > bestCount){ bestCount = count; best = d; }
+  });
+  return best;
+}
+function parseCsvLine(line, delimiter=";"){
   const out=[]; let cur=""; let inQ=false;
   for(let i=0;i<line.length;i++){
     const c=line[i];
@@ -9568,7 +9592,7 @@ function parseCsvLine(line){
       else cur+=c;
     }else{
       if(c==='"') inQ=true;
-      else if(c===';'){ out.push(cur); cur=""; }
+      else if(c===delimiter){ out.push(cur); cur=""; }
       else cur+=c;
     }
   }
