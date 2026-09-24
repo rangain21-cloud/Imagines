@@ -498,6 +498,19 @@ button{font-family:inherit;}
   box-shadow:0 20px 60px rgba(0,0,0,.6);
 }
 .modal.wide{max-width:760px;}
+/* Modale "Quel fichier est le catalogue ?" : trop de réglages (Tri, Critère,
+   case ET/OU, liste de Personnages) pour la largeur/hauteur par défaut de
+   .modal — gabarit de départ plus généreux, ET poignée de redimensionnement
+   native en bas-à-droite (resize:both) pour que l'utilisateur l'agrandisse
+   lui-même à volonté, dans les limites de l'écran (max-width/max-height). */
+#modalCatalogPick .modal{
+  width:640px; max-width:95vw; min-width:420px;
+  height:640px; max-height:92vh; min-height:380px;
+  resize:both; overflow:auto;
+  display:flex; flex-direction:column;
+}
+#modalCatalogPick .modal-body{flex:1 1 auto; min-height:0; overflow-y:auto;}
+#modalCatalogPick .modal-head, #modalCatalogPick .modal-foot{flex:0 0 auto;}
 /* Modale "Modifier" : 80% de l'écran sur PC/tablette (au lieu de 760px fixe,
    souvent trop petit pour bien juger une retouche) — réservé aux écrans
    assez larges : sur mobile, la modale profite déjà de presque tout
@@ -538,9 +551,10 @@ button{font-family:inherit;}
 .modal-body{padding:18px 20px;}
 .modal-foot{padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:10px;}
 #catalogPickList .btn.active{border-color:var(--copper); background:rgba(199,125,59,.15); color:var(--copper-hi);}
-#catalogPickPersonnageList{text-align:left;}
-#catalogPickPersonnageList label{display:flex; align-items:center; justify-content:flex-start; gap:6px; font-size:13px; padding:3px 0; cursor:pointer; text-align:left; width:100%;}
-#catalogPickPersonnageList input{margin:0; flex-shrink:0;}
+#catalogPickPersonnageList{text-align:left; overflow-x:hidden;}
+#catalogPickPersonnageList label{display:flex; align-items:flex-start; justify-content:flex-start; gap:6px; font-size:13px; padding:3px 0; cursor:pointer; text-align:left; width:100%;}
+#catalogPickPersonnageList label span{min-width:0; overflow-wrap:anywhere; word-break:break-word;}
+#catalogPickPersonnageList input{margin:2px 0 0; flex-shrink:0;}
 
 /* ---------- panneau Infos ancré à droite de l'image (grand écran) ---------- */
 @media (min-width: 761px){
@@ -1254,7 +1268,7 @@ button{font-family:inherit;}
         </label>
         <div class="field-row">
           <label>Personnage <span id="catalogPickPersonnageToggle" style="text-transform:none; letter-spacing:0; cursor:pointer; color:var(--copper); text-decoration:underline;">(tout / aucun)</span></label>
-          <div id="catalogPickPersonnageList" style="max-height:160px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">
+          <div id="catalogPickPersonnageList" style="max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">
             <p class="drive-note hidden" id="catalogPickPersonnageEmpty">Aucun personnage renseigné dans ce catalogue.</p>
           </div>
         </div>
@@ -2720,8 +2734,10 @@ function populateCatalogPickPersonnages(rows){
     cb.type = "checkbox";
     cb.checked = !previouslyUnchecked.has(tok);
     cb.value = tok;
+    const text = document.createElement("span");
+    text.textContent = tok;
     label.appendChild(cb);
-    label.appendChild(document.createTextNode(tok));
+    label.appendChild(text);
     list.appendChild(label);
   });
 }
