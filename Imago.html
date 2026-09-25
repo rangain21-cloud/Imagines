@@ -2982,19 +2982,42 @@ const COLUMN_ALIASES = {
 };
 const normalizeColNames = cols => cols.map(c=> COLUMN_ALIASES[c] || c);
 
-function hofAlbumFileName(criterion){
+// Nettoie le préfixe saisi par l'utilisateur (rubrique "Animaux") pour en
+// faire un nom de fichier valide sous Windows/macOS/Linux : caractères
+// interdits remplacés par "_", espaces/points en fin de nom (invalides sous
+// Windows) retirés. Retourne "" si, une fois nettoyé, il ne reste plus rien
+// d'utilisable (ex. préfixe fait uniquement de caractères interdits) —
+// l'appelant retombe alors sur "Animaux".
+function sanitizeForFileName(str){
+  return (str || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/[\s.]+$/, "");
+}
+function hofAlbumFileName(criterion, animauxPrefix){
   if(criterion === "art") return "Album-Art.csv";
   if(criterion === "concert") return "Album-Concert.csv";
   if(criterion === "histoire") return "Album-Culture.csv";
   if(criterion === "partition") return "Album-Partoche.csv";
-  if(criterion === "animaux") return "Album-Animaux.csv";
+  if(criterion === "animaux"){
+    // Reprend le mot-clé saisi par l'utilisateur dans le nom du fichier
+    // (ex. préfixe "Autom" → "Album-Autom.csv") plutôt qu'un nom fixe
+    // "Album-Animaux.csv" — plus parlant quand plusieurs mots-clés
+    // différents sont utilisés au fil du temps (un fichier par mot-clé).
+    const safe = sanitizeForFileName(animauxPrefix);
+    return `Album-${safe || "Animaux"}.csv`;
+  }
   return "Album-Favori.csv";
 }
-// Reconnaît tout fichier Album-*.csv (quelle que soit la rubrique, y compris
-// les anciens noms "Album.csv"/"Album-Histoire.csv") pour ne JAMAIS proposer
-// un fichier de sortie d'une génération précédente comme catalogue SOURCE
-// dans la liste de choix ci-dessous (voir pickHofCsvCandidates).
-const ALBUM_OUTPUT_FILE_RE = /^Album(-Favori|-Art|-Concert|-Culture|-Histoire|-Partoche)?(?:\s*\(\d+\))?\.csv$/i;
+// Reconnaît tout fichier Album-*.csv (quelle que soit la rubrique — y compris
+// "Album-Animaux.csv"/anciens noms, et désormais "Album-<motClé>.csv" pour la
+// rubrique "Animaux" puisque son nom dépend du préfixe saisi par l'utilisateur)
+// pour ne JAMAIS proposer un fichier de sortie d'une génération précédente
+// comme catalogue SOURCE dans la liste de choix ci-dessous (voir
+// pickHofCsvCandidates). Volontairement générique ("Album-" + n'importe
+// quoi) plutôt qu'une liste figée de rubriques, pour couvrir ce nommage
+// variable sans devoir être retouché à chaque nouveau mot-clé utilisé.
+const ALBUM_OUTPUT_FILE_RE = /^Album(-.+)?(?:\s*\(\d+\))?\.csv$/i;
 // Sélection, par coches, des .csv à utiliser comme catalogues sources —
 // à la demande de l'utilisateur, on ne se limite plus au nommage strict
 // "Catalogue-AAAA.csv" : n'importe quel .csv du dossier choisi (hors
@@ -3242,6 +3265,9 @@ function findLatestAlbumCandidate(allFiles, targetName, criterion){
   if(!candidates.length && criterion === "histoire"){
     candidates = allFiles.filter(f=>/^Album-Histoire(?:\s*\(\d+\))?\.csv$/i.test(f.name)); // repli : nommage d'avant le renommage en "Album-Culture.csv"
   }
+  if(!candidates.length && criterion === "animaux"){
+    candidates = allFiles.filter(f=>/^Album-Animaux(?:\s*\(\d+\))?\.csv$/i.test(f.name)); // repli : nommage fixe d'avant l'introduction du nom "Album-<motClé>.csv"
+  }
   if(!candidates.length) return null;
   candidates.sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
   return { file: candidates[0], staleDuplicates: candidates.slice(1) };
@@ -3294,7 +3320,7 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   // (champ hofAnimauxPrefix) plutôt que figé à "Anima" — retombe sur
   // "Anima" si l'utilisateur a vidé le champ par erreur.
   const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "Anima").trim() || "Anima";
-  const targetName = hofAlbumFileName(criterion);
+  const targetName = hofAlbumFileName(criterion, animauxPrefix);
   // Un éventuel fichier Album déjà présent à la racine du dossier choisi
   // (sous le nom correspondant à la rubrique choisie — ou encore
   // "Album.csv"/"Album-Histoire.csv", anciens noms) n'est pas une source
@@ -3356,7 +3382,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   const isAnimaux = criterion === "animaux";
   const animauxPrefixLc = (animauxPrefix || "Anima").trim().toLowerCase() || "anima";
   const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Culture" : (criterion === "partition" ? "Partition" : (isAnimaux ? "Animaux" : "Favori"))));
-  const targetName = hofAlbumFileName(criterion);
+  const targetName = hofAlbumFileName(criterion, animauxPrefix);
   const statusEl = document.getElementById("hofStatus");
   // Compteur d'avancement (réutilise la barre déjà utilisée pour l'étape 2
   // "Afficher" — une seule étape à la fois est active dans cette modale) :
@@ -3578,7 +3604,11 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // pour les fichiers générés avant l'introduction de ce nommage distinct).
   const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
   const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Culture" : (criterion === "partition" ? "Partition" : (criterion === "animaux" ? "Animaux" : "Favori"))));
-  const targetName = hofAlbumFileName(criterion);
+  // "animaux" : même préfixe que celui saisi à l'étape 1) Générer (champ
+  // encore présent/modifiable dans cette même modale) — nécessaire pour
+  // retrouver le bon fichier "Album-<motClé>.csv" (voir hofAlbumFileName).
+  const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "Anima").trim() || "Anima";
+  const targetName = hofAlbumFileName(criterion, animauxPrefix);
   const match = findLatestAlbumCandidate(allFiles, targetName, criterion);
   if(!match){
     statusEl.textContent = `Aucun fichier « ${targetName} » trouvé dans ce dossier — générez-le d'abord (bouton « Générer » ci-dessus, rubrique « ${criterionLabel} »), déposez-le dans ce dossier, puis réessayez.`;
