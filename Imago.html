@@ -1128,6 +1128,10 @@ button{font-family:inherit;}
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="partition"> 🎼 Partition</label>
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="animaux"> 🐾 Animaux</label>
       </div>
+      <div id="hofAnimauxPrefixWrap" class="hidden" style="display:flex; align-items:center; gap:6px; margin:2px 0 4px; font-size:12px;">
+        <label for="hofAnimauxPrefix" style="opacity:.8;">Préfixe recherché dans le titre :</label>
+        <input type="text" id="hofAnimauxPrefix" value="Anima" placeholder="Anima" style="width:110px; font-size:12px; padding:2px 6px;" title="Toute photo dont le titre commence par ce texte (insensible à la casse) sera incluse.">
+      </div>
       <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
 
       <p class="drive-note" style="margin-top:18px;">
@@ -2940,8 +2944,21 @@ hofDisplayFolderInput.multiple = true;
 hofDisplayFolderInput.className = "hidden";
 document.body.appendChild(hofDisplayFolderInput);
 
+// Le champ de préfixe (rubrique "Animaux") n'a de sens que pour cette
+// rubrique : affiché/masqué selon le bouton radio actif, y compris à
+// l'ouverture de la modale (au cas où "Animaux" serait déjà sélectionné,
+// ex. rouvre-t-on la modale après un premier passage).
+function updateHofAnimauxPrefixVisibility(){
+  const checked = document.querySelector('input[name="hofCriterion"]:checked');
+  document.getElementById("hofAnimauxPrefixWrap").classList.toggle("hidden", !checked || checked.value !== "animaux");
+}
+document.querySelectorAll('input[name="hofCriterion"]').forEach(radio=>{
+  radio.addEventListener("change", updateHofAnimauxPrefixVisibility);
+});
+
 document.getElementById("btnHOF").addEventListener("click", ()=>{
   document.getElementById("hofStatus").textContent = "";
+  updateHofAnimauxPrefixVisibility();
   openModal("modalHOF");
 });
 document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofGenerateFolderInput.click());
@@ -3273,6 +3290,10 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
   const criterionInput = document.querySelector('input[name="hofCriterion"]:checked');
   if(!criterionInput) throw new Error("Aucune rubrique sélectionnée (bouton radio introuvable).");
   const criterion = criterionInput.value;
+  // Pour "animaux", le préfixe recherché dans le titre est saisissable
+  // (champ hofAnimauxPrefix) plutôt que figé à "Anima" — retombe sur
+  // "Anima" si l'utilisateur a vidé le champ par erreur.
+  const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "Anima").trim() || "Anima";
   const targetName = hofAlbumFileName(criterion);
   // Un éventuel fichier Album déjà présent à la racine du dossier choisi
   // (sous le nom correspondant à la rubrique choisie — ou encore
@@ -3306,7 +3327,7 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
     return;
   }
   const { files: csvFiles, staleDuplicates: staleCatalogDuplicates } = dedupeCatalogFilesByYear(selectedCsvFiles);
-  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates);
+  await generateAlbumFromCsvFiles(csvFiles, existingAlbumFile, criterion, existingAlbumMatch ? existingAlbumMatch.staleDuplicates : [], staleCatalogDuplicates, animauxPrefix);
  } catch(err) {
   console.error("Hall of fame — échec de la génération :", err);
   const msg = `Échec de la génération : ${err && err.message ? err.message : err}`;
@@ -3325,13 +3346,15 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
 function nextFrame(){ return new Promise(r=> requestAnimationFrame(r)); }
 function sleep(ms){ return new Promise(r=> setTimeout(r, ms)); }
 
-async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates){
+async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates, animauxPrefix){
   // "animaux" est différent des autres rubriques : ce n'est pas une case à
   // cocher par photo (colonne booléenne "true"/"false" dans le catalogue),
   // mais une recherche automatique sur le TITRE de chaque photo — toute
-  // ligne dont la colonne "titre" commence par "Anima" (insensible à la
-  // casse) est incluse, sans action manuelle préalable sur chaque photo.
+  // ligne dont la colonne "titre" commence par le préfixe saisi par
+  // l'utilisateur (champ hofAnimauxPrefix, "Anima" par défaut ; insensible
+  // à la casse) est incluse, sans action manuelle préalable sur chaque photo.
   const isAnimaux = criterion === "animaux";
+  const animauxPrefixLc = (animauxPrefix || "Anima").trim().toLowerCase() || "anima";
   const criterionLabel = criterion === "art" ? "Art" : (criterion === "concert" ? "Concert" : (criterion === "histoire" ? "Culture" : (criterion === "partition" ? "Partition" : (isAnimaux ? "Animaux" : "Favori"))));
   const targetName = hofAlbumFileName(criterion);
   const statusEl = document.getElementById("hofStatus");
@@ -3442,11 +3465,11 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
         const id = cells[idColIdx];
         if(!id) continue;
         seenIds.add(id);
-        // Pour "animaux" : préfixe de titre (insensible à la casse), pas une
-        // valeur "true"/"false" — pour toutes les autres rubriques,
-        // inchangé (case à cocher classique).
+        // Pour "animaux" : préfixe de titre saisi par l'utilisateur
+        // (insensible à la casse), pas une valeur "true"/"false" — pour
+        // toutes les autres rubriques, inchangé (case à cocher classique).
         const included = isAnimaux
-          ? (cells[favIdx] || "").trim().toLowerCase().startsWith("anima")
+          ? (cells[favIdx] || "").trim().toLowerCase().startsWith(animauxPrefixLc)
           : cells[favIdx] === "true";
         if(included){
           const outCells = remapRowToCanonical(cells, normalizedCols);
