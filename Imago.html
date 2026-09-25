@@ -1530,9 +1530,26 @@ button{font-family:inherit;}
         <button class="btn" id="actAddAlbum">＋ Ajouter à un Album</button>
         <button class="btn" id="btnPersonnages">🧑 Personnages</button>
         <button class="btn" id="btnLieux">📍 Lieux</button>
+        <button class="btn" id="btnScanNewFiles">🔎 Cherche les nouveautés sur PC</button>
       </div>
     </div>
     <div class="modal-foot"><button class="btn" data-close="modalMore">Fermer</button></div>
+  </div>
+</div>
+
+<!-- ============== MODAL: NOUVEAUTÉS TROUVÉES SUR LE DISQUE ============== -->
+<div class="modal-overlay" id="modalNewFiles">
+  <div class="modal">
+    <div class="modal-head"><h2>Nouveautés trouvées</h2><button class="modal-close" data-close="modalNewFiles">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" id="newFilesIntro" style="margin-bottom:10px;"></p>
+      <div id="newFilesList" style="max-height:340px; overflow:auto;"></div>
+      <p class="drive-note" id="newFilesStatus" style="margin-top:10px;"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn reset" data-close="modalNewFiles">Fermer</button>
+      <button class="btn copper" id="btnNewFilesUpload">📤 Téléverser</button>
+    </div>
   </div>
 </div>
 
@@ -3025,6 +3042,173 @@ document.querySelector('#modalHOFCsvPick .modal-close').addEventListener("click"
 document.getElementById("modalHOFCsvPick").addEventListener("click", (e)=>{
   if(e.target === document.getElementById("modalHOFCsvPick")) hofCsvPickBail();
 });
+/* ---------------------------------------------------------------
+   Modale "Plus d'info" → "🔎 Cherche les nouveautés sur PC" :
+   1) explore (récursivement) un dossier du PC ou d'une clé USB choisi via
+      showDirectoryPicker, 2) repère les .jpg/.jpeg/.mp4 qui ne sont pas déjà
+      référencés dans le catalogue actuellement chargé (State.photos),
+      3) les propose dans une liste à cases à cocher, 4) sur "Téléverser",
+      copie les fichiers cochés dans le répertoire de photos (choisi/confirmé
+      à ce moment-là, en écriture) et les ajoute au catalogue en mémoire —
+      sans jamais toucher aux photos déjà chargées (contrairement à
+      handleFilesSelected, qui repart d'une planche-contact vierge).
+   --------------------------------------------------------------- */
+// Comparaison PAR SUFFIXE, tolérante à un nom de dossier racine différent
+// entre le dossier exploré ici et celui d'origine — même principe que
+// pathsLooselyMatch utilisé plus haut pour le Hall of fame.
+function newFilesPathsLooselyMatch(a, b){
+  return a===b || a.endsWith("/"+b) || b.endsWith("/"+a);
+}
+let newFilesPending = null; // {destName, items:[{handle,name,sousDossier}]} — alimenté par scanForNewFilesOnDisk, consommé par btnNewFilesUpload
+async function scanForNewFilesOnDisk(){
+  closeModal("modalMore");
+  if(typeof window.showDirectoryPicker !== "function"){
+    toast("⚠️ Cette fonction nécessite un navigateur compatible (Chrome ou Edge sur ordinateur).", 7000);
+    return;
+  }
+  let dirHandle;
+  try{
+    // id fixe : Chrome propose ce même dossier (clé USB, dossier d'import de
+    // l'appareil photo…) en tête de son sélecteur lors des prochains appels.
+    dirHandle = await window.showDirectoryPicker({ id: "imago-scan-new-files", mode: "read" });
+  }catch(e){
+    if(e && e.name === "AbortError") return; // annulé par l'utilisateur
+    toast(`Impossible d'ouvrir le sélecteur de dossier : ${(e&&e.message)||e}`);
+    console.warn("[Imago] Échec d'ouverture du dossier à explorer :", e);
+    return;
+  }
+  toast(`🔎 Recherche des nouveautés dans « ${dirHandle.name} »…`, 15000);
+  const found = [];
+  async function walk(handle, relParts){
+    for await (const [name, entryHandle] of handle.entries()){
+      if(entryHandle.kind === "directory"){
+        await walk(entryHandle, [...relParts, name]);
+      } else if(/\.(jpe?g|mp4)$/i.test(name)){
+        found.push({ handle: entryHandle, name, sousDossier: relParts.join("/") });
+      }
+    }
+  }
+  try{
+    await walk(dirHandle, []);
+  }catch(e){
+    toast(`Erreur pendant l'exploration de « ${dirHandle.name} » : ${(e&&e.message)||e}`);
+    console.warn("[Imago] Échec d'exploration du dossier :", e);
+    return;
+  }
+  // Fichiers déjà référencés par le catalogue actuellement chargé, sous
+  // forme "sousDossier/fileName" (ou juste fileName si aucun sous-dossier).
+  const catalogued = State.photos.map(p=> p.sousDossier ? `${p.sousDossier}/${p.fileName}` : p.fileName);
+  const newOnes = found.filter(f=>{
+    const path = f.sousDossier ? `${f.sousDossier}/${f.name}` : f.name;
+    return !catalogued.some(cp=> newFilesPathsLooselyMatch(cp, path));
+  });
+  if(!newOnes.length){
+    toast(`✅ Aucune nouveauté : les ${found.length} fichier(s) jpg/jpeg/mp4 de « ${dirHandle.name} » (et sous-dossiers) sont déjà dans le catalogue.`);
+    return;
+  }
+  openNewFilesModal(dirHandle, newOnes);
+}
+document.getElementById("btnScanNewFiles").addEventListener("click", scanForNewFilesOnDisk);
+
+function openNewFilesModal(dirHandle, items){
+  const sorted = items.slice().sort((a,b)=>
+    (a.sousDossier ? a.sousDossier+"/"+a.name : a.name).localeCompare(b.sousDossier ? b.sousDossier+"/"+b.name : b.name, "fr"));
+  newFilesPending = { sourceName: dirHandle.name, items: sorted };
+  document.getElementById("newFilesIntro").textContent =
+    `${sorted.length} fichier(s) trouvé(s) dans « ${dirHandle.name} » (et ses sous-dossiers) absent(s) du catalogue actuel. Cochez ceux à téléverser :`;
+  const list = document.getElementById("newFilesList");
+  list.innerHTML = "";
+  sorted.forEach((it, idx)=>{
+    const label = document.createElement("label");
+    label.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:6px; cursor:pointer;";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = true; // tout coché par défaut, cohérent avec le reste d'Imago (voir modalHOFCsvPick)
+    checkbox.dataset.idx = String(idx);
+    const span = document.createElement("span");
+    span.textContent = it.sousDossier ? `${it.sousDossier}/${it.name}` : it.name;
+    label.appendChild(checkbox);
+    label.appendChild(span);
+    list.appendChild(label);
+  });
+  document.getElementById("newFilesStatus").textContent = "";
+  const btn = document.getElementById("btnNewFilesUpload");
+  btn.disabled = false;
+  btn.textContent = "📤 Téléverser";
+  openModal("modalNewFiles");
+}
+
+// Descend/creé (create:true) chaque segment de sous-dossier depuis `root`,
+// pour reproduire dans le répertoire de destination la même arborescence que
+// dans le dossier exploré (ex. "2024/Vacances/x.jpg").
+async function getOrCreateSubdir(root, parts){
+  let target = root;
+  for(const part of parts) target = await target.getDirectoryHandle(part, { create: true });
+  return target;
+}
+
+document.getElementById("btnNewFilesUpload").addEventListener("click", async ()=>{
+  if(!newFilesPending || !newFilesPending.items.length) return;
+  const list = document.getElementById("newFilesList");
+  const checkedIdx = [...list.querySelectorAll("input[type=checkbox]:checked")].map(cb=> Number(cb.dataset.idx));
+  if(!checkedIdx.length){ toast("Aucun fichier coché."); return; }
+  const items = checkedIdx.map(i=> newFilesPending.items[i]);
+  const statusEl = document.getElementById("newFilesStatus");
+  const btn = document.getElementById("btnNewFilesUpload");
+  btn.disabled = true;
+
+  let destHandle;
+  try{
+    // id fixe : propose par défaut le répertoire de photos déjà utilisé lors
+    // d'un précédent téléversement (même mécanisme que les autres accès en
+    // écriture d'Imago — voir copySelectedFilesToTransferFolder plus haut).
+    destHandle = await window.showDirectoryPicker({ id: "imago-photos-dir", mode: "readwrite" });
+  }catch(e){
+    if(e && e.name !== "AbortError"){
+      toast(`Impossible d'ouvrir le dossier de destination : ${(e&&e.message)||e}`);
+      console.warn("[Imago] Échec d'ouverture du répertoire de photos :", e);
+    }
+    btn.disabled = false;
+    return;
+  }
+
+  let ok = 0, failed = 0;
+  const stats = { added:0, reused:0, failedFiles:[] }; // format attendu par importOneFile
+  for(let i=0;i<items.length;i++){
+    const it = items[i];
+    statusEl.textContent = `Téléversement « ${it.name} »… (${i+1}/${items.length})`;
+    try{
+      const file = await it.handle.getFile();
+      const parts = it.sousDossier ? it.sousDossier.split("/").filter(Boolean) : [];
+      const targetDir = await getOrCreateSubdir(destHandle, parts);
+      await writeFileToLocalDirectory(targetDir, it.name, file);
+      // On relit le fichier depuis SA copie fraîchement écrite dans le
+      // répertoire de destination (plutôt que le File d'origine, situé dans
+      // le dossier exploré) pour que sousDossier — donc la relocalisation
+      // future (diaporama, Hall of fame…) — corresponde à son emplacement
+      // définitif, exactement comme pour un import classique.
+      const writtenHandle = await targetDir.getFileHandle(it.name);
+      const writtenFile = await writtenHandle.getFile();
+      if(it.sousDossier){
+        Object.defineProperty(writtenFile, "webkitRelativePath", { value: `${destHandle.name}/${it.sousDossier}/${it.name}`, configurable:true });
+      }
+      await importOneFile(writtenFile, new Map(), stats); // Map vide : nouvelle entrée, jamais un doublon d'un fichier déjà catalogué (déjà filtré par scanForNewFilesOnDisk)
+      ok++;
+    }catch(e){
+      failed++;
+      console.warn(`[Imago] Téléversement impossible pour "${it.name}" :`, e);
+    }
+  }
+  renderGrid();
+  if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+  if(ok) State.dirty = true; // au moins une nouvelle photo ajoutée : le catalogue doit être resauvegardé/réexporté
+  btn.disabled = false;
+  closeModal("modalNewFiles");
+  toast(`📤 ${ok} fichier(s) téléversé(s) vers « ${destHandle.name} »`
+    + (failed ? `, ⚠️ ${failed} échec(s) — voir la console (F12).` : "") + ".", 8000);
+  newFilesPending = null;
+});
+
 // Reconnaît, en plus du nom exact, les doublons créés par le navigateur
 // quand un fichier de même nom existe déjà là où il est téléchargé
 // ("Album-Favori (2).csv", "Album-Favori(2).csv"…) et renvoie le PLUS
