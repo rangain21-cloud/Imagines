@@ -6602,12 +6602,17 @@ function renderPersonnagesTable(){
 
     const tdActions = document.createElement("td");
     tdActions.className = "pt-actions";
+    const btnView = document.createElement("button");
+    btnView.className = "btn copper"; btnView.type = "button"; btnView.textContent = "Voir";
+    btnView.title = "Afficher dans la grille les images/vidéos où apparaît ce personnage";
+    btnView.addEventListener("click", ()=> viewPersonnageMedia(tok));
     const btnEdit = document.createElement("button");
     btnEdit.className = "btn"; btnEdit.type = "button"; btnEdit.textContent = "Éditer";
     btnEdit.addEventListener("click", ()=> promptEditPersonnageKeyword(tok));
     const btnDel = document.createElement("button");
     btnDel.className = "btn reset"; btnDel.type = "button"; btnDel.textContent = "Supprimer";
     btnDel.addEventListener("click", ()=> promptDeletePersonnageKeyword(tok));
+    tdActions.appendChild(btnView);
     tdActions.appendChild(btnEdit);
     tdActions.appendChild(btnDel);
     tr.appendChild(tdActions);
@@ -6643,6 +6648,18 @@ document.getElementById("ptBulkDelete").addEventListener("click", ()=>{
   if(!confirm(`Supprimer ${list.length} personnage${list.length>1?"s":""} (${list.join(", ")}) de toutes les images du catalogue ?`)) return;
   deletePersonnageKeywordsEverywhere(list);
 });
+/* Bouton "Voir" de la modale Personnages : repart d'une grille sans autre
+   filtre actif (comme resetFilters) puis n'applique que le filtre
+   Personnage sur le mot-clé choisi, pour être sûr de retomber sur TOUTES
+   ses images/vidéos et pas seulement celles qui correspondaient en plus
+   aux filtres Auteur/Lieu/Favori/Type/Étiquette déjà en cours. */
+function viewPersonnageMedia(tok){
+  resetFilters();
+  State.filters.personnage = tok;
+  document.getElementById("fPersonnage").value = tok;
+  renderGrid();
+  closeModal("modalPersonnages");
+}
 function promptEditPersonnageKeyword(oldTok){
   const val = prompt(`Remplacer le personnage « ${oldTok} » par :`, oldTok);
   if(val===null) return; // annulé
