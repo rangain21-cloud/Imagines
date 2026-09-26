@@ -640,6 +640,7 @@ button{font-family:inherit;}
   background:rgba(199,125,59,.18);
   box-shadow:0 0 0 2000px rgba(0,0,0,.35);
 }
+#cloneLiveCanvas{ position:absolute; pointer-events:none; border-radius:2px; } /* aperçu en direct pendant un trait de Baguette magique, calqué exactement sur l'image affichée — voir cloneUpdateLivePreview() */
 .crop-toolbar{
   display:flex; gap:8px; padding:10px 14px; background:var(--bg-panel-2);
   border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap;
@@ -1384,6 +1385,7 @@ button{font-family:inherit;}
     <div class="edit-preview-wrap" id="editPreviewWrap">
       <img id="edPreviewImg" src="" alt="">
       <div class="crop-overlay hidden" id="cropOverlay"><div class="crop-rect hidden" id="cropRect"></div></div>
+      <canvas class="hidden" id="cloneLiveCanvas"></canvas>
       <div class="edit-zoom-controls" id="editZoomControls">
         <button type="button" id="edZoomOut" title="Diminuer">–</button>
         <input type="range" id="edZoomRange" min="100" max="300" value="100">
@@ -1421,6 +1423,12 @@ button{font-family:inherit;}
           nécessaire. Ajustez la taille du pinceau ci-dessus pour ne pas
           déborder sur la peau. Touchez à nouveau le bouton pour arrêter.
         </p>
+        <div class="slider-row hidden" id="cloneBrushRow" style="margin-top:8px; margin-bottom:0;">
+          <label for="cloneBrushSize">Taille du pinceau (Baguette magique) <span id="cloneBrushSizeVal">100%</span></label>
+          <input type="range" id="cloneBrushSize" min="30" max="250" value="100">
+        </div>
+        <button class="btn hidden" id="cloneNewSourceBtn" type="button" style="width:100%; margin-top:5px; padding:5px; font-size:6.5px;">🎯 Choisir une nouvelle source</button>
+        <p class="drive-note hidden" id="cloneHint" style="margin-top:3px; margin-bottom:0; font-size:6.5px; line-height:1.25;"></p>
       </div>
 
       <!-- Panneau Recadrer / pivoter -->
@@ -7689,6 +7697,17 @@ function renderSuggestionList(){
     });
     list.appendChild(item);
   });
+  // Puce à part des préréglages de filtre ci-dessus : elle ne change pas
+  // l'aspect global de l'image mais bascule un mode interactif (comme le
+  // bouton "Correctif yeux rouges"), d'où son style ".active" piloté par
+  // cloneModeOn plutôt que par editDraft.filterKey.
+  const cloneItem = document.createElement("div");
+  cloneItem.className = "suggestion-item" + (cloneModeOn ? " active" : "");
+  cloneItem.id = "cloneChip";
+  cloneItem.title = "Dupliquer une zone de l'image sur une autre, comme le tampon de duplication de Photoshop";
+  cloneItem.innerHTML = `<span class="s-ic">🪄</span><span>Baguette magique</span>`;
+  cloneItem.addEventListener("click", toggleCloneMode);
+  list.appendChild(cloneItem);
 }
 function syncSlidersFromDraft(){
   document.getElementById("rgLum").value = 100;
@@ -7722,7 +7741,7 @@ document.querySelectorAll(".edit-tab").forEach(tab=>{
     document.querySelectorAll(".edit-panel").forEach(p=>p.classList.add("hidden"));
     tab.classList.add("active");
     document.querySelector(`.edit-panel[data-panel="${tab.dataset.tab}"]`).classList.remove("hidden");
-    if(tab.dataset.tab !== "suggestions") exitRedEyeMode(); // le mode "toucher pour corriger" n'a de sens que sur cet onglet
+    if(tab.dataset.tab !== "suggestions"){ exitRedEyeMode(); exitCloneMode(); } // ces modes "toucher/glisser pour corriger" n'ont de sens que sur cet onglet
   });
 });
 
@@ -7749,7 +7768,7 @@ function startCropMode(){
     toast("Réinitialisez d'abord la rotation avant de rogner l'image.");
     return;
   }
-  exitRedEyeMode(); // les deux modes de retouche à la souris/au doigt ne peuvent pas être actifs en même temps
+  exitRedEyeMode(); exitCloneMode(); // les modes de retouche à la souris/au doigt ne peuvent pas être actifs en même temps
   document.getElementById("editPreviewWrap").classList.add("cropping");
   document.getElementById("cropOverlay").classList.remove("hidden");
   // La barre d'outils de recadrage doit être affichée AVANT le calcul de mise
@@ -7975,6 +7994,179 @@ document.getElementById("edPreviewImg").addEventListener("click", (e)=>{
 });
 
 /* -----------------------------------------------------------------
+   Baguette magique (tampon de duplication, façon Photoshop) : on touche
+   d'abord une zone "source", puis on glisse sur une autre zone qui se
+   recouvre progressivement du contenu de la source — laquelle suit le
+   geste (décalage fixe, mode "aligné" de Photoshop), pas un simple
+   copier-coller figé.
+   Un canevas plein format (cloneStrokeCanvas) est figé au DÉBUT de
+   chaque trait, et sert à la fois de source et de destination pour tout
+   le trait en cours : cela évite qu'un dab lise une source déjà modifiée
+   par un dab précédent du même trait. Le résultat n'est ré-encodé en
+   dataURL qu'une seule fois, au relâchement (commitCloneStroke) — refaire
+   un encodage JPEG à chaque frame du glisser serait beaucoup trop lent
+   sur une photo pleine résolution. L'aperçu pendant le trait est assuré
+   par un simple calque <canvas> superposé à l'image, remis à jour par un
+   blit (rapide) plutôt que par un ré-encodage.
+   ----------------------------------------------------------------- */
+let cloneModeOn = false;
+let cloneBrushFactor = 1; // 0.3 à 2.5, piloté par le curseur "Taille du pinceau (Baguette magique)"
+let cloneSourcePoint = null;  // {x,y} en pixels réels de l'image, choisi au premier appui (ou après "Nouvelle source")
+let cloneOffset = null;       // décalage fixe destination→source du trait en cours (mode "aligné")
+let cloneStrokeCanvas = null, cloneStrokeCtx = null; // figés au début du trait, voir note ci-dessus
+let cloneDragging = false;
+let cloneLastDab = null; // limite le nombre de dabs à un par petit déplacement, pas un par pixel parcouru
+function exitCloneMode(){
+  cloneModeOn = false;
+  cloneSourcePoint = null;
+  cloneOffset = null;
+  cloneStrokeCanvas = null; cloneStrokeCtx = null;
+  cloneDragging = false; cloneLastDab = null;
+  document.getElementById("edPreviewImg").style.cursor = "";
+  document.getElementById("cloneBrushRow").classList.add("hidden");
+  document.getElementById("cloneHint").classList.add("hidden");
+  document.getElementById("cloneNewSourceBtn").classList.add("hidden");
+  document.getElementById("cloneLiveCanvas").classList.add("hidden");
+  const chip = document.getElementById("cloneChip");
+  if(chip) chip.classList.remove("active");
+}
+function updateCloneHint(){
+  const hint = document.getElementById("cloneHint");
+  if(!cloneModeOn) return;
+  hint.textContent = cloneSourcePoint
+    ? "Source choisie : glissez sur la zone à recouvrir — elle se remplit avec le contenu de la source, qui suit votre geste. Touchez « Nouvelle source » pour en viser une autre."
+    : "Touchez d'abord la zone à dupliquer (la source), puis glissez sur la zone à recouvrir. Ajustez la taille du pinceau ci-dessus si besoin.";
+}
+function toggleCloneMode(){
+  if((editDraft.rotation||0) % 360 !== 0){
+    toast("Réinitialisez d'abord la rotation avant d'utiliser la Baguette magique.");
+    return;
+  }
+  if(cloneModeOn){
+    exitCloneMode();
+  }else{
+    exitRedEyeMode(); exitCropMode(); // les modes de retouche au glisser/toucher ne peuvent pas être actifs en même temps
+    cloneModeOn = true;
+    cloneSourcePoint = null;
+    cloneOffset = null;
+    document.getElementById("edPreviewImg").style.cursor = "crosshair";
+    document.getElementById("cloneBrushRow").classList.remove("hidden");
+    document.getElementById("cloneHint").classList.remove("hidden");
+    document.getElementById("cloneNewSourceBtn").classList.remove("hidden");
+  }
+  updateCloneHint();
+  renderSuggestionList(); // reconstruit la puce avec la bonne classe ".active"
+}
+document.getElementById("cloneBrushSize").addEventListener("input", (e)=>{
+  cloneBrushFactor = e.target.value / 100;
+  document.getElementById("cloneBrushSizeVal").textContent = e.target.value + "%";
+});
+document.getElementById("cloneNewSourceBtn").addEventListener("click", ()=>{
+  cloneSourcePoint = null; cloneOffset = null;
+  updateCloneHint();
+});
+function cloneCoordsFromEvent(e){
+  const img = document.getElementById("edPreviewImg");
+  const bounds = img.getBoundingClientRect();
+  const scaleX = img.naturalWidth / img.clientWidth;
+  const scaleY = img.naturalHeight / img.clientHeight;
+  return {
+    x: Math.round((e.clientX - bounds.left) * scaleX),
+    y: Math.round((e.clientY - bounds.top) * scaleY)
+  };
+}
+// Peint un disque de rayon "radius" autour de (destX,destY), en recopiant le
+// contenu situé au même endroit décalé de cloneOffset — avec un fondu doux
+// vers le bord, comme le correctif yeux rouges.
+function cloneDab(destX, destY){
+  const canvas = cloneStrokeCanvas, ctx = cloneStrokeCtx;
+  const radius = Math.max(6, Math.round(Math.min(canvas.width, canvas.height) * 0.035 * cloneBrushFactor));
+  const x0 = Math.max(0, destX - radius), y0 = Math.max(0, destY - radius);
+  const w = Math.min(canvas.width, destX + radius) - x0;
+  const h = Math.min(canvas.height, destY + radius) - y0;
+  if(w <= 0 || h <= 0) return;
+  const sx0 = x0 - cloneOffset.dx, sy0 = y0 - cloneOffset.dy;
+  // La source correspondante doit elle aussi rester dans l'image : si le
+  // geste sort du cadre côté source, on renonce simplement à ce dab plutôt
+  // que de recopier n'importe quoi.
+  if(sx0 < 0 || sy0 < 0 || sx0 + w > canvas.width || sy0 + h > canvas.height) return;
+  const srcData = ctx.getImageData(sx0, sy0, w, h);
+  const destData = ctx.getImageData(x0, y0, w, h);
+  const sd = srcData.data, dd = destData.data;
+  const r2 = radius*radius;
+  for(let py=0; py<h; py++){
+    for(let px=0; px<w; px++){
+      const dx = (x0+px) - destX, dy = (y0+py) - destY;
+      const distSq = dx*dx + dy*dy;
+      if(distSq > r2) continue;
+      const i = (py*w+px) * 4;
+      const falloff = 1 - (Math.sqrt(distSq)/radius) * 0.5;
+      dd[i]   += (sd[i]   - dd[i])   * falloff;
+      dd[i+1] += (sd[i+1] - dd[i+1]) * falloff;
+      dd[i+2] += (sd[i+2] - dd[i+2]) * falloff;
+    }
+  }
+  ctx.putImageData(destData, x0, y0);
+}
+// Blit rapide (pas de ré-encodage) du canevas de travail plein format sur le
+// calque d'aperçu, à la taille affichée de l'image — appelé à chaque dab.
+function cloneUpdateLivePreview(){
+  const liveCanvas = document.getElementById("cloneLiveCanvas");
+  const ctx = liveCanvas.getContext("2d");
+  ctx.drawImage(cloneStrokeCanvas, 0, 0, liveCanvas.width, liveCanvas.height);
+}
+document.getElementById("edPreviewImg").addEventListener("mousedown", (e)=>{
+  if(!cloneModeOn) return;
+  e.preventDefault(); // empêche le glisser natif de l'image (fantôme au clic-glisser), qui interromprait le geste
+  const pt = cloneCoordsFromEvent(e);
+  if(!cloneSourcePoint){
+    cloneSourcePoint = pt;
+    updateCloneHint();
+    return;
+  }
+  const img = document.getElementById("edPreviewImg");
+  cloneStrokeCanvas = document.createElement("canvas");
+  cloneStrokeCanvas.width = img.naturalWidth; cloneStrokeCanvas.height = img.naturalHeight;
+  cloneStrokeCtx = cloneStrokeCanvas.getContext("2d");
+  cloneStrokeCtx.drawImage(img, 0, 0);
+  cloneOffset = {dx: pt.x - cloneSourcePoint.x, dy: pt.y - cloneSourcePoint.y};
+  cloneDragging = true;
+  cloneLastDab = pt;
+  const liveCanvas = document.getElementById("cloneLiveCanvas");
+  liveCanvas.width = img.clientWidth; liveCanvas.height = img.clientHeight;
+  liveCanvas.style.left = img.offsetLeft + "px";
+  liveCanvas.style.top = img.offsetTop + "px";
+  liveCanvas.style.width = img.clientWidth + "px";
+  liveCanvas.style.height = img.clientHeight + "px";
+  liveCanvas.classList.remove("hidden");
+  cloneDab(pt.x, pt.y);
+  cloneUpdateLivePreview();
+});
+window.addEventListener("mousemove", (e)=>{
+  if(!cloneModeOn || !cloneDragging) return;
+  const pt = cloneCoordsFromEvent(e);
+  if(cloneLastDab && Math.hypot(pt.x-cloneLastDab.x, pt.y-cloneLastDab.y) < 4) return;
+  cloneLastDab = pt;
+  cloneDab(pt.x, pt.y);
+  cloneUpdateLivePreview();
+});
+window.addEventListener("mouseup", ()=>{
+  if(!cloneDragging) return;
+  cloneDragging = false;
+  // Validation du trait : un seul ré-encodage en dataURL, ici, pour tout le
+  // trait qui vient de se terminer (voir note en tête de section).
+  const newDataUrl = cloneStrokeCanvas.toDataURL("image/jpeg", 0.92);
+  editDraft.dataUrl = newDataUrl;
+  editDraft.width = cloneStrokeCanvas.width;
+  editDraft.height = cloneStrokeCanvas.height;
+  editDraft.cropped = true; // réutilise le même indicateur "pixels déjà modifiés" que le recadrage/correctif yeux rouges
+  suppressNextEditZoomReset = true; // voir applyRedEyeFix() : ne pas perdre le zoom/défilement en cours
+  document.getElementById("edPreviewImg").src = newDataUrl;
+  document.getElementById("cloneLiveCanvas").classList.add("hidden");
+  cloneStrokeCanvas = null; cloneStrokeCtx = null;
+});
+
+/* -----------------------------------------------------------------
    Zoom / déplacement dans l'aperçu de la modale "Modifier" — même
    principe que le visualiseur principal (voir plus haut dans le
    fichier) : le zoom s'ancre sur le point visé (curseur en molette+Ctrl,
@@ -8035,7 +8227,11 @@ document.getElementById("edZoomResetBtn").addEventListener("click", ()=>{
 });
 document.getElementById("edZoomRange").addEventListener("input", e=> setEditZoom(e.target.value/100));
 document.getElementById("editPreviewWrap").addEventListener("wheel", (e)=>{
-  if(!e.ctrlKey && !e.metaKey) return; // ctrl+molette = zoom ; molette seule = défilement natif normal
+  // La molette seule pilote le zoom (comme les boutons +/- et le curseur
+  // d'editZoomControls) au lieu de nécessiter Ctrl+molette : le défilement
+  // dans l'image zoomée se fait de toute façon au clic-glisser (voir plus
+  // bas), la molette seule n'avait donc plus d'usage de défilement à
+  // préserver ici.
   e.preventDefault();
   setEditZoom(editViewScale + (e.deltaY<0 ? 0.15 : -0.15), {clientX:e.clientX, clientY:e.clientY});
 }, {passive:false});
@@ -8043,7 +8239,7 @@ document.getElementById("editPreviewWrap").addEventListener("wheel", (e)=>{
 let editDragging=false, editDragStart={x:0,y:0}, editScrollStart={x:0,y:0};
 document.getElementById("editPreviewWrap").addEventListener("mousedown", (e)=>{
   const wrap = document.getElementById("editPreviewWrap");
-  if(redEyeModeOn || wrap.classList.contains("cropping") || editViewScale <= 1.001) return; // ne pas gêner ces 2 modes, et rien à déplacer si l'image tient déjà entièrement dans le cadre
+  if(redEyeModeOn || cloneModeOn || wrap.classList.contains("cropping") || editViewScale <= 1.001) return; // ne pas gêner ces modes, et rien à déplacer si l'image tient déjà entièrement dans le cadre
   editDragging = true;
   wrap.classList.add("panning");
   editDragStart = {x:e.clientX, y:e.clientY};
@@ -8116,6 +8312,7 @@ document.getElementById("btnEdit").addEventListener("click", ()=>{
   editDraft.cropped = false;
   exitCropMode();
   exitRedEyeMode();
+  exitCloneMode();
   editViewScale = 1; // repart toujours d'une vue "ajustée" (100%) à l'ouverture, jamais du zoom laissé par une précédente retouche
   resetEditModalPositionAndSize(); // toujours recentrée à l'ouverture, même si on l'avait déplacée/redimensionnée la fois précédente
   document.getElementById("edPreviewImg").src = p.dataUrl;
