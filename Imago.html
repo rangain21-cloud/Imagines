@@ -7149,7 +7149,9 @@ document.getElementById("zoomReset").addEventListener("click", ()=>{ State.view.
 document.getElementById("zoomRange").addEventListener("input", e=> setZoom(e.target.value/100));
 
 viewerScroll.addEventListener("wheel", (e)=>{
-  if(!e.ctrlKey && !e.metaKey) return; // ctrl+molette = zoom, molette seule = défilement natif (ascenseur)
+  // La molette seule pilote le zoom (comme les boutons +/- et le curseur
+  // zoomRange) au lieu de nécessiter Ctrl+molette : le déplacement dans
+  // l'image zoomée se fait de toute façon au clic-glisser (voir plus bas).
   e.preventDefault();
   setZoom(State.view.scale + (e.deltaY<0 ? 0.1 : -0.1), {clientX:e.clientX, clientY:e.clientY});
 }, {passive:false});
