@@ -667,13 +667,13 @@ button{font-family:inherit;}
 .edit-panel{padding:2px;}
 .suggestion-list{display:flex; flex-wrap:wrap; gap:3px;}
 .suggestion-item{
-  display:flex; flex-direction:column; align-items:center; gap:1px; width:38px;
-  padding:3px 2px; border-radius:6px; text-align:center;
-  background:var(--bg-panel-2); border:1px solid var(--line); cursor:pointer; color:var(--ink); font-size:6.5px; line-height:1.1;
+  display:flex; flex-direction:column; align-items:center; gap:1px; width:52px; /* harmonisé avec .edit-tab (Sugg./Recad./Régl./Détails) */
+  padding:4px 3px; border-radius:6px; text-align:center;
+  background:var(--bg-panel-2); border:1px solid var(--line); cursor:pointer; color:var(--ink); font-size:8.5px; line-height:1.1; /* même taille de libellé que .edit-tab span */
 }
 .suggestion-item:hover{border-color:var(--copper);}
 .suggestion-item.active{border-color:var(--copper); background:#2a3d2f; color:var(--copper-hi);}
-.suggestion-item .s-ic{font-size:12px; width:auto; line-height:1;}
+.suggestion-item .s-ic{font-size:16px; width:auto; line-height:1;} /* même taille d'icône que .edit-tab */
 .slider-row{margin-bottom:16px;}
 .slider-row label{display:flex; justify-content:space-between; font-size:12px; color:var(--ink-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:.04em;}
 .slider-row input[type=range]{width:100%;}
