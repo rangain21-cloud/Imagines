@@ -7921,6 +7921,15 @@ function applyRedEyeFix(cx, cy){
   editDraft.width = canvas.width;
   editDraft.height = canvas.height;
   editDraft.cropped = true; // réutilise le même indicateur "pixels déjà modifiés" que le recadrage : "Enregistrer" reprend ce dataUrl sans distinction
+  // On va réassigner .src juste en dessous, ce qui redéclenche l'événement
+  // "load" de l'aperçu — normalement utile pour repartir d'une vue à 100%
+  // (cas du recadrage/de l'ouverture), mais ici contre-productif : l'utilisateur
+  // est précisément en train de viser un œil en zoomant, et se faire ramener
+  // à 100% + recentrer après CHAQUE tape rend le second œil (ou une reprise
+  // sur le même œil) quasi impossible à toucher précisément — d'où
+  // l'impression que "ça ne fait rien". On signale donc à cet écouteur de
+  // sauter une fois son reset, en conservant le zoom et le défilement en cours.
+  suppressNextEditZoomReset = true;
   img.src = newDataUrl;
 }
 document.getElementById("edRedEyeBtn").addEventListener("click", ()=>{
@@ -7986,7 +7995,11 @@ function setEditZoom(scale, anchor){
   wrap.scrollLeft = contentX * ratio - ax;
   wrap.scrollTop = contentY * ratio - ay;
 }
-document.getElementById("edPreviewImg").addEventListener("load", ()=>{ editViewScale = 1; applyEditZoom(); });
+let suppressNextEditZoomReset = false; // voir applyRedEyeFix() : évite de perdre le zoom/défilement en cours à chaque correction d'œil
+document.getElementById("edPreviewImg").addEventListener("load", ()=>{
+  if(suppressNextEditZoomReset){ suppressNextEditZoomReset = false; return; }
+  editViewScale = 1; applyEditZoom();
+});
 window.addEventListener("resize", ()=> applyEditZoom());
 // La modale "Modifier" peut désormais être redimensionnée à la souris (CSS
 // "resize", voir plus haut) : ce redimensionnement ne déclenche PAS
