@@ -311,6 +311,38 @@ button{font-family:inherit;}
   background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink); font-size:13px;
 }
 .sidebar-actions{display:flex; flex-direction:column; gap:8px; margin-top:18px;}
+/* ---------- rotation libre (curseur -60°..60°) ---------- */
+.free-rotate-panel{margin-top:2px;}
+.free-rotate-row{display:flex; align-items:center; gap:10px;}
+.free-rotate-slider{position:relative; flex:1; padding-top:20px; padding-bottom:4px;}
+.free-rotate-ticks{
+  display:flex; justify-content:space-between;
+  position:absolute; top:0; left:0; right:0;
+  font-size:10px; color:var(--ink-dim); letter-spacing:.02em;
+  pointer-events:none; user-select:none;
+}
+.free-rotate-ticks span{flex:0 0 auto;}
+.free-rotate-ticks span.active{color:var(--copper-hi); font-weight:700; font-size:12px;}
+.free-rotate-slider input[type=range]{
+  -webkit-appearance:none; appearance:none;
+  width:100%; height:18px; margin:0; background:transparent; cursor:pointer; display:block;
+}
+.free-rotate-slider input[type=range]::-webkit-slider-runnable-track{
+  height:2px; background:var(--line); border-radius:2px;
+}
+.free-rotate-slider input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; width:0; height:0; margin-top:-4px; cursor:pointer;
+  border-left:6px solid transparent; border-right:6px solid transparent;
+  border-bottom:9px solid var(--copper-hi);
+}
+.free-rotate-slider input[type=range]::-moz-range-track{
+  height:2px; background:var(--line); border-radius:2px;
+}
+.free-rotate-slider input[type=range]::-moz-range-thumb{
+  width:0; height:0; border-radius:0; border:none; cursor:pointer;
+  border-left:6px solid transparent; border-right:6px solid transparent;
+  border-bottom:9px solid var(--copper-hi);
+}
 .btn{
   padding:9px 12px; border-radius:var(--radius); border:1px solid var(--line);
   background:var(--gray-btn); color:#fff; cursor:pointer; font-size:13px; text-align:center;
@@ -1436,6 +1468,26 @@ button{font-family:inherit;}
         <div class="sidebar-actions">
           <button class="btn" id="edRotateLeftBtn">↺ Pivoter à gauche (−45°)</button>
           <button class="btn" id="edRotateRightBtn">↻ Pivoter à droite (+45°)</button>
+          <button class="btn" id="edFreeRotateBtn" type="button">◇ Libre</button>
+          <div class="free-rotate-panel hidden" id="edFreeRotatePanel">
+            <div class="free-rotate-row">
+              <div class="free-rotate-slider">
+                <div class="free-rotate-ticks" id="edFreeRotateTicks">
+                  <span data-deg="-60">-60°</span>
+                  <span data-deg="-45">-45°</span>
+                  <span data-deg="-30">-30°</span>
+                  <span data-deg="-15">-15°</span>
+                  <span data-deg="0" class="active">0°</span>
+                  <span data-deg="15">15°</span>
+                  <span data-deg="30">30°</span>
+                  <span data-deg="45">45°</span>
+                  <span data-deg="60">60°</span>
+                </div>
+                <input type="range" id="edFreeRotateRange" min="-60" max="60" step="1" value="0">
+              </div>
+              <button type="button" class="btn reset" id="edFreeRotateResetBtn">Réinitialiser</button>
+            </div>
+          </div>
           <button class="btn reset" id="edRotateResetBtn">Réinitialiser la rotation</button>
           <button class="btn" id="edCropBtn" type="button">✂ Rogner l'image…</button>
         </div>
@@ -7672,8 +7724,22 @@ const FILTER_PRESETS = [
 ];
 let editDraft = null; // copie de travail de la photo en cours d'édition
 
+function totalEditRotation(){
+  // Rotation totale = pivots à 90° (Pivoter à gauche/droite) + réglage fin (curseur "Libre")
+  return (editDraft.rotation||0) + (editDraft.fineRotation||0);
+}
 function editPreviewTransformCss(){
-  return `rotate(${editDraft.rotation||0}deg)`;
+  return `rotate(${totalEditRotation()}deg)`;
+}
+function highlightFreeRotateTicks(val){
+  document.querySelectorAll("#edFreeRotateTicks span").forEach(s=>{
+    s.classList.toggle("active", Number(s.dataset.deg)===val);
+  });
+}
+function resetFreeRotate(){
+  editDraft.fineRotation = 0;
+  document.getElementById("edFreeRotateRange").value = 0;
+  highlightFreeRotateTicks(0);
 }
 function refreshEditPreview(){
   const img = document.getElementById("edPreviewImg");
@@ -7754,7 +7820,23 @@ document.getElementById("edRotateRightBtn").addEventListener("click", ()=>{
   editDraft.rotation = ((editDraft.rotation||0) + 90) % 360; refreshEditPreview();
 });
 document.getElementById("edRotateResetBtn").addEventListener("click", ()=>{
-  editDraft.rotation = 0; refreshEditPreview();
+  editDraft.rotation = 0; resetFreeRotate(); refreshEditPreview();
+});
+
+// Bouton "Libre" : affiche/masque le curseur de rotation fine (-60° à 60°)
+document.getElementById("edFreeRotateBtn").addEventListener("click", ()=>{
+  const panel = document.getElementById("edFreeRotatePanel");
+  const show = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !show);
+  document.getElementById("edFreeRotateBtn").classList.toggle("copper", show);
+});
+document.getElementById("edFreeRotateRange").addEventListener("input", (e)=>{
+  editDraft.fineRotation = Number(e.target.value);
+  highlightFreeRotateTicks(editDraft.fineRotation);
+  refreshEditPreview();
+});
+document.getElementById("edFreeRotateResetBtn").addEventListener("click", ()=>{
+  resetFreeRotate(); refreshEditPreview();
 });
 
 /* -----------------------------------------------------------------
@@ -7766,7 +7848,7 @@ document.getElementById("edRotateResetBtn").addEventListener("click", ()=>{
    ----------------------------------------------------------------- */
 let cropState = null; // {startX, startY} en coordonnées écran pendant le glisser
 function startCropMode(){
-  if((editDraft.rotation||0) % 360 !== 0){
+  if(totalEditRotation() % 360 !== 0){
     toast("Réinitialisez d'abord la rotation avant de rogner l'image.");
     return;
   }
@@ -7971,7 +8053,7 @@ function applyRedEyeFix(cx, cy){
   img.src = newDataUrl;
 }
 document.getElementById("edRedEyeBtn").addEventListener("click", ()=>{
-  if((editDraft.rotation||0) % 360 !== 0){
+  if(totalEditRotation() % 360 !== 0){
     toast("Réinitialisez d'abord la rotation avant le correctif yeux rouges.");
     return;
   }
@@ -8040,7 +8122,7 @@ function updateCloneHint(){
     : "Touchez d'abord la zone à dupliquer (la source), puis glissez sur la zone à recouvrir. Ajustez la taille du pinceau ci-dessus si besoin.";
 }
 function toggleCloneMode(){
-  if((editDraft.rotation||0) % 360 !== 0){
+  if(totalEditRotation() % 360 !== 0){
     toast("Réinitialisez d'abord la rotation avant d'utiliser la Baguette magique.");
     return;
   }
@@ -8312,6 +8394,9 @@ document.getElementById("btnEdit").addEventListener("click", ()=>{
   const p = getSelected(); if(!p) return;
   editDraft = Object.assign({}, p); // copie de travail — rien n'est écrit tant que "Enregistrer" n'est pas cliqué
   editDraft.cropped = false;
+  resetFreeRotate();
+  document.getElementById("edFreeRotatePanel").classList.add("hidden");
+  document.getElementById("edFreeRotateBtn").classList.remove("copper");
   exitCropMode();
   exitRedEyeMode();
   exitCloneMode();
@@ -8455,7 +8540,7 @@ async function applyEditFormToSelectedPhoto(){
   p.poids = Number(document.getElementById("edPoids").value) || p.poids || 0;
   p.map = document.getElementById("edMap").value.trim();
   p.favori = document.getElementById("edFavori").value === "true";
-  p.rotation = editDraft.rotation || 0;
+  p.rotation = totalEditRotation();
   p.filterCss = editDraft.filterCss || "";
   p.filterKey = editDraft.filterKey || null;
   if(editDraft.cropped && editDraft.dataUrl){
