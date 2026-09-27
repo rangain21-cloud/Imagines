@@ -1752,6 +1752,18 @@ button{font-family:inherit;}
   </div>
 </div>
 
+<!-- ============== MODAL GÉNÉRIQUE : CONFIRMATION À CHOIX MULTIPLES ============== -->
+<!-- Réutilisée pour : reprise après plantage, confirmation avant de remplacer
+     des photos déjà chargées, et alerte de sécurité tous les 5000 fichiers
+     pendant un gros import (voir confirmChoice() en JS). -->
+<div class="modal-overlay" id="modalConfirmChoice">
+  <div class="modal">
+    <div class="modal-head"><h2 id="confirmChoiceTitle">Confirmation</h2><button class="modal-close" data-close="modalConfirmChoice">×</button></div>
+    <div class="modal-body"><p id="confirmChoiceMessage" style="white-space:pre-line;"></p></div>
+    <div class="modal-foot" id="confirmChoiceButtons" style="flex-wrap:wrap;"></div>
+  </div>
+</div>
+
 <!-- ============== EXPORT DIAPORAMA → VIDÉO (.vob) ============== -->
 <div class="vob-export-overlay hidden" id="vobExportOverlay">
   <div class="vob-export-box">
@@ -1838,6 +1850,19 @@ async function idbAll(store){
     const tx = db.transaction(store, "readonly");
     const req = tx.objectStore(store).getAll();
     req.onsuccess = ()=> res(req.result || []);
+    req.onerror = ()=> rej(req.error);
+  });
+}
+/* Compte les enregistrements SANS les charger en mémoire (contrairement à
+   idbAll) — utilisé au démarrage pour détecter une session interrompue
+   (crash) sans avoir à recharger tous les dataUrl juste pour savoir s'il y
+   en a. */
+async function idbCount(store){
+  const db = await openDB();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).count();
+    req.onsuccess = ()=> res(req.result || 0);
     req.onerror = ()=> rej(req.error);
   });
 }
@@ -2024,23 +2049,61 @@ function celebrate(success, message, durationMs, quips){
 }
 
 /* ---------------------------------------------------------------
-   3. Chargement initial — session TOUJOURS vierge : aucune image ni
-   catalogue n'est restauré d'une session précédente. Seuls les
-   référentiels transverses (albums, auteurs) persistent, car ils ne
-   sont pas liés à un dossier particulier. La photothèque ne vit qu'en
-   mémoire, le temps de la session, et sa source de vérité est le
-   dossier local + son fichier Catalogue-xxxx.csv (voir importFolder).
+   3. Chargement initial — la photothèque ne vit qu'en mémoire, le temps de
+   la session, et sa source de vérité est le dossier local + son fichier
+   Catalogue-xxxx.csv (voir importFolder) : aucune image ni catalogue n'est
+   restauré automatiquement d'une session à l'autre EN TEMPS NORMAL (fin
+   d'import propre → clearPhotosStore ci-dessous). Seuls les référentiels
+   transverses (albums, auteurs) persistent toujours, car ils ne sont pas
+   liés à un dossier particulier.
+   EXCEPTION volontaire : si des photos sont encore présentes dans
+   IndexedDB au démarrage, c'est le signe d'un import interrompu
+   anormalement (plantage, fermeture accidentelle) plutôt que d'une fin
+   normale — voir le message utilisateur d'origine sur les plantages avec
+   de très gros dossiers (15 000+ fichiers). Dans ce cas, on demande à
+   l'utilisateur s'il veut reprendre (au lieu d'effacer silencieusement le
+   travail déjà accompli) — voir confirmChoice() plus bas.
    --------------------------------------------------------------- */
 async function loadAll(){
-  State.photos = [];
-  await clearPhotosStore(); // purge toute image résiduelle d'une session précédente
   State.albums = await idbAll("albums");
   State.auteurs = await idbAll("auteurs");
   populateFilterOptions();
   populateAuteurDatalist();
+  // Détecte une session précédente interrompue (plantage, fermeture
+  // accidentelle en plein import…) : si IndexedDB contient encore des
+  // photos, elles n'ont PAS pu y arriver autrement qu'en cours d'import
+  // (ce store est normalement vidé proprement à chaque fin d'import — voir
+  // clearPhotosStore ci-dessous, dorénavant appelé seulement si l'utilisateur
+  // choisit explicitement de repartir de zéro). idbCount() : ne charge PAS
+  // les dataUrl en mémoire juste pour ce test (voir son commentaire).
+  const leftoverCount = await idbCount("photos").catch(()=>0);
+  let resumed = false;
+  if(leftoverCount > 0){
+    const lastFolder = await idbGetMeta("lastFolderName", "un dossier");
+    const choice = await confirmChoice(
+      "Session précédente interrompue",
+      `${leftoverCount} photo(s) de l'import de "${lastFolder}" sont encore présentes : la session précédente ne s'est probablement pas terminée normalement (plantage, fermeture accidentelle…).\n\nReprendre pour les retrouver telles quelles, puis relancer l'import du même dossier pour continuer là où ça s'est arrêté (les fichiers déjà présents seront automatiquement ignorés) — ou repartir de zéro pour tout effacer et recommencer.`,
+      [
+        {label:`↩ Reprendre (${leftoverCount} photo(s))`, value:"resume", className:"copper"},
+        {label:"🗑 Repartir de zéro", value:"fresh", className:"reset", isCancel:true}
+      ]
+    );
+    if(choice === "resume"){
+      State.photos = await idbAll("photos");
+      State.folderName = lastFolder;
+      resumed = true;
+    }
+  }
+  if(!resumed){
+    State.photos = [];
+    await clearPhotosStore(); // purge toute image résiduelle (repartir de zéro, ou rien à reprendre)
+  }
+  populateFilterOptions();
   renderGrid();
   renderGallery();
-  document.getElementById("folderStatus").textContent = "Aucun dossier chargé pour l'instant.";
+  document.getElementById("folderStatus").textContent = resumed
+    ? `Session reprise : "${State.folderName}" — ${State.photos.length} photo(s) déjà chargée(s). Relancez l'import du même dossier pour continuer (les fichiers déjà présents seront ignorés).`
+    : "Aucun dossier chargé pour l'instant.";
 }
 async function clearPhotosStore(){
   const db = await openDB();
@@ -4950,6 +5013,16 @@ function checkSlowStorage(fileCount, elapsedMs){
    d'images déjà cataloguées. */
 let importTotalCount = 0;
 let importDoneCount = 0;
+/* Alerte de sécurité périodique pendant un gros import (voir échange
+   utilisateur sur les plantages avec 15 000+ fichiers) : tous les
+   IMPORT_CHECKPOINT_EVERY fichiers traités, on interrompt le déroulé pour
+   rassurer l'utilisateur (déjà sauvegardé en IndexedDB à ce stade — voir
+   idbPut dans importOneFile) et lui proposer d'arrêter proprement là plutôt
+   que de laisser un gros dossier tourner jusqu'à un plantage mémoire
+   imprévisible. importCheckpointNext est réarmé à chaque nouvel import
+   (voir handleFilesSelected) — voir maybeShowImportCheckpoint(). */
+const IMPORT_CHECKPOINT_EVERY = 5000;
+let importCheckpointNext = IMPORT_CHECKPOINT_EVERY;
 
 /* Seuil "petite vidéo" (voir importOneFile ci-dessous) : en dessous, une
    vidéo est importée intégralement comme avant (convertie en base64,
@@ -5289,6 +5362,31 @@ function markImportButtonDone(sourceButtonId, stats){
   const btn = document.getElementById(sourceButtonId);
   if(btn) btn.classList.toggle("done", stats.added > 0); // fond vert : au moins une photo importée avec succès
 }
+/* Vérifie si un palier (tous les IMPORT_CHECKPOINT_EVERY fichiers) vient
+   d'être franchi et, si oui, marque une pause pour rassurer l'utilisateur
+   et lui laisser la main. Renvoie false si l'import doit s'arrêter
+   (utilisateur a choisi "Arrêter ici", ou un autre import a entre-temps
+   pris le relais), true sinon. */
+async function maybeShowImportCheckpoint(token){
+  if(importDoneCount < importCheckpointNext) return true;
+  importCheckpointNext += IMPORT_CHECKPOINT_EVERY;
+  const choice = await confirmChoice(
+    "Point d'étape de l'import",
+    `${importDoneCount} / ${importTotalCount} fichier(s) traités — déjà enregistrés (IndexedDB) : rien n'est perdu même si vous vous arrêtez maintenant.\n\nContinuer l'import, ou l'arrêter ici en toute sécurité pour reprendre plus tard (relancez simplement l'import du même dossier : les fichiers déjà présents seront automatiquement ignorés) ?`,
+    [
+      {label:"▶ Continuer", value:"continue", className:"copper", isCancel:true},
+      {label:"⏸ Arrêter ici (en sécurité)", value:"stop"}
+    ]
+  );
+  if(token !== importToken) return false; // un autre import a démarré pendant la question
+  if(choice === "stop"){
+    importToken++; // invalide ce jeton : tous les tests `token !== importToken` déjà en place arrêtent le reste proprement
+    importTotalCount = 0; importDoneCount = 0; updateGalleryCounter();
+    toast("Import arrêté à votre demande — tout ce qui a été chargé jusqu'ici est bien enregistré. Relancez l'import du même dossier quand vous voulez pour continuer.", 12000);
+    return false;
+  }
+  return true;
+}
 function importRestInBackground(restFiles, csvRowByFileName, stats, token, folderName, catalogCandidates, sourceButtonId){
   let offset = 0;
   const step = async ()=>{
@@ -5318,6 +5416,8 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
     populateFilterOptions();
     reportImportProgress(folderName, catalogCandidates, stats, stillLoading);
     if(stillLoading){
+      const canContinue = await maybeShowImportCheckpoint(token);
+      if(!canContinue) return; // arrêt demandé (ou import supplanté) : voir maybeShowImportCheckpoint
       if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
       else setTimeout(step, 0);
     } else {
@@ -5397,24 +5497,41 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const allFiles = [...fileList];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
-  // Nettoyage préalable : que ce soit via "Choisir un dossier d'images…" ou
-  // "Sélectionner des images", chaque nouvel import repart d'une planche-
-  // contact et d'un visualiseur VIERGES — pour éviter toute confusion entre
-  // d'anciennes photos déjà affichées dans cette session et celles du
-  // nouvel import, plutôt que de les accumuler silencieusement ensemble.
+  // Photos déjà chargées dans cette session (import précédent non effacé,
+  // ou session reprise après plantage — voir loadAll) : on ne les efface
+  // plus jamais silencieusement (c'est justement ce qui faisait perdre des
+  // heures de traitement en cas de nouvel essai après un plantage). On
+  // demande explicitement quoi faire.
   if(State.photos.length){
-    await idbClear("photos");
-    State.photos = [];
-    State.selectedId = null;
-    State.viewIndex = 0;
-    renderGrid();
-    if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+    const choice = await confirmChoice(
+      "Photos déjà chargées",
+      `${State.photos.length} photo(s) sont déjà chargées dans cette session.\n\n• "Compléter" garde l'existant et n'importe que les fichiers réellement nouveaux (les fichiers déjà présents, même nom, sont ignorés) — c'est le choix à faire pour continuer un import interrompu.\n• "Remplacer" efface tout ce qui est chargé avant de repartir de ce nouvel import.`,
+      [
+        {label:"➕ Compléter (garder l'existant)", value:"complete", className:"copper"},
+        {label:"🔁 Remplacer (tout effacer)", value:"replace"},
+        {label:"Annuler", value:"cancel", className:"reset", isCancel:true}
+      ]
+    );
+    if(myImportToken !== importToken) return; // un autre import a démarré pendant que la question était posée
+    if(choice === "cancel" || choice == null) return;
+    if(choice === "replace"){
+      await idbClear("photos");
+      State.photos = [];
+      State.selectedId = null;
+      State.viewIndex = 0;
+      renderGrid();
+      if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+    }
+    // choice === "complete" : on ne touche à rien ici — importOneFile
+    // ignore déjà tout fichier dont le nom est présent dans State.photos.
   }
   const folderName = folderNameOverride || (files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier");
   State.folderName = folderName;
+  await idbSetMeta("lastFolderName", folderName); // mémorisé pour le message de reprise après plantage (voir loadAll)
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
   importTotalCount = files.length;
   importDoneCount = 0;
+  importCheckpointNext = IMPORT_CHECKPOINT_EVERY;
   updateGalleryCounter();
 
   // ---- 1) Catalogue existant : choisi parmi les .csv déjà présents dans
@@ -7427,6 +7544,38 @@ document.querySelectorAll("[data-close]").forEach(btn=>{
 document.querySelectorAll(".modal-overlay").forEach(ov=>{
   ov.addEventListener("click", (e)=>{ if(e.target===ov) closeModal(ov.id); });
 });
+
+/* Modale de confirmation générique, à choix multiples, sous forme de
+   Promise (même principe que pickCatalogFromCandidates) — évite de créer
+   une modale dédiée à chaque nouvel endroit où l'on doit interrompre le
+   flux pour demander confirmation. buttons: [{label, value, className,
+   isCancel}] — isCancel désigne la valeur renvoyée si l'utilisateur ferme
+   la modale par la croix ou en cliquant à l'extérieur plutôt qu'en
+   choisissant un bouton. */
+function confirmChoice(title, message, buttons){
+  return new Promise(resolve=>{
+    let settled = false;
+    const settle = (val)=>{ if(settled) return; settled = true; resolve(val); };
+    document.getElementById("confirmChoiceTitle").textContent = title;
+    document.getElementById("confirmChoiceMessage").textContent = message;
+    const box = document.getElementById("confirmChoiceButtons");
+    box.innerHTML = "";
+    buttons.forEach(b=>{
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn" + (b.className ? " "+b.className : "");
+      btn.textContent = b.label;
+      btn.addEventListener("click", ()=>{ closeModal("modalConfirmChoice"); settle(b.value); });
+      box.appendChild(btn);
+    });
+    const modalEl = document.getElementById("modalConfirmChoice");
+    const cancelValue = (buttons.find(b=>b.isCancel) || {}).value ?? null;
+    const onExternalClose = ()=> settle(cancelValue);
+    modalEl.querySelector(".modal-close").addEventListener("click", onExternalClose, {once:true});
+    modalEl.addEventListener("click", (e)=>{ if(e.target===modalEl) onExternalClose(); }, {once:true});
+    openModal("modalConfirmChoice");
+  });
+}
 
 /* ---------------------------------------------------------------
    10. Boutons de la barre supérieure
