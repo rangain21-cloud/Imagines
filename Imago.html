@@ -8026,10 +8026,11 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // plus jamais silencieusement (c'est justement ce qui faisait perdre des
   // heures de traitement en cas de nouvel essai après un plantage). On
   // demande explicitement quoi faire.
+  let existingFileNames = null; // rempli seulement si "Compléter" est choisi — voir filesToImport plus bas
   if(State.photos.length){
     const choice = await confirmChoice(
       "Photos déjà chargées",
-      `${State.photos.length} photo(s) sont déjà chargées dans cette session.\n\n• "Compléter" garde l'existant et n'importe que les fichiers réellement nouveaux (les fichiers déjà présents, même nom, sont ignorés) — c'est le choix à faire pour continuer un import interrompu.\n• "Remplacer" efface tout ce qui est chargé avant de repartir de ce nouvel import.`,
+      `${State.photos.length} photo(s) sont déjà chargées dans cette session.\n\n• "Compléter" garde l'existant et n'importe que les fichiers réellement nouveaux (les fichiers déjà présents, même nom, sont ignorés d'emblée — sans même les relire un par un — pour reprendre là où ça s'est arrêté) — c'est le choix à faire pour continuer un import interrompu.\n• "Remplacer" efface tout ce qui est chargé avant de repartir de ce nouvel import.`,
       [
         {label:"➕ Compléter (garder l'existant)", value:"complete", className:"copper"},
         {label:"🔁 Remplacer (tout effacer)", value:"replace"},
@@ -8045,9 +8046,21 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
       State.viewIndex = 0;
       renderGrid();
       if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+    } else if(choice === "complete"){
+      // Construit l'ensemble des noms déjà présents UNE SEULE FOIS ici (Set,
+      // recherche en O(1)) plutôt que de laisser importOneFile refaire un
+      // State.photos.find() — donc un parcours linéaire de TOUTE la
+      // photothèque déjà chargée — pour CHAQUE fichier de la nouvelle
+      // sélection. Avec 27 000 photos déjà là et 32 123 fichiers à
+      // reparcourir, ce find() répété coûtait des centaines de millions de
+      // comparaisons : largement assez pour donner l'impression que
+      // "ça repart de zéro" alors que le blocage n'était que ce O(n×m).
+      // Voir aussi filesToImport ci-dessous, qui exclut ces fichiers
+      // AVANT même de lancer le traitement (le compteur de progression
+      // n'affiche donc plus jamais le total complet du dossier, seulement
+      // ce qu'il reste réellement à faire).
+      existingFileNames = new Set(State.photos.map(p=>p.fileName));
     }
-    // choice === "complete" : on ne touche à rien ici — importOneFile
-    // ignore déjà tout fichier dont le nom est présent dans State.photos.
   }
   const folderName = folderNameOverride || (files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier");
   State.folderName = folderName;
@@ -8142,20 +8155,30 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // absent du catalogue (jamais encore importé) est exclu dès qu'un filtre
   // est actif : impossible de savoir s'il correspondrait au critère demandé.
   const restrictionActive = !!(pick.critere || pick.personnages);
-  const filesToImport = restrictionActive
-    ? files.filter(f=>{
-        const row = csvRowByFileName.get(f.name);
-        return !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
-      })
-    : files;
-  if(restrictionActive){
-    if(filesToImport.length === 0){
-      toast("Aucune photo/vidéo du dossier ne correspond aux filtres Critère/Personnage choisis — rien à charger.");
-      return;
+  const skippedAlreadyPresentCount = existingFileNames ? files.filter(f=> existingFileNames.has(f.name)).length : 0;
+  const filesToImport = files.filter(f=>{
+    if(existingFileNames && existingFileNames.has(f.name)) return false; // déjà importé lors d'un lot précédent — vraie reprise, on ne le retraite même pas
+    if(restrictionActive){
+      const row = csvRowByFileName.get(f.name);
+      return !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
     }
+    return true;
+  });
+  if(restrictionActive && !existingFileNames && filesToImport.length === 0){
+    toast("Aucune photo/vidéo du dossier ne correspond aux filtres Critère/Personnage choisis — rien à charger.");
+    return;
+  }
+  if(existingFileNames && filesToImport.length === 0){
+    toast(`Les ${files.length} fichier(s) sélectionné(s) étaient déjà tous présents — rien à importer, l'import précédent était donc déjà allé au bout.`, 10000);
+    importTotalCount = 0; importDoneCount = 0; updateGalleryCounter();
+    return;
+  }
+  if(restrictionActive || existingFileNames){
     importTotalCount = filesToImport.length;
     updateGalleryCounter();
-    document.getElementById("folderStatus").textContent = `Import filtré en cours : "${folderName}" (${filesToImport.length}/${files.length} fichier(s) retenu(s))…`;
+    document.getElementById("folderStatus").textContent = existingFileNames
+      ? `Reprise de l'import : "${folderName}" — ${skippedAlreadyPresentCount} fichier(s) déjà présent(s) ignoré(s) d'emblée, ${filesToImport.length} restant(s) à traiter…`
+      : `Import filtré en cours : "${folderName}" (${filesToImport.length}/${files.length} fichier(s) retenu(s))…`;
   }
 
   // ---- 2) Tri par date estimée, ou par nom de fichier si "🔤 Tri par nom
