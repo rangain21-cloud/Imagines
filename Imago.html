@@ -4427,11 +4427,28 @@ async function idbCount(store){
     req.onerror = ()=> rej(req.error);
   });
 }
+/* GARDE-FOU "miniatures en mémoire" : ~30 endroits du code font
+   idbPut("photos", p) avec l'objet ALLÉGÉ de State.photos (dataUrl: null)
+   après une simple modification de métadonnées (favori, titre, album…).
+   Sans ce garde-fou, chacun de ces appels écrasait l'image complète stockée
+   dans IndexedDB par null — il ne restait plus que la miniature (photo
+   floue partout, téléchargement impossible). Ici : si l'enregistrement
+   annonce une image complète (hasFullImage) mais n'en porte pas, on
+   conserve celle déjà stockée, dans la même transaction. */
 async function idbPut(store, value){
   const db = await openDB();
   return new Promise((res, rej)=>{
     const tx = db.transaction(store, "readwrite");
-    tx.objectStore(store).put(value);
+    const os = tx.objectStore(store);
+    if(store === "photos" && value && value.hasFullImage && !value.dataUrl){
+      const g = os.get(value.id);
+      g.onsuccess = ()=>{
+        const existing = g.result;
+        os.put(existing && existing.dataUrl ? {...value, dataUrl: existing.dataUrl} : value);
+      };
+    } else {
+      os.put(value);
+    }
     tx.oncomplete = ()=> res(value);
     tx.onerror = ()=> rej(tx.error);
   });
@@ -4845,7 +4862,7 @@ function renderGrid(){
       video.removeAttribute("src");
       getFullDataUrl(p).then(url=>{ if(video.dataset.currentId === p.id) video.src = url || ""; });
     }
-  } else if(p.hasFullImage || p.thumbDataUrl){
+  } else if(p.hasFullImage || p.thumbDataUrl || p.dataUrl){
     video.classList.add("hidden");
     video.removeAttribute("src");
     delete video.dataset.currentId;
@@ -4951,11 +4968,11 @@ function buildGalleryTile(p){
       dur.textContent = formatDuration(p.durationSec);
       tile.appendChild(dur);
     }
-  } else if(p.thumbDataUrl){
+  } else if(p.thumbDataUrl || p.dataUrl){
     const img = document.createElement("img");
     img.loading = "lazy";
     img.alt = p.fileName || "";
-    img.src = p.thumbDataUrl; // planche-contact : la miniature suffit, et évite de décoder l'image complète pour un si petit affichage
+    img.src = p.thumbDataUrl || p.dataUrl; // planche-contact : la miniature suffit, et évite de décoder l'image complète pour un si petit affichage
     tile.appendChild(img);
   } else {
     const missing = document.createElement("div");
@@ -12716,6 +12733,8 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   const personnage = document.getElementById("nePersonnage").value.trim();
   const rec = {
     id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl,
+    thumbDataUrl: (!isVideo && finalDataUrl) ? await makeThumbnail(finalDataUrl) : null,
+    hasFullImage: !deferVideo && !!finalDataUrl,
     isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
     videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
     dateAchat: normalizeDateAchatInput(document.getElementById("neDate").value) || localDateTimeFromTimestamp(Date.now()),
@@ -12733,7 +12752,8 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   };
   if(deferVideo) pendingVideoFiles.set(rec.id, file);
   await idbPut("photos", rec);
-  State.photos.push(rec);
+  if(rec.hasFullImage) cacheFullImage(rec.id, rec.dataUrl);
+  State.photos.push(rec.hasFullImage ? {...rec, dataUrl: null} : rec);
   populateFilterOptions();
   renderGrid();
   closeModal("modalNewEntry");
