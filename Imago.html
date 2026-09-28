@@ -13108,11 +13108,50 @@ async function exportDiaporamaAsVob(plateau, fondu){
     if(ir > cr){ dw = W; dh = W / ir; } else { dh = H; dw = H * ir; }
     ctx.drawImage(img, (W-dw)/2, (H-dh)/2, dw, dh);
   }
-  function drawCrossfade(imgA, imgB, t){
+  /* Pied de page identique à celui du diaporama à l'écran (.slide-caption) :
+     nom de fichier en bas à gauche, lieu en bas à droite, titre en bas au
+     centre — incrustés sur chaque image de la vidéo, avec la même ombre
+     portée pour rester lisibles sur fond clair. Le titre est toujours
+     affiché (à l'écran, il n'apparaît qu'après les 10 s du message d'aide
+     clavier, sans objet dans une vidéo). */
+  const CAPTION_PX = 15;
+  function fitText(text, maxW){
+    if(!text || ctx.measureText(text).width <= maxW) return text || "";
+    let t = text;
+    while(t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+    return t + "…";
+  }
+  function drawCaptions(p, alpha){
+    if(!p || alpha <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = `${CAPTION_PX}px Calibri, Candara, "Segoe UI", sans-serif`;
+    ctx.fillStyle = "#f4efe6";
+    ctx.textBaseline = "alphabetic";
+    ctx.shadowColor = "rgba(0,0,0,.9)"; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
+    const left = fitText(p.fileName || "", W*0.44);
+    const right = fitText(p.lieu || "", W*0.44);
+    ctx.textAlign = "left";  if(left)  ctx.fillText(left, 18, H-16);
+    ctx.textAlign = "right"; if(right) ctx.fillText(right, W-18, H-16);
+    // le titre (centré) prend la place restante pour ne jamais chevaucher le nom de fichier ni le lieu
+    const sideMax = Math.max(left ? ctx.measureText(left).width : 0, right ? ctx.measureText(right).width : 0);
+    const centerMax = Math.max(W*0.2, Math.min(W*0.6, W - 2*(sideMax + 18) - 24));
+    const titre = fitText(p.titre || "", centerMax);
+    ctx.textAlign = "center"; if(titre) ctx.fillText(titre, W/2, H-14);
+    ctx.restore();
+  }
+  function drawFrame(img, p){
+    drawContain(img);
+    drawCaptions(p, 1);
+  }
+  function drawCrossfade(imgA, imgB, t, pA, pB){
     drawContain(imgA);
     ctx.globalAlpha = t;
     drawContain(imgB);
     ctx.globalAlpha = 1;
+    // les pieds de page fondent au même rythme que les images (sortant : 1→0, entrant : 0→1)
+    drawCaptions(pA, 1 - t);
+    drawCaptions(pB, t);
   }
 
   const mimeCandidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
@@ -13127,6 +13166,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
   const wait = ms=> new Promise(r=> setTimeout(r, ms));
   const totalSeconds = list.length*plateau + Math.max(0, list.length-1)*fondu;
   let elapsedSoFar = 0;
+  let currentPhoto = list[0]; // photo réellement à l'écran (≠ list[i] si une photo est ignorée faute de chargement) : source des pieds de page
 
   for(let i=0; i<list.length && !vobExportCancelled; i++){
     // Précharge la photo suivante PENDANT le plateau de la photo actuelle,
@@ -13135,7 +13175,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
     // diaporama.
     const nextImgPromise = (i < list.length-1) ? loadSlideImage(list[i+1]).catch(()=>null) : null;
 
-    drawContain(currentImg);
+    drawFrame(currentImg, currentPhoto);
     vobExportSetProgress(elapsedSoFar/totalSeconds, `Photo ${i+1} / ${list.length}…`);
     await wait(plateau*1000);
     elapsedSoFar += plateau;
@@ -13150,13 +13190,14 @@ async function exportDiaporamaAsVob(plateau, fondu){
       const start = performance.now();
       while(!vobExportCancelled){
         const t = Math.min(1, (performance.now()-start) / (fondu*1000));
-        drawCrossfade(currentImg, nextImg, t);
+        drawCrossfade(currentImg, nextImg, t, currentPhoto, list[i+1]);
         vobExportSetProgress(elapsedSoFar/totalSeconds, `Photo ${i+1} → ${i+2}…`);
         if(t>=1) break;
         await new Promise(r=> requestAnimationFrame(r));
       }
       elapsedSoFar += fondu;
     }
+    if(nextImg) currentPhoto = list[i+1];
     currentImg = nextImg || currentImg; // chargement suivant en échec : on reste sur l'actuelle plutôt que planter tout l'export
   }
   recorder.stop();
