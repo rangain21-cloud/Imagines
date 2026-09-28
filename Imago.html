@@ -465,6 +465,33 @@ button{font-family:inherit;}
 .tile-quickbar button.on{background:var(--copper); color:#171008; border-color:var(--copper-hi); opacity:1;}
 .gallery-screen.select-mode .tile-quickbar{display:none;}
 #btnGalleryQuickMode.active{background:var(--copper); color:#171008; border-color:var(--copper-hi);}
+/* ---------- Bande de miniatures du visualiseur principal (Main 90%) ----------
+   Permet de poser Favori / Art / Concert / Culture / Partition sur les
+   miniatures SANS charger l'image ni la vidéo (même barre rapide que la
+   planche-contact). */
+.viewer-strip{
+  flex-shrink:0; display:flex; align-items:stretch; gap:6px;
+  margin-top:8px; padding:6px; border:1px solid var(--line); border-radius:6px;
+  background:#0d1712;
+}
+.viewer-strip .strip-page{padding:0 10px; font-size:18px;}
+.strip-scroll{
+  flex:1; min-width:0; display:flex; gap:6px; overflow-x:auto; overflow-y:hidden;
+  scrollbar-width:thin;
+}
+.strip-tile{
+  position:relative; flex:0 0 auto; width:124px; height:88px; overflow:hidden;
+  border-radius:4px; border:1px solid var(--line); background:var(--bg-panel-2); cursor:pointer;
+}
+.strip-tile:hover{border-color:var(--copper);}
+.strip-tile.current{border-color:var(--copper); box-shadow:0 0 0 2px var(--copper) inset;}
+.strip-tile img{width:100%; height:100%; object-fit:cover; display:block; -webkit-user-drag:none; user-select:none;}
+.strip-tile .gallery-fav{position:absolute; bottom:3px; right:5px; color:var(--copper); font-size:13px; text-shadow:0 1px 4px rgba(0,0,0,.8);}
+.strip-tile .gallery-flags{position:absolute; left:4px; bottom:3px; display:flex; gap:2px; font-size:11px; text-shadow:0 1px 3px rgba(0,0,0,.9); pointer-events:none;}
+.strip-tile .gallery-video-mini{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:18px; color:#fff; text-shadow:0 1px 4px rgba(0,0,0,.8); pointer-events:none;}
+.strip-tile .tile-quickbar{padding:3px; gap:2px;}
+.strip-tile .tile-quickbar button{width:21px; height:21px; font-size:11px;}
+#btnStripToggle.active, #btnStripQuick.active{background:var(--copper); color:#171008; border-color:var(--copper-hi);}
 /* ---------- vignette vidéo (icône lecture + durée) ---------- */
 .gallery-video-play{
   position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
@@ -819,7 +846,11 @@ button{font-family:inherit;}
    fondu statique. Classe retirée juste après la transition (voir JS) pour
    repartir de l'état "entrant" (scale 1.035) la prochaine fois. */
 .slide-img.exiting{
-  transform: translate(-50%,-50%) scale(var(--exit-scale, 1.22)) rotate(var(--rot, 0deg));
+  /* Zoom de sortie centré sur la partie HAUT-CENTRE de la photo (et non plus sur son centre) :
+     le translate vertical (--exit-shift-y, calculé en JS) équivaut à un agrandissement dont le
+     point fixe est situé au-dessus du centre, sans toucher à transform-origin (qui ferait
+     pivoter les photos tournées autour d'un mauvais point). */
+  transform: translate(-50%,-50%) translate(0, var(--exit-shift-y, 0px)) scale(var(--exit-scale, 1.22)) rotate(var(--rot, 0deg));
   z-index:1; /* reste visible sous l'image entrante, qui elle-même met un peu de temps à devenir opaque (fondu croisé) */
 }
 .slideshow-fill-toggle{
@@ -1093,6 +1124,7 @@ button{font-family:inherit;}
       <h2 id="gridTitle">Images</h2>
       <span class="result-count" id="resultCount"></span>
       <button class="btn" id="btnSortOrder" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
+      <button class="btn" id="btnStripToggle" title="Afficher / masquer la bande de miniatures (marquage rapide Favori / Art / Concert / Culture / Partition sans charger l'image)">🎞 Miniatures</button>
       <div class="zoom-controls">
         <button id="zoomOut" title="Diminuer">–</button>
         <input type="range" id="zoomRange" class="zoom-range" min="30" max="300" value="100">
@@ -1127,6 +1159,13 @@ button{font-family:inherit;}
         </div>
       </div>
       <button class="nav-btn nav-right" id="navNext" title="Image suivante" aria-label="Image suivante">›</button>
+    </div>
+
+    <div class="viewer-strip hidden" id="viewerStrip">
+      <button class="btn strip-page" id="stripPrev" title="Miniatures précédentes" aria-label="Miniatures précédentes">‹</button>
+      <div class="strip-scroll" id="stripScroll"></div>
+      <button class="btn strip-page" id="stripNext" title="Miniatures suivantes" aria-label="Miniatures suivantes">›</button>
+      <button class="btn" id="btnStripQuick" title="Marquage rapide : toucher une miniature y affiche la barre ★ 🎨 🎤 📜 🎼 au lieu d'ouvrir la photo (surtout utile sur écran tactile ; à la souris, la barre apparaît au survol)">⚡</button>
     </div>
   </main>
 
@@ -4836,6 +4875,7 @@ function renderGrid(){
     navNext.style.visibility = "hidden";
     State.selectedId = null;
     updateToolbarState();
+    renderStrip();
     return;
   }
   empty.style.display = "none";
@@ -4905,6 +4945,7 @@ function renderGrid(){
 
   applyViewerZoom();
   updateToolbarState();
+  renderStrip();
   // Si le panneau Infos est ouvert, il doit toujours refléter l'image
   // actuellement affichée dans le visualiseur — y compris après ‹ › ou un swipe.
   if(document.getElementById("modalInfo").classList.contains("show")){
@@ -4998,7 +5039,13 @@ function getQuickBar(){
     p[b.dataset.flag] = !p[b.dataset.flag];
     syncQuickBar(p);
     if(tile) refreshTileFlags(tile, p);
-    if(State.selectedId === p.id) updateToolbarState();
+    if(State.selectedId === p.id){
+      updateToolbarState();
+      document.getElementById("viewerFavMark").classList.toggle("show", !!p.favori);
+    }
+    // la même photo peut aussi figurer dans la planche-contact d'accueil
+    const otherTile = document.querySelector(`#galleryGrid .gallery-tile[data-id="${CSS.escape(p.id)}"]`);
+    if(otherTile && otherTile !== tile) refreshTileFlags(otherTile, p);
     try{ await idbPut("photos", p); }catch(err){ console.warn("Marquage rapide : sauvegarde impossible", err); }
     scheduleAutoBuildCsv();
   });
@@ -5043,6 +5090,119 @@ State.galleryQuickMode = false;
     document.getElementById("btnGalleryQuickMode").classList.toggle("active", State.galleryQuickMode);
     if(!State.galleryQuickMode) detachQuickBar();
   });
+})();
+
+/* ---------- Bande de miniatures du visualiseur principal ("Main 90%") ----------
+   Fenêtre glissante de STRIP_WINDOW miniatures autour de l'image affichée
+   (jamais les 30 000 d'un coup). Réutilise l'unique barre de marquage rapide
+   (getQuickBar) : marquer une miniature ne charge NI l'image NI la vidéo, et
+   n'appelle pas renderGrid(). Cliquer une miniature (hors mode ⚡) ouvre la photo. */
+const STRIP_WINDOW = 40;
+State.stripOpen = localStorage.getItem("imago_strip_open") === "1";
+State.stripQuickMode = false;
+State.stripStart = 0;
+State.stripLastIdx = -1;
+function stripThumbSrc(p){
+  return p.isVideo ? (p.posterDataUrl || "") : (p.thumbDataUrl || p.dataUrl || "");
+}
+function buildStripTile(p, isCurrent){
+  const tile = document.createElement("div");
+  tile.className = "strip-tile" + (isCurrent ? " current" : "");
+  tile.dataset.id = p.id;
+  tile.title = p.fileName || "";
+  const src = stripThumbSrc(p);
+  if(src){
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = p.fileName || ""; img.src = src;
+    tile.appendChild(img);
+  } else {
+    const missing = document.createElement("div");
+    missing.className = "viewer-missing";
+    missing.style.cssText = "padding:8px;font-size:12px;";
+    missing.textContent = "📷";
+    tile.appendChild(missing);
+  }
+  if(p.isVideo){
+    const play = document.createElement("span");
+    play.className = "gallery-video-mini"; play.textContent = "▶";
+    tile.appendChild(play);
+  }
+  refreshTileFlags(tile, p);
+  return tile;
+}
+function renderStrip(){
+  const strip = document.getElementById("viewerStrip");
+  const scroller = document.getElementById("stripScroll");
+  if(!strip || !scroller) return;
+  document.getElementById("btnStripToggle").classList.toggle("active", !!State.stripOpen);
+  strip.classList.toggle("hidden", !State.stripOpen);
+  if(!State.stripOpen) return;
+  // la barre rapide est détachée avant de vider la bande (sinon elle resterait accrochée à une miniature supprimée)
+  if(quickBarEl && scroller.contains(quickBarEl)) detachQuickBar();
+  const list = activePhotos();
+  scroller.textContent = "";
+  if(list.length === 0){ return; }
+  const idx = Math.max(0, Math.min(State.viewIndex||0, list.length-1));
+  // On ne recentre la fenêtre que si l'image affichée a changé (ou sort de la fenêtre) :
+  // un renderGrid() sans changement d'image ne doit pas annuler une pagination faite à la main.
+  if(idx !== State.stripLastIdx){
+    if(idx < State.stripStart || idx >= State.stripStart + STRIP_WINDOW){
+      State.stripStart = Math.max(0, idx - Math.floor(STRIP_WINDOW/2));
+    }
+    State.stripLastIdx = idx;
+  }
+  State.stripStart = Math.max(0, Math.min(State.stripStart, Math.max(0, list.length - STRIP_WINDOW)));
+  const frag = document.createDocumentFragment();
+  const end = Math.min(list.length, State.stripStart + STRIP_WINDOW);
+  for(let i = State.stripStart; i < end; i++) frag.appendChild(buildStripTile(list[i], i === idx));
+  scroller.appendChild(frag);
+  document.getElementById("stripPrev").disabled = State.stripStart <= 0;
+  document.getElementById("stripNext").disabled = end >= list.length;
+  const cur = scroller.querySelector(".strip-tile.current");
+  if(cur) scroller.scrollLeft = cur.offsetLeft - (scroller.clientWidth - cur.offsetWidth)/2;
+}
+function stripPage(dir){
+  const list = activePhotos();
+  const step = Math.floor(STRIP_WINDOW/2);
+  State.stripStart = Math.max(0, Math.min(State.stripStart + dir*step, Math.max(0, list.length - STRIP_WINDOW)));
+  State.stripLastIdx = Math.max(0, Math.min(State.viewIndex||0, list.length-1)); // ne pas recentrer sur l'image affichée
+  renderStrip();
+  document.getElementById("stripScroll").scrollLeft = dir > 0 ? 0 : 1e6;
+}
+(function(){
+  const scroller = document.getElementById("stripScroll");
+  const canHover = window.matchMedia && window.matchMedia("(hover:hover)").matches;
+  document.getElementById("btnStripToggle").addEventListener("click", ()=>{
+    State.stripOpen = !State.stripOpen;
+    try{ localStorage.setItem("imago_strip_open", State.stripOpen ? "1" : "0"); }catch(e){}
+    if(!State.stripOpen) detachQuickBar();
+    State.stripLastIdx = -1;
+    renderStrip();
+    setTimeout(applyViewerZoom, 0); // la zone d'affichage de l'image a changé de hauteur
+  });
+  document.getElementById("stripPrev").addEventListener("click", ()=> stripPage(-1));
+  document.getElementById("stripNext").addEventListener("click", ()=> stripPage(1));
+  document.getElementById("btnStripQuick").addEventListener("click", ()=>{
+    State.stripQuickMode = !State.stripQuickMode;
+    document.getElementById("btnStripQuick").classList.toggle("active", State.stripQuickMode);
+    if(!State.stripQuickMode) detachQuickBar();
+  });
+  scroller.addEventListener("mouseover", (e)=>{
+    if(!canHover) return;
+    const t = e.target.closest(".strip-tile");
+    if(t && getQuickBar().parentNode !== t) attachQuickBar(t);
+  });
+  scroller.addEventListener("mouseleave", ()=>{ if(!State.stripQuickMode) detachQuickBar(); });
+  scroller.addEventListener("click", (e)=>{
+    if(e.target.closest(".tile-quickbar")) return;
+    const tile = e.target.closest(".strip-tile");
+    if(!tile) return;
+    if(State.stripQuickMode){ attachQuickBar(tile); return; } // ⚡ : marquer sans ouvrir (donc sans charger) la photo
+    State.selectedId = tile.dataset.id;
+    renderGrid();
+    viewerScroll.scrollTo(0,0);
+  });
+  renderStrip();
 })();
 function buildGalleryTile(p){
   const tile = document.createElement("div");
@@ -12219,15 +12379,23 @@ function openDiaporama(id){
    garderait ses bandes). On compare sa taille actuellement affichée (déjà
    ajustée selon le niveau Ajusté/Équilibré/Plein écran) à la taille qu'il
    lui faudrait en mode "Plein écran" (object-fit:cover) pour ce cadre. */
-function computeExitScale(img){
+const SLIDESHOW_EXIT_FOCUS_UP = 0.25; // point fixe du zoom de sortie : 25 % de la hauteur affichée de la photo AU-DESSUS de son centre (0 = centre exact, 0.5 = bord haut)
+function computeExitZoom(img){
   const stageW = slideshowStageEl.clientWidth, stageH = slideshowStageEl.clientHeight;
-  const iw = img.naturalWidth, ih = img.naturalHeight;
-  const currentW = parseFloat(img.style.width);
-  if(!iw || !ih || !stageW || !stageH || !currentW) return 1.22; // repli si dimensions indisponibles
-  const coverScale = Math.max(stageW/iw, stageH/ih);
-  const currentScale = currentW / iw;
-  const needed = coverScale / currentScale;
-  return Math.max(1.08, Math.min(1.6, needed)); // borné : toujours un peu de mouvement, jamais un saut brutal
+  const ew = parseFloat(img.style.width), eh = parseFloat(img.style.height);
+  if(!ew || !eh || !stageW || !stageH) return {scale:1.22, shiftY:0}; // repli si dimensions indisponibles
+  const rot = ((parseFloat(img.dataset.rot)||0) % 180 + 180) % 180;
+  const swapped = Math.abs(rot-90) < 1; // 90°/270° : largeur et hauteur inversées à l'écran
+  const Ws = swapped ? eh : ew, Hs = swapped ? ew : eh; // taille réellement affichée à l'écran
+  const k = SLIDESHOW_EXIT_FOCUS_UP;
+  // Largeur : l'agrandissement reste centré horizontalement.
+  let needed = stageW / Ws;
+  // Hauteur : avec un point fixe au-dessus du centre, le bord haut ne monte que de (s-1)*(0.5-k)*Hs
+  // — c'est lui qui limite l'agrandissement nécessaire pour ne laisser aucune bande noire en haut.
+  const bandY = (stageH - Hs) / 2;
+  if(bandY > 0) needed = Math.max(needed, 1 + bandY / ((0.5 - k) * Hs));
+  const scale = Math.max(1.08, Math.min(1.6, needed)); // borné : toujours un peu de mouvement, jamais un saut brutal
+  return {scale, shiftY: (scale - 1) * k * Hs};
 }
 async function showSlideshowFrame(instant){
   const p = State.slideshowList[State.slideshowIndex];
@@ -12250,7 +12418,9 @@ async function showSlideshowFrame(instant){
     incoming.classList.remove("exiting");
     incoming.classList.add("active");
     if(outgoing){
-      outgoing.style.setProperty("--exit-scale", computeExitScale(outgoing));
+      const exitZoom = computeExitZoom(outgoing);
+      outgoing.style.setProperty("--exit-scale", exitZoom.scale);
+      outgoing.style.setProperty("--exit-shift-y", exitZoom.shiftY + "px");
       outgoing.classList.remove("active");
       outgoing.classList.add("exiting"); // zoom d'élargissement à la sortie, plus marqué que l'approche à l'entrée
       setTimeout(()=>{
