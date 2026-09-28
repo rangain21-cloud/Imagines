@@ -444,6 +444,27 @@ button{font-family:inherit;}
   position:absolute; top:6px; right:6px; color:var(--copper); font-size:14px;
   text-shadow:0 1px 4px rgba(0,0,0,.7);
 }
+/* Pastilles Art/Concert/Culture/Partition posées sur la vignette (le ★ Favori a la sienne ci-dessus) */
+.gallery-tile .gallery-flags{
+  position:absolute; left:5px; bottom:22px; display:flex; gap:2px; font-size:12px;
+  text-shadow:0 1px 3px rgba(0,0,0,.9); pointer-events:none;
+}
+/* Barre de marquage rapide : UNE SEULE instance, déplacée sur la vignette survolée
+   (ou touchée en mode "Marquage rapide") — pas 5 boutons × 30 000 vignettes. */
+.tile-quickbar{
+  position:absolute; top:0; left:0; right:0; z-index:4;
+  display:flex; justify-content:center; gap:3px; padding:4px;
+  background:linear-gradient(180deg, rgba(0,0,0,.78), transparent);
+}
+.tile-quickbar button{
+  width:26px; height:26px; padding:0; border-radius:5px; cursor:pointer;
+  border:1px solid rgba(255,255,255,.28); background:rgba(16,27,22,.88);
+  color:#fff; font-size:14px; line-height:1; opacity:.8;
+}
+.tile-quickbar button:hover{opacity:1; border-color:var(--copper-hi);}
+.tile-quickbar button.on{background:var(--copper); color:#171008; border-color:var(--copper-hi); opacity:1;}
+.gallery-screen.select-mode .tile-quickbar{display:none;}
+#btnGalleryQuickMode.active{background:var(--copper); color:#171008; border-color:var(--copper-hi);}
 /* ---------- vignette vidéo (icône lecture + durée) ---------- */
 .gallery-video-play{
   position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
@@ -959,6 +980,7 @@ button{font-family:inherit;}
       <button class="btn hidden" id="btnGalleryShareSelection" title="Envoyer les images sélectionnées dans Drive" disabled>⇪ Partager</button>
       <button class="btn" id="btnSortOrderGallery" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
       <button class="btn" id="btnSortByFileName" title="Trier les images et vidéos par nom de fichier">🔤 Tri par Nom de fichier</button>
+      <button class="btn" id="btnGalleryQuickMode" title="Marquer Favori / Art / Concert / Culture / Partition directement sur les miniatures, sans ouvrir les photos (au survol à la souris ; ce bouton sert surtout sur écran tactile)">⚡ Marquage rapide</button>
       <button class="btn" id="btnGallerySelectToggle" title="Sélectionner plusieurs images">☑ Sélectionner</button>
     </div>
   </div>
@@ -4935,6 +4957,93 @@ function effectiveAspectRatio(p){
   const MIN_RATIO = 0.5, MAX_RATIO = 2; // couvre les formats courants (portrait 9:16 = 0,56 ; paysage 16:9 = 1,78) sans les rogner ; seuls les vrais panoramas sont bornés
   return Math.max(MIN_RATIO, Math.min(MAX_RATIO, w/h));
 }
+/* ---------- Marquage rapide sur les miniatures ----------
+   Permet de poser Favori / Art / Concert / Culture / Partition directement
+   depuis la planche-contact, y compris PENDANT un import : aucune image ni
+   vidéo n'est chargée (seuls les indicateurs de l'enregistrement changent). */
+const QUICK_FLAGS = [
+  {key:"favori",    icon:"★",  label:"Favori"},
+  {key:"art",       icon:"🎨", label:"Art"},
+  {key:"concert",   icon:"🎤", label:"Concert"},
+  {key:"histoire",  icon:"📜", label:"Culture"},
+  {key:"partition", icon:"🎼", label:"Partition"}
+];
+function refreshTileFlags(tile, p){
+  let fav = tile.querySelector(":scope > .gallery-fav");
+  if(p.favori && !fav){
+    fav = document.createElement("span"); fav.className = "gallery-fav"; fav.textContent = "★"; tile.appendChild(fav);
+  } else if(!p.favori && fav){ fav.remove(); }
+  const icons = QUICK_FLAGS.filter(f=> f.key!=="favori" && p[f.key]).map(f=>f.icon).join("");
+  let box = tile.querySelector(":scope > .gallery-flags");
+  if(icons){
+    if(!box){ box = document.createElement("span"); box.className = "gallery-flags"; tile.appendChild(box); }
+    box.textContent = icons;
+  } else if(box){ box.remove(); }
+}
+let quickBarEl = null, quickBarTileId = null;
+function getQuickBar(){
+  if(quickBarEl) return quickBarEl;
+  quickBarEl = document.createElement("div");
+  quickBarEl.className = "tile-quickbar";
+  QUICK_FLAGS.forEach(f=>{
+    const b = document.createElement("button");
+    b.type = "button"; b.dataset.flag = f.key; b.textContent = f.icon; b.title = f.label;
+    quickBarEl.appendChild(b);
+  });
+  quickBarEl.addEventListener("click", async (e)=>{
+    e.stopPropagation(); // ne pas ouvrir la photo (voir le clic de #galleryGrid)
+    const b = e.target.closest("button"); if(!b) return;
+    const tile = quickBarEl.parentNode;
+    const p = State.photos.find(x=> x.id === quickBarTileId); if(!p) return;
+    p[b.dataset.flag] = !p[b.dataset.flag];
+    syncQuickBar(p);
+    if(tile) refreshTileFlags(tile, p);
+    if(State.selectedId === p.id) updateToolbarState();
+    try{ await idbPut("photos", p); }catch(err){ console.warn("Marquage rapide : sauvegarde impossible", err); }
+    scheduleAutoBuildCsv();
+  });
+  return quickBarEl;
+}
+function syncQuickBar(p){
+  getQuickBar().querySelectorAll("button").forEach(b=> b.classList.toggle("on", !!p[b.dataset.flag]));
+}
+function attachQuickBar(tile){
+  if(State.gallerySelectMode) return;
+  const p = State.photos.find(x=> x.id === tile.dataset.id); if(!p) return;
+  const bar = getQuickBar();
+  quickBarTileId = p.id;
+  syncQuickBar(p);
+  if(bar.parentNode !== tile) tile.appendChild(bar);
+}
+function detachQuickBar(){
+  if(quickBarEl && quickBarEl.parentNode) quickBarEl.remove();
+  quickBarTileId = null;
+}
+// Le CSV du catalogue est reconstruit en entier à chaque changement : avec
+// des dizaines de milliers de photos, on regroupe les marquages successifs
+// (rafale de clics) en UNE reconstruction, 1,5 s après le dernier.
+let csvRebuildTimer = null;
+function scheduleAutoBuildCsv(){
+  clearTimeout(csvRebuildTimer);
+  csvRebuildTimer = setTimeout(()=>{ csvRebuildTimer = null; autoBuildCsv(); }, 1500);
+}
+State.galleryQuickMode = false;
+(function(){
+  const grid = document.getElementById("galleryGrid");
+  const canHover = window.matchMedia && window.matchMedia("(hover:hover)").matches;
+  grid.addEventListener("mouseover", (e)=>{
+    if(!canHover || State.gallerySelectMode) return;
+    const t = e.target.closest(".gallery-tile");
+    if(t && getQuickBar().parentNode !== t) attachQuickBar(t);
+  });
+  grid.addEventListener("mouseleave", ()=>{ if(!State.galleryQuickMode) detachQuickBar(); });
+  document.getElementById("btnGalleryQuickMode").addEventListener("click", ()=>{
+    State.galleryQuickMode = !State.galleryQuickMode;
+    if(State.galleryQuickMode && State.gallerySelectMode) setGallerySelectMode(false);
+    document.getElementById("btnGalleryQuickMode").classList.toggle("active", State.galleryQuickMode);
+    if(!State.galleryQuickMode) detachQuickBar();
+  });
+})();
 function buildGalleryTile(p){
   const tile = document.createElement("div");
   tile.className = "gallery-tile";
@@ -4946,12 +5055,7 @@ function buildGalleryTile(p){
   mark.className = "gallery-select-mark";
   mark.textContent = "✓";
   tile.appendChild(mark);
-  if(p.favori){
-    const fav = document.createElement("span");
-    fav.className = "gallery-fav";
-    fav.textContent = "★";
-    tile.appendChild(fav);
-  }
+  refreshTileFlags(tile, p);
   if(p.isVideo){
     const img = document.createElement("img");
     img.loading = "lazy";
@@ -5089,6 +5193,7 @@ function scrollGalleryToTile(id){
   });
 }
 document.getElementById("galleryGrid").addEventListener("click", (e)=>{
+  if(e.target.closest(".tile-quickbar")) return;
   const tile = e.target.closest(".gallery-tile");
   if(!tile) return;
   const id = tile.dataset.id;
@@ -5098,6 +5203,7 @@ document.getElementById("galleryGrid").addEventListener("click", (e)=>{
     toggleGallerySelection(id, tile);
     return;
   }
+  if(State.galleryQuickMode){ attachQuickBar(tile); return; } // "Marquage rapide" : toucher une vignette y place la barre au lieu d'ouvrir la photo
   State.selectedId = p.id;
   State.viewIndex = 0; // recalculé dans renderGrid() selon la liste filtrée active
   closeGallery();
@@ -5124,6 +5230,11 @@ function updateGallerySelectionUI(){
 }
 function setGallerySelectMode(on){
   State.gallerySelectMode = on;
+  if(on && State.galleryQuickMode){
+    State.galleryQuickMode = false;
+    document.getElementById("btnGalleryQuickMode").classList.remove("active");
+  }
+  if(on) detachQuickBar();
   if(!on){ State.gallerySelection.clear(); }
   document.getElementById("galleryScreen").classList.toggle("select-mode", on);
   document.getElementById("btnGallerySelectToggle").textContent = on ? "✕ Annuler" : "☑ Sélectionner";
@@ -7573,6 +7684,7 @@ const IMPORT_BACKGROUND_CHUNK = 15;
    plus lent sur les dossiers Drive-cloud (voir checkSlowStorage, qui reste
    utile pour détecter et signaler CE cas-là séparément). */
 const IMPORT_CONCURRENCY = 1;
+const IMPORT_PAUSE_MS = (/Android|iPhone|iPad/i.test(navigator.userAgent) || (navigator.deviceMemory && navigator.deviceMemory <= 4)) ? 30 : 2;
 let importToken = 0; // incrémenté à chaque nouvel import, pour abandonner un import en arrière-plan devenu obsolète (nouveau dossier choisi entre-temps)
 
 /* Traite `items` avec au plus `concurrency` appels à `worker` en vol
@@ -7593,7 +7705,11 @@ async function runWithConcurrency(items, worker, concurrency){
       // disponible sur un appareil d'entrée/milieu de gamme (~Android
       // "Mémoire insuffisante"), même en traitement strictement séquentiel
       // (IMPORT_CONCURRENCY = 1) où la concurrence n'est pourtant pas en cause.
-      await new Promise(r=> setTimeout(r, 30));
+      // 30 ms × 30 000 fichiers = ~15 minutes d'attente pure : cette pause
+      // ne se justifie que sur mobile/faible mémoire (voir ci-dessus).
+      // Ailleurs, 2 ms suffisent à laisser respirer l'interface (clics,
+      // défilement) et le ramasse-miettes.
+      await new Promise(r=> setTimeout(r, IMPORT_PAUSE_MS));
     }
   }
   await Promise.all(Array.from({length: Math.min(concurrency, items.length)}, lane));
@@ -7758,6 +7874,7 @@ async function importOneFile(file, csvRowByFileName, stats){
                    : (!isVideo) ? await readFileAsDataURLWithHeicSupport(file, stats)
                    : null; // grosse vidéo : jamais lue en base64 à l'import
     let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
+    let resizedThumb = null;
     if(isVideo && deferVideo){
       // Vignette + métadonnées seulement, via une URL objet temporaire
       // (aucune conversion en base64, donc aucun coût mémoire proportionnel
@@ -7778,6 +7895,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       exif = await readBasicExif(file); // lu depuis le fichier original, indépendamment d'un éventuel redimensionnement ci-dessous
       const resized = await loadAndMaybeDownscaleImage(dataUrl);
       finalDataUrl = resized.dataUrl;
+      resizedThumb = resized.thumbDataUrl || null;
       dims = {width: resized.width, height: resized.height};
       encodedSize = Math.round(finalDataUrl.length * 0.75); // taille réellement conservée (proche de l'originale si aucun redimensionnement n'a eu lieu)
     }
@@ -7786,7 +7904,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     // redimensionné) — c'est elle qui restera en mémoire en permanence dans
     // State.photos (voir plus bas), jamais l'image complète. Les vidéos
     // différées (deferVideo) ont déjà leur propre vignette : videoMeta.poster.
-    const thumbDataUrl = (!isVideo && finalDataUrl) ? await makeThumbnail(finalDataUrl) : null;
+    const thumbDataUrl = (!isVideo && finalDataUrl) ? (resizedThumb || await makeThumbnail(finalDataUrl)) : null;
     const existingRow = csvRowByFileName.get(file.name);
     const meta = parseFileNameMeta(file.name);
 
@@ -8851,10 +8969,23 @@ const IMPORT_JPEG_QUALITY = 0.86;
    la limite (aucune perte de qualité superflue). Retourne toujours
    {dataUrl, width, height} — dataUrl est celui d'origine si aucun
    redimensionnement n'a eu lieu. */
+function canvasToJpegDataUrl(canvas, quality){
+  return new Promise((resolve, reject)=>{
+    const sync = ()=>{ try{ resolve(canvas.toDataURL("image/jpeg", quality)); }catch(e){ reject(e); } };
+    if(!canvas.toBlob){ sync(); return; }
+    canvas.toBlob(blob=>{
+      if(!blob){ sync(); return; }
+      const fr = new FileReader();
+      fr.onload = ()=> resolve(fr.result);
+      fr.onerror = sync;
+      fr.readAsDataURL(blob);
+    }, "image/jpeg", quality);
+  });
+}
 function loadAndMaybeDownscaleImage(dataUrl){
   return new Promise((resolve)=>{
     const img = new Image();
-    img.onload = ()=>{
+    img.onload = async ()=>{
       const w = img.naturalWidth, h = img.naturalHeight;
       if(!w || !h){ resolve({dataUrl, width:w, height:h}); return; }
       try{
@@ -8872,7 +9003,24 @@ function loadAndMaybeDownscaleImage(dataUrl){
         const canvas = document.createElement("canvas");
         canvas.width = nw; canvas.height = nh;
         canvas.getContext("2d").drawImage(img, 0, 0, nw, nh);
-        const out = canvas.toDataURL("image/jpeg", IMPORT_JPEG_QUALITY);
+        // Encodage asynchrone (toBlob) : le moteur JPEG travaille hors du
+        // fil principal, l'interface (clics sur les miniatures pendant
+        // l'import, défilement) ne fige plus ~60 ms par photo comme avec
+        // toDataURL (synchrone).
+        const out = await canvasToJpegDataUrl(canvas, IMPORT_JPEG_QUALITY);
+        // Miniature dérivée du MÊME canvas déjà redimensionné : évite de
+        // redécoder l'image de 2400 px depuis son dataUrl (makeThumbnail),
+        // soit ~17 ms de moins par photo (mesuré) sur 30 000 photos.
+        let thumbDataUrl = null;
+        try{
+          const ts = Math.min(1, THUMB_MAX_DIM / Math.max(nw,nh));
+          const tw = Math.max(1, Math.round(nw*ts)), th = Math.max(1, Math.round(nh*ts));
+          const tc = document.createElement("canvas");
+          tc.width = tw; tc.height = th;
+          tc.getContext("2d").drawImage(canvas, 0, 0, tw, th);
+          thumbDataUrl = tc.toDataURL("image/jpeg", THUMB_JPEG_QUALITY);
+          tc.width = 0; tc.height = 0;
+        }catch(_){ thumbDataUrl = null; }
         // Libère explicitement les plus gros objets dès qu'ils ne servent
         // plus (le pixel buffer décodé de <img>, potentiellement énorme
         // pour une photo pleine résolution, et le canvas lui-même) plutôt
@@ -8880,7 +9028,7 @@ function loadAndMaybeDownscaleImage(dataUrl){
         // repérer — utile sur un appareil à mémoire limitée où plusieurs
         // photos s'enchaînent (voir IMPORT_MAX_DIM ci-dessus).
         img.src = ""; canvas.width = 0; canvas.height = 0;
-        resolve({dataUrl: out, width: nw, height: nh});
+        resolve({dataUrl: out, width: nw, height: nh, thumbDataUrl});
       }catch(e){
         // Échec du redimensionnement (image corrompue pour le canvas,
         // restriction navigateur…) : on garde l'original plutôt que de
