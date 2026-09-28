@@ -5504,7 +5504,16 @@ function populateCatalogPickPersonnages(rows){
   rows.forEach(row=> personnageTokens(row.personnage).forEach(tok=> set.add(tok)));
   const tokens = [...set].sort((a,b)=> a.localeCompare(b, "fr"));
   const list = document.getElementById("catalogPickPersonnageList");
-  const empty = document.getElementById("catalogPickPersonnageEmpty");
+  // "empty" est un enfant de list : list.innerHTML = "" le DÉTACHE du DOM à
+  // chaque appel où la liste n'est pas vide, et getElementById ne le
+  // retrouvait alors plus au 2e appel (changement de catalogue, ou
+  // populateCatalogPickPersonnages([]) pendant la lecture) → TypeError
+  // "Cannot read properties of null (reading 'classList')". On le mémorise
+  // donc une seule fois, tant qu'il est encore dans le DOM.
+  if(!populateCatalogPickPersonnages.emptyEl){
+    populateCatalogPickPersonnages.emptyEl = document.getElementById("catalogPickPersonnageEmpty");
+  }
+  const empty = populateCatalogPickPersonnages.emptyEl;
   list.innerHTML = "";
   if(tokens.length === 0){
     empty.classList.remove("hidden");
