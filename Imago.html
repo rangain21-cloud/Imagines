@@ -4377,10 +4377,47 @@ async function idbAll(store){
     req.onerror = ()=> rej(req.error);
   });
 }
+/* Récupère UN SEUL enregistrement par sa clé (id) — c'est la pièce centrale
+   de l'architecture "miniatures en mémoire" : au lieu de garder l'image
+   complète de chaque photo en permanence dans State.photos (ce qui faisait
+   exploser la mémoire au-delà de quelques milliers de photos), seule une
+   petite vignette (p.thumbDataUrl) reste résidente ; l'image complète
+   (p.dataUrl) n'existe que dans IndexedDB et n'est chargée qu'à la demande,
+   via getFullDataUrl() ci-dessous, quand une photo précise doit réellement
+   s'afficher en grand (Loupe, Modifier, Diaporama, exports…). */
+async function idbGet(store, key){
+  const db = await openDB();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).get(key);
+    req.onsuccess = ()=> res(req.result || null);
+    req.onerror = ()=> rej(req.error);
+  });
+}
 /* Compte les enregistrements SANS les charger en mémoire (contrairement à
    idbAll) — utilisé au démarrage pour détecter une session interrompue
    (crash) sans avoir à recharger tous les dataUrl juste pour savoir s'il y
    en a. */
+/* Relit tous les enregistrements photos par curseur en ne gardant EN
+   MÉMOIRE que la version allégée (sans dataUrl) : idbAll("photos") aurait
+   remonté toutes les images complètes d'un coup — exactement le pic
+   mémoire que le chantier "miniatures" cherche à éviter (reprise après
+   plantage avec des dizaines de milliers de photos). */
+async function idbAllPhotosLight(){
+  const db = await openDB();
+  return new Promise((res, rej)=>{
+    const out = [];
+    const req = db.transaction("photos", "readonly").objectStore("photos").openCursor();
+    req.onsuccess = ()=>{
+      const cur = req.result;
+      if(!cur){ res(out); return; }
+      const rec = cur.value;
+      out.push(rec.hasFullImage ? {...rec, dataUrl: null} : rec);
+      cur.continue();
+    };
+    req.onerror = ()=> rej(req.error);
+  });
+}
 async function idbCount(store){
   const db = await openDB();
   return new Promise((res, rej)=>{
@@ -4589,6 +4626,19 @@ function celebrate(success, message, durationMs, quips){
    travail déjà accompli) — voir confirmChoice() plus bas.
    --------------------------------------------------------------- */
 async function loadAll(){
+  // Depuis le chantier "miniatures en mémoire", IndexedDB est la SEULE copie
+  // durable de chaque image complète (State.photos ne garde plus qu'une
+  // petite vignette) — on demande donc au navigateur de ne jamais purger ce
+  // stockage sous pression (autrement possible, en navigation normale,
+  // pour un stockage "best effort"). Purement indicatif : Chrome/Firefox
+  // l'accordent automatiquement selon l'engagement de l'utilisateur envers
+  // le site (favoris, usage fréquent…) ; rien de plus à faire ici si refusé,
+  // l'app continue de fonctionner normalement (juste sans cette garantie).
+  if(navigator.storage && navigator.storage.persist){
+    navigator.storage.persist().then(granted=>{
+      console.log(`[Imago] Stockage persistant ${granted ? "accordé" : "non accordé"} par le navigateur.`);
+    }).catch(()=>{});
+  }
   State.albums = await idbAll("albums");
   State.auteurs = await idbAll("auteurs");
   populateFilterOptions();
@@ -4613,7 +4663,7 @@ async function loadAll(){
       ]
     );
     if(choice === "resume"){
-      State.photos = await idbAll("photos");
+      State.photos = await idbAllPhotosLight();
       State.folderName = lastFolder;
       resumed = true;
     }
@@ -4715,6 +4765,21 @@ function activePhotos(){
   });
 }
 
+/* Affiche p.thumbDataUrl immédiatement (perception de vitesse) puis
+   remplace par l'image complète dès qu'elle arrive de getFullDataUrl() —
+   le jeton dans img.dataset évite qu'une réponse arrivée en retard (photo
+   déjà changée entre-temps par un swipe rapide) n'écrase la bonne image. */
+let imgLoadToken = 0;
+function showFullImageInto(img, p){
+  const token = "t" + (++imgLoadToken);
+  img.dataset.loadToken = token;
+  if(p.thumbDataUrl) img.src = p.thumbDataUrl;
+  getFullDataUrl(p).then(url=>{
+    if(img.dataset.loadToken !== token) return; // une autre photo est affichée depuis
+    if(url) img.src = url;
+  });
+}
+
 function renderGrid(){
   const list = activePhotos();
   document.getElementById("resultCount").textContent = list.length
@@ -4773,14 +4838,20 @@ function renderGrid(){
     img.classList.add("hidden");
     video.classList.remove("hidden");
     missing.classList.add("hidden");
-    if(video.dataset.currentId !== p.id){ video.src = p.dataUrl || ""; video.dataset.currentId = p.id; }
-  } else if(p.dataUrl){
+    // Chargement à la demande depuis IndexedDB (voir getFullDataUrl) — la
+    // petite vidéo inline n'est plus gardée en mémoire en permanence.
+    if(video.dataset.currentId !== p.id){
+      video.dataset.currentId = p.id;
+      video.removeAttribute("src");
+      getFullDataUrl(p).then(url=>{ if(video.dataset.currentId === p.id) video.src = url || ""; });
+    }
+  } else if(p.hasFullImage || p.thumbDataUrl){
     video.classList.add("hidden");
     video.removeAttribute("src");
     delete video.dataset.currentId;
     img.classList.remove("hidden");
     missing.classList.add("hidden");
-    img.src = p.dataUrl;
+    showFullImageInto(img, p);
   } else {
     video.classList.add("hidden");
     img.classList.add("hidden");
@@ -4880,11 +4951,11 @@ function buildGalleryTile(p){
       dur.textContent = formatDuration(p.durationSec);
       tile.appendChild(dur);
     }
-  } else if(p.dataUrl){
+  } else if(p.thumbDataUrl){
     const img = document.createElement("img");
     img.loading = "lazy";
     img.alt = p.fileName || "";
-    img.src = p.dataUrl;
+    img.src = p.thumbDataUrl; // planche-contact : la miniature suffit, et évite de décoder l'image complète pour un si petit affichage
     tile.appendChild(img);
   } else {
     const missing = document.createElement("div");
@@ -7684,6 +7755,12 @@ async function importOneFile(file, csvRowByFileName, stats){
       dims = {width: resized.width, height: resized.height};
       encodedSize = Math.round(finalDataUrl.length * 0.75); // taille réellement conservée (proche de l'originale si aucun redimensionnement n'a eu lieu)
     }
+    // Miniature (~320 px) systématiquement générée pour les photos ET les
+    // petites vidéos inline (à partir de finalDataUrl, donc déjà
+    // redimensionné) — c'est elle qui restera en mémoire en permanence dans
+    // State.photos (voir plus bas), jamais l'image complète. Les vidéos
+    // différées (deferVideo) ont déjà leur propre vignette : videoMeta.poster.
+    const thumbDataUrl = (!isVideo && finalDataUrl) ? await makeThumbnail(finalDataUrl) : null;
     const existingRow = csvRowByFileName.get(file.name);
     const meta = parseFileNameMeta(file.name);
 
@@ -7691,7 +7768,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     if(existingRow){
       // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
       rec = {
-        id: uid("ph"), fileName: file.name, sousDossier, dataUrl: finalDataUrl,
+        id: uid("ph"), fileName: file.name, sousDossier, dataUrl: finalDataUrl, thumbDataUrl,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         titre: existingRow.titre || "",
@@ -7729,7 +7806,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       const lieu = "";
       const personnage = meta.personnage;
       rec = {
-        id: uid("ph"), fileName: file.name, sousDossier, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl, dateAchat,
+        id: uid("ph"), fileName: file.name, sousDossier, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl, thumbDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
@@ -7749,12 +7826,37 @@ async function importOneFile(file, csvRowByFileName, stats){
     // de la perdre entièrement à cause d'une erreur de stockage.
     if(deferVideo) pendingVideoFiles.set(rec.id, file); // permet la lecture à la demande sans jamais convertir cette vidéo en base64 (voir loadPendingVideoFile)
     if(!isVideo && !(exif && (exif.make || exif.gpsLat!=null))) exifDiagnosticFiles.set(rec.id, file); // ni appareil ni GPS trouvés : gardé pour un diagnostic à la demande (voir diagnoseExifFile)
-    State.photos.push(rec);
+    // rec.hasFullImage : vrai dès qu'une image/vidéo complète existe quelque
+    // part (IndexedDB si la sauvegarde réussit juste en dessous, sinon
+    // seulement en mémoire pour cette session — voir le commentaire
+    // ci-dessus) — c'est ce indicateur, PAS la présence de rec.dataUrl
+    // lui-même, qui dit à getFullDataUrl() s'il vaut la peine d'aller la
+    // chercher. Reste faux pour une vidéo différée (deferVideo) : son accès
+    // passe par un mécanisme entièrement différent, loadPendingVideoFile().
+    rec.hasFullImage = !deferVideo && !!finalDataUrl;
+    let savedToIdb = false;
     try{
-      await idbPut("photos", rec);
+      await idbPut("photos", rec); // enregistrement COMPLET (avec dataUrl) — seule copie durable de l'image
+      savedToIdb = true;
     }catch(storageErr){
       console.warn(`Sauvegarde persistante impossible pour "${file.name}" (affichée pour cette session uniquement).`, storageErr);
       if(!stats.firstErrorDetail) stats.firstErrorDetail = `Stockage : ${(storageErr && storageErr.message) || String(storageErr)}`;
+    }
+    // Version ALLÉGÉE gardée en mémoire (State.photos) : dataUrl retiré (la
+    // seule copie qui compte est déjà dans IndexedDB juste au-dessus) — ce
+    // qui permet de charger 30 000+ photos sans épuiser la mémoire du
+    // navigateur (voir échange utilisateur sur les plantages avec de très
+    // gros dossiers). Seule thumbDataUrl (~15-25 Ko) reste résidente pour
+    // l'affichage de la planche-contact.
+    // EXCEPTION : si la sauvegarde IndexedDB a échoué juste au-dessus, il
+    // n'existe alors AUCUNE autre copie de l'image — on garde forcément
+    // rec.dataUrl en mémoire pour cette session (dégradation identique à ce
+    // que faisait déjà le code avant ce chantier dans ce cas précis).
+    if(rec.hasFullImage && savedToIdb){
+      cacheFullImage(rec.id, rec.dataUrl); // évite un aller-retour IndexedDB si la photo est consultée juste après son import
+      State.photos.push({...rec, dataUrl: null});
+    } else {
+      State.photos.push(rec);
     }
   }catch(err){
     console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
@@ -8764,6 +8866,68 @@ function loadAndMaybeDownscaleImage(dataUrl){
     img.src = dataUrl;
   });
 }
+/* Miniature légère (~320 px) générée à l'import, à partir de l'image DÉJÀ
+   redimensionnée par loadAndMaybeDownscaleImage ci-dessus (jamais depuis le
+   fichier original, ni depuis l'IMPORT_MAX_DIM (1600-2400 px), pour rester
+   rapide). C'est cette miniature — et seulement elle — qui reste en mémoire
+   en permanence dans State.photos (voir p.thumbDataUrl) ; l'image complète,
+   elle, ne vit que dans IndexedDB (voir getFullDataUrl plus bas). */
+const THUMB_MAX_DIM = 320;
+const THUMB_JPEG_QUALITY = 0.65;
+function makeThumbnail(dataUrl){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const w = img.naturalWidth, h = img.naturalHeight;
+      if(!w || !h){ resolve(dataUrl); return; } // secours : mieux vaut une vignette "pleine taille" que pas de vignette du tout
+      try{
+        const scale = Math.min(1, THUMB_MAX_DIM / Math.max(w,h));
+        const nw = Math.max(1, Math.round(w*scale)), nh = Math.max(1, Math.round(h*scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = nw; canvas.height = nh;
+        canvas.getContext("2d").drawImage(img, 0, 0, nw, nh);
+        const out = canvas.toDataURL("image/jpeg", THUMB_JPEG_QUALITY);
+        img.src = ""; canvas.width = 0; canvas.height = 0;
+        resolve(out);
+      }catch(e){ resolve(dataUrl); }
+    };
+    img.onerror = ()=> resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+/* -----------------------------------------------------------------
+   Chargement à la demande de l'image complète d'UNE photo (voir le
+   commentaire de makeThumbnail ci-dessus pour le principe général).
+   Un tout petit cache (3 entrées, "la dernière consultée gagne") évite de
+   refaire l'aller-retour IndexedDB en rafale quand on feuillette les photos
+   au clavier/swipe dans la Loupe — sans jamais remettre TOUTES les photos
+   en mémoire comme avant.
+   ----------------------------------------------------------------- */
+const fullImageCache = new Map(); // id -> dataUrl, LRU approximatif (voir cacheFullImage)
+const FULL_IMAGE_CACHE_MAX = 3;
+function cacheFullImage(id, dataUrl){
+  fullImageCache.delete(id);
+  fullImageCache.set(id, dataUrl);
+  while(fullImageCache.size > FULL_IMAGE_CACHE_MAX){
+    fullImageCache.delete(fullImageCache.keys().next().value);
+  }
+}
+async function getFullDataUrl(idOrPhoto){
+  const p = (typeof idOrPhoto === "string") ? State.photos.find(x=>x.id===idOrPhoto) : idOrPhoto;
+  if(!p) return null;
+  if(p.dataUrl) return p.dataUrl; // rétro-compatibilité : editDraft ou tout autre objet qui garde déjà l'image complète en mémoire le temps d'une opération
+  if(fullImageCache.has(p.id)) return fullImageCache.get(p.id);
+  if(!p.hasFullImage) return null; // ni vidéo différée, ni entrée "orpheline" du CSV sans fichier réel : pas d'image complète à aller chercher
+  try{
+    const rec = await idbGet("photos", p.id);
+    const dataUrl = rec ? rec.dataUrl : null;
+    if(dataUrl) cacheFullImage(p.id, dataUrl);
+    return dataUrl;
+  }catch(e){
+    console.warn(`Impossible de charger l'image complète de "${p.fileName}" depuis IndexedDB.`, e);
+    return null;
+  }
+}
 /* -----------------------------------------------------------------
    Prise en charge des vidéos MP4 : contrairement aux photos, une vidéo n'a
    ni EXIF ni dimensions immédiatement disponibles — il faut charger un
@@ -9045,11 +9209,18 @@ function dataUrlMimeType(dataUrl){
   return m ? m[1] : "";
 }
 /* Une photo "a encore besoin" d'être convertie si son nom indique un format
-   HEIC/HEIF mais que son contenu réel (le dataUrl en mémoire) n'est pas déjà
-   un JPEG/PNG lisible — cas d'une conversion à l'import qui aurait échoué
-   faute de connexion internet à ce moment-là. */
-function stillNeedsHeicConversion(p){
-  return /\.hei[cf]$/i.test(p.fileName||"") && !/^image\/(jpe?g|png)$/i.test(dataUrlMimeType(p.dataUrl));
+   HEIC/HEIF mais que son contenu réel n'est pas déjà un JPEG/PNG lisible —
+   cas d'une conversion à l'import qui aurait échoué faute de connexion
+   internet à ce moment-là. Signature souple : soit stillNeedsHeicConversion(p)
+   avec un objet qui a déjà son dataUrl en mémoire (ex. editDraft), soit
+   stillNeedsHeicConversion(fileName, dataUrl) quand l'image complète vient
+   d'être chargée à la demande (voir getFullDataUrl) et n'est PAS gardée dans
+   l'objet photo lui-même (voir le chantier "miniatures en mémoire"). */
+function stillNeedsHeicConversion(fileNameOrPhoto, maybeDataUrl){
+  const isPlainObject = typeof fileNameOrPhoto === "object" && fileNameOrPhoto !== null;
+  const fileName = isPlainObject ? fileNameOrPhoto.fileName : fileNameOrPhoto;
+  const dataUrl = isPlainObject ? fileNameOrPhoto.dataUrl : maybeDataUrl;
+  return /\.hei[cf]$/i.test(fileName||"") && !/^image\/(jpe?g|png)$/i.test(dataUrlMimeType(dataUrl));
 }
 /* Enveloppe readFileAsDataURL : lit le fichier normalement, puis convertit
    le résultat en JPEG affichable s'il s'agit d'un HEIC/HEIF. En cas d'échec
@@ -11062,7 +11233,7 @@ function resetEditModalPositionAndSize(){
   window.addEventListener("mouseup", ()=>{ dragging = false; });
 })();
 
-document.getElementById("btnEdit").addEventListener("click", ()=>{
+document.getElementById("btnEdit").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
   editDraft = Object.assign({}, p); // copie de travail — rien n'est écrit tant que "Enregistrer" n'est pas cliqué
   editDraft.cropped = false;
@@ -11074,7 +11245,18 @@ document.getElementById("btnEdit").addEventListener("click", ()=>{
   exitCloneMode();
   editViewScale = 1; // repart toujours d'une vue "ajustée" (100%) à l'ouverture, jamais du zoom laissé par une précédente retouche
   resetEditModalPositionAndSize(); // toujours recentrée à l'ouverture, même si on l'avait déplacée/redimensionnée la fois précédente
-  document.getElementById("edPreviewImg").src = p.dataUrl;
+  // editDraft.dataUrl est vide au départ (voir le chantier "miniatures en
+  // mémoire" : p.dataUrl n'est plus gardé en mémoire en permanence). On
+  // affiche d'abord la vignette pour que la modale s'ouvre sans attendre,
+  // puis on charge l'image complète depuis IndexedDB — indispensable ici
+  // puisque rotation/recadrage dessinent ensuite sur cette image en pleine
+  // résolution, pas sur la vignette.
+  const edPreviewImg = document.getElementById("edPreviewImg");
+  edPreviewImg.src = p.thumbDataUrl || "";
+  const fullDataUrl = await getFullDataUrl(p);
+  if(State.selectedId !== p.id) return; // l'utilisateur a changé de photo pendant le chargement
+  editDraft.dataUrl = fullDataUrl;
+  edPreviewImg.src = fullDataUrl || p.thumbDataUrl || "";
   document.getElementById("edFileName").value = p.fileName || "";
   document.getElementById("edDate").value = toDateTimeLocalValue(p.dateAchat);
   document.getElementById("edSupport").value = p.support || "";
@@ -11215,8 +11397,14 @@ async function applyEditFormToSelectedPhoto(){
   p.rotation = totalEditRotation();
   p.filterCss = editDraft.filterCss || "";
   p.filterKey = editDraft.filterKey || null;
+  // Image complète actuelle : celle du recadrage si l'utilisateur a recadré
+  // (déjà gravée dans editDraft.dataUrl par les fonctions de recadrage —
+  // rotation comprise), sinon celle chargée à l'ouverture de la modale
+  // (voir btnEdit ci-dessus). JAMAIS reposée sur p.dataUrl lui-même : depuis
+  // le chantier "miniatures en mémoire", seule IndexedDB garde l'image
+  // complète en permanence (voir le commentaire de fin de fonction).
+  let fullDataUrl = editDraft.dataUrl; // image de travail complète (chargée à l'ouverture, éventuellement recadrée/pivotée depuis)
   if(editDraft.cropped && editDraft.dataUrl){
-    p.dataUrl = editDraft.dataUrl;
     p.width = editDraft.width;
     p.height = editDraft.height;
     // ré-estime le poids depuis la nouvelle image (taille du base64 ≈ 3/4 de sa longueur)
@@ -11231,21 +11419,42 @@ async function applyEditFormToSelectedPhoto(){
   // Reporte aussi Caméra/Lieu/Map dans les métadonnées EXIF du fichier
   // lui-même (voir writeMetadataIntoJpegDataUrl), pas seulement dans le
   // catalogue Imago — uniquement pour les photos JPEG (jamais les vidéos).
-  if(!p.isVideo){
-    const before = p.dataUrl;
-    p.dataUrl = await writeMetadataIntoJpegDataUrl(p.dataUrl, {
+  if(!p.isVideo && fullDataUrl){
+    const before = fullDataUrl;
+    fullDataUrl = await writeMetadataIntoJpegDataUrl(fullDataUrl, {
       cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette, dateAchat: p.dateAchat
     });
-    if(p.dataUrl !== before){
-      p.poids = Math.round((p.dataUrl.length * 0.75) / 1024);
-      p.sizeBytes = Math.round(p.dataUrl.length * 0.75);
+    if(fullDataUrl !== before){
+      p.poids = Math.round((fullDataUrl.length * 0.75) / 1024);
+      p.sizeBytes = Math.round(fullDataUrl.length * 0.75);
     }
   }
-  return p;
+  // La miniature est régénérée à partir de l'image finale (recadrage/
+  // rotation/EXIF appliqués) : c'est elle qui reste en mémoire en
+  // permanence — p.dataUrl, lui, reste volontairement vide (voir plus haut).
+  if(fullDataUrl){
+    p.hasFullImage = true;
+    p.thumbDataUrl = await makeThumbnail(fullDataUrl);
+    cacheFullImage(p.id, fullDataUrl);
+  }
+  return {p, fullDataUrl};
+}
+/* Écrit fullDataUrl (l'image complète, potentiellement modifiée) dans
+   IndexedDB — SEUL endroit qui doit encore recevoir l'image complète, p
+   (l'objet en mémoire dans State.photos) n'en garde jamais de copie. */
+async function saveEditedPhoto(p, fullDataUrl){
+  if(fullDataUrl){
+    const rec = (await idbGet("photos", p.id)) || {...p};
+    Object.assign(rec, p, {dataUrl: fullDataUrl});
+    await idbPut("photos", rec);
+  } else {
+    await idbPut("photos", p); // aucune image complète disponible (cas très rare) : au moins les métadonnées sont sauvegardées
+  }
 }
 document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
-  const p = await applyEditFormToSelectedPhoto(); if(!p) return;
-  await idbPut("photos", p);
+  const result = await applyEditFormToSelectedPhoto(); if(!result) return;
+  const {p, fullDataUrl} = result;
+  await saveEditedPhoto(p, fullDataUrl);
   populateFilterOptions();
   renderGrid();
   closeModal("modalEdit");
@@ -11253,16 +11462,17 @@ document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
   autoBuildCsv();
 });
 document.getElementById("btnSaveEditDownload").addEventListener("click", async ()=>{
-  const p = await applyEditFormToSelectedPhoto(); if(!p) return;
-  await idbPut("photos", p);
+  const result = await applyEditFormToSelectedPhoto(); if(!result) return;
+  const {p, fullDataUrl} = result;
+  await saveEditedPhoto(p, fullDataUrl);
   populateFilterOptions();
   renderGrid();
   closeModal("modalEdit");
   autoBuildCsv();
-  let finalUrl = p.dataUrl;
+  let finalUrl = fullDataUrl;
   try{
     if((p.rotation||0) % 360 !== 0 || (p.filterCss && p.filterCss !== "none")){
-      finalUrl = await renderFinalImageDataUrl(p);
+      finalUrl = await renderFinalImageDataUrl(p, fullDataUrl);
     }
   }catch(e){ console.warn("Aplatissement impossible, téléchargement de l'original :", e); }
   const a = document.createElement("a");
@@ -11816,7 +12026,7 @@ function computeExitScale(img){
   const needed = coverScale / currentScale;
   return Math.max(1.08, Math.min(1.6, needed)); // borné : toujours un peu de mouvement, jamais un saut brutal
 }
-function showSlideshowFrame(instant){
+async function showSlideshowFrame(instant){
   const p = State.slideshowList[State.slideshowIndex];
   if(!p) return closeSlideshow();
   const myToken = ++slideshowFrameToken; // voir déclaration de slideshowFrameToken plus haut
@@ -11859,8 +12069,14 @@ function showSlideshowFrame(instant){
   };
   // Une vidéo ne peut pas être décodée par une balise <img> : on affiche sa
   // vignette (posterDataUrl) à la place, y compris pour les grosses vidéos
-  // différées à l'import qui n'ont pas de dataUrl complet.
-  incoming.src = (p.isVideo ? (p.posterDataUrl || "") : (p.dataUrl || ""));
+  // différées à l'import qui n'ont pas de dataUrl complet. Pour une photo,
+  // l'image complète est chargée à la demande (IndexedDB, voir
+  // getFullDataUrl) AVANT d'être affectée à .src — pour ne déclencher
+  // qu'un seul onload/minutage ci-dessus, plutôt que deux si on affichait
+  // d'abord une vignette puis l'image complète par-dessus.
+  const src = p.isVideo ? (p.posterDataUrl || "") : ((await getFullDataUrl(p)) || p.thumbDataUrl || "");
+  if(myToken !== slideshowFrameToken) return; // une diapositive plus récente a pris le relais pendant ce chargement
+  incoming.src = src;
   updateSlideshowRailHighlight();
 }
 const slideCaptionDateEl = document.getElementById("slideCaptionDate");
@@ -11950,7 +12166,7 @@ function buildSlideshowRail(){
     tile.className = "slideshow-rail-tile";
     tile.dataset.index = idx;
     const img = document.createElement("img");
-    img.src = p.isVideo ? (p.posterDataUrl || "") : (p.dataUrl || ""); // une vidéo n'a pas de dataUrl affichable dans une <img> — vignette à la place
+    img.src = p.isVideo ? (p.posterDataUrl || "") : (p.thumbDataUrl || ""); // bande de MINIATURES : thumbDataUrl suffit, jamais besoin de l'image complète ici
     img.loading = "lazy";
     img.alt = "";
     tile.appendChild(img);
@@ -12129,10 +12345,15 @@ window.addEventListener("mouseup", ()=> loupeDrag=false);
    12. Modale "Plus d'info" : télécharger / diaporama / pivoter / album
    --------------------------------------------------------------- */
 /* Aplatit rotation + filtre CSS dans les pixels réels de l'image (le
-   recadrage, lui, est déjà gravé dans p.dataUrl dès l'enregistrement dans
+   recadrage, lui, est déjà gravé dans l'image dès l'enregistrement dans
    Modifier). Nécessaire pour que "Télécharger" sauvegarde vraiment tout
-   ce qui a été modifié, pas seulement un rendu visuel côté écran. */
-function renderFinalImageDataUrl(p){
+   ce qui a été modifié, pas seulement un rendu visuel côté écran.
+   sourceDataUrl : image complète déjà en main (évite un aller-retour
+   IndexedDB si l'appelant l'a déjà — ex. juste après un Enregistrer) ;
+   sinon chargée à la demande via getFullDataUrl(). */
+async function renderFinalImageDataUrl(p, sourceDataUrl){
+  const src = sourceDataUrl || await getFullDataUrl(p);
+  if(!src) throw new Error("Image complète introuvable (ni en mémoire, ni dans IndexedDB).");
   return new Promise((resolve, reject)=>{
     const img = new Image();
     img.onload = async ()=>{
@@ -12161,15 +12382,15 @@ function renderFinalImageDataUrl(p){
       resolve(out);
     };
     img.onerror = reject;
-    img.src = p.dataUrl;
+    img.src = src;
   });
 }
 document.getElementById("actDownload").addEventListener("click", async ()=>{
   const p = getSelected(); if(!p) return;
-  let finalUrl = p.dataUrl;
+  let finalUrl = await getFullDataUrl(p);
   try{
     if((p.rotation||0) % 360 !== 0 || (p.filterCss && p.filterCss !== "none")){
-      finalUrl = await renderFinalImageDataUrl(p);
+      finalUrl = await renderFinalImageDataUrl(p, finalUrl);
     }
   }catch(e){ console.warn("Aplatissement des modifications impossible, téléchargement de l'original :", e); }
   const a = document.createElement("a");
@@ -12256,14 +12477,26 @@ async function exportDiaporamaAsVob(plateau, fondu){
   vobExportCancelled = false;
   const overlay = document.getElementById("vobExportOverlay");
   overlay.classList.remove("hidden");
-  vobExportSetProgress(0, `Chargement de ${list.length} photo(s)…`);
+  vobExportSetProgress(0, "Préparation…");
 
-  let images;
+  // Charge l'image complète d'UNE SEULE photo à la fois, à la demande
+  // (IndexedDB — voir getFullDataUrl), plutôt que de précharger tout le
+  // diaporama d'un coup comme avant : indispensable pour un très long
+  // diaporama (des centaines/milliers de photos), sous peine de recréer
+  // exactement le problème mémoire que le chantier "miniatures en mémoire"
+  // cherche à éliminer.
+  async function loadSlideImage(p){
+    const src = (await getFullDataUrl(p)) || p.thumbDataUrl;
+    if(!src) throw new Error(`Image introuvable pour "${p.fileName}".`);
+    return loadImageEl(src);
+  }
+
+  let currentImg;
   try{
-    images = await Promise.all(list.map(p=> loadImageEl(p.dataUrl)));
+    currentImg = await loadSlideImage(list[0]);
   }catch(e){
     overlay.classList.add("hidden");
-    toast("Échec du chargement d'une photo — export annulé.");
+    toast("Échec du chargement de la 1ère photo — export annulé.");
     return;
   }
   if(vobExportCancelled){ overlay.classList.add("hidden"); return; }
@@ -12301,22 +12534,36 @@ async function exportDiaporamaAsVob(plateau, fondu){
   const totalSeconds = list.length*plateau + Math.max(0, list.length-1)*fondu;
   let elapsedSoFar = 0;
 
-  for(let i=0; i<images.length && !vobExportCancelled; i++){
-    drawContain(images[i]);
-    vobExportSetProgress(elapsedSoFar/totalSeconds, `Photo ${i+1} / ${images.length}…`);
+  for(let i=0; i<list.length && !vobExportCancelled; i++){
+    // Précharge la photo suivante PENDANT le plateau de la photo actuelle,
+    // pour ne jamais faire attendre le fondu enchaîné derrière IndexedDB —
+    // au plus 2 images complètes en mémoire simultanément, jamais tout le
+    // diaporama.
+    const nextImgPromise = (i < list.length-1) ? loadSlideImage(list[i+1]).catch(()=>null) : null;
+
+    drawContain(currentImg);
+    vobExportSetProgress(elapsedSoFar/totalSeconds, `Photo ${i+1} / ${list.length}…`);
     await wait(plateau*1000);
     elapsedSoFar += plateau;
-    if(!vobExportCancelled && i < images.length-1 && fondu>0){
+
+    let nextImg = null;
+    if(nextImgPromise){
+      nextImg = await nextImgPromise;
+      if(!nextImg) console.warn(`Diaporama VOB : photo "${list[i+1].fileName}" ignorée (chargement impossible).`);
+    }
+
+    if(!vobExportCancelled && nextImg && fondu>0){
       const start = performance.now();
       while(!vobExportCancelled){
         const t = Math.min(1, (performance.now()-start) / (fondu*1000));
-        drawCrossfade(images[i], images[i+1], t);
+        drawCrossfade(currentImg, nextImg, t);
         vobExportSetProgress(elapsedSoFar/totalSeconds, `Photo ${i+1} → ${i+2}…`);
         if(t>=1) break;
         await new Promise(r=> requestAnimationFrame(r));
       }
       elapsedSoFar += fondu;
     }
+    currentImg = nextImg || currentImg; // chargement suivant en échec : on reste sur l'actuelle plutôt que planter tout l'export
   }
   recorder.stop();
   await stopped;
@@ -12330,7 +12577,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
   a.href = url; a.download = "diaporama.vob";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=> URL.revokeObjectURL(url), 30000);
-  toast(`Vidéo exportée : ${images.length} photo(s), ${Math.round(totalSeconds)}s — fichier "diaporama.vob" téléchargé (lisible avec VLC).`);
+  toast(`Vidéo exportée : ${list.length} photo(s), ${Math.round(totalSeconds)}s — fichier "diaporama.vob" téléchargé (lisible avec VLC).`);
 }
 document.getElementById("btnVobExportCancel").addEventListener("click", ()=>{ vobExportCancelled = true; });
 document.getElementById("btnSlideshowExportVob").addEventListener("click", ()=>{
@@ -12742,14 +12989,22 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
   btn.textContent = `🖊️ Écriture EXIF… (0/${targets.length})`;
   for(const p of targets){
     try{
-      const before = p.dataUrl;
-      p.dataUrl = await writeMetadataIntoJpegDataUrl(p.dataUrl, {
+      const original = await getFullDataUrl(p);
+      if(!original) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
+      const updated = await writeMetadataIntoJpegDataUrl(original, {
         cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette, dateAchat: p.dateAchat
       });
-      if(p.dataUrl !== before){
-        p.poids = Math.round((p.dataUrl.length * 0.75) / 1024);
-        p.sizeBytes = Math.round(p.dataUrl.length * 0.75);
-        await idbPut("photos", p);
+      if(updated !== original){
+        p.poids = Math.round((updated.length * 0.75) / 1024);
+        p.sizeBytes = Math.round(updated.length * 0.75);
+        p.thumbDataUrl = await makeThumbnail(updated);
+        // Réécrit dans IndexedDB (seule copie durable de l'image complète —
+        // voir le chantier "miniatures en mémoire") ; p, lui, n'en garde
+        // jamais de copie.
+        const rec = (await idbGet("photos", p.id)) || {...p};
+        Object.assign(rec, p, {dataUrl: updated});
+        await idbPut("photos", rec);
+        cacheFullImage(p.id, updated);
         changed++;
       }
     }catch(e){
@@ -12797,9 +13052,15 @@ async function exportAllPhotosAsZip(targets, btn){
     return;
   }
   const zip = new JSZip();
+  let failed = 0;
   for(let i=0;i<targets.length;i++){
     const p = targets[i];
-    zip.file(p.fileName || `photo_${i+1}.jpg`, dataURLtoBlob(p.dataUrl));
+    // Chargée à la demande (une seule photo complète en mémoire à la fois —
+    // voir getFullDataUrl) plutôt que de supposer p.dataUrl déjà disponible,
+    // qui n'est plus le cas depuis le chantier "miniatures en mémoire".
+    const full = await getFullDataUrl(p);
+    if(!full){ failed++; console.warn(`[Imago] Export .zip : image introuvable pour "${p.fileName}".`); }
+    else zip.file(p.fileName || `photo_${i+1}.jpg`, dataURLtoBlob(full));
     btn.textContent = `📦 Préparation du .zip… (${i+1}/${targets.length})`;
     if(i % 20 === 0) await delay(10); // laisse l'interface respirer sur un gros catalogue
   }
@@ -12810,10 +13071,10 @@ async function exportAllPhotosAsZip(targets, btn){
   a.download = "Imago-export.zip";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=> URL.revokeObjectURL(a.href), 30000);
-  toast(`✅ ${targets.length} photo(s) exportée(s) dans « Imago-export.zip ».`);
+  toast(`✅ ${targets.length-failed} photo(s) exportée(s) dans « Imago-export.zip ».` + (failed ? ` ⚠️ ${failed} introuvable(s) — voir la console.` : ""));
 }
 document.getElementById("btnExportAllPhotos").addEventListener("click", async ()=>{
-  const targets = State.photos.filter(p=> !p.isVideo && p.dataUrl);
+  const targets = State.photos.filter(p=> !p.isVideo && p.hasFullImage);
   if(!targets.length){
     toast("Aucune photo à exporter.");
     return;
@@ -12840,7 +13101,9 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     let done = 0, failed = 0;
     for(const p of targets){
       try{
-        await writeFileToLocalDirectory(dirHandle, p.fileName || `photo_${done+1}.jpg`, dataURLtoBlob(p.dataUrl));
+        const full = await getFullDataUrl(p);
+        if(!full) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
+        await writeFileToLocalDirectory(dirHandle, p.fileName || `photo_${done+1}.jpg`, dataURLtoBlob(full));
       }catch(e){
         failed++;
         console.warn(`[Imago] Export impossible pour "${p.fileName}" :`, e);
@@ -13159,15 +13422,24 @@ async function ensurePhotoUploadedToDrive(p, parentFolderId){
   // Filet de sécurité HEIC/HEIF : l'envoi vers Drive nécessite de toute façon
   // une connexion internet, c'est donc le moment idéal pour rattraper une
   // conversion qui aurait échoué à l'import (ex. import fait hors-ligne).
-  if(stillNeedsHeicConversion(p)){
+  let fullDataUrl = await getFullDataUrl(p);
+  if(!fullDataUrl) throw new Error("Image introuvable (ni en mémoire, ni dans IndexedDB).");
+  if(stillNeedsHeicConversion(p.fileName, fullDataUrl)){
     try{
-      p.dataUrl = await convertHeicDataUrlToJpeg(p.dataUrl);
-      await idbPut("photos", p); // conversion acquise définitivement, plus jamais à refaire pour cette photo
+      fullDataUrl = await convertHeicDataUrlToJpeg(fullDataUrl);
+      // Conversion acquise définitivement : réécrite dans IndexedDB (seule
+      // copie durable — voir le chantier "miniatures en mémoire") et dans le
+      // petit cache mémoire, mais SANS jamais la stocker dans p.dataUrl
+      // lui-même, qui doit rester vide pour ne pas revenir à l'ancien
+      // comportement (toutes les images complètes en permanence en RAM).
+      const rec = await idbGet("photos", p.id);
+      if(rec){ rec.dataUrl = fullDataUrl; await idbPut("photos", rec); }
+      cacheFullImage(p.id, fullDataUrl);
     }catch(err){
       throw new Error(`Conversion HEIC → JPEG impossible avant l'envoi sur Drive de "${p.fileName}" (${(err&&err.message)||String(err)}) — vérifiez votre connexion internet puis réessayez.`);
     }
   }
-  const match = (p.dataUrl||"").match(/^data:([^;]+);base64,([\s\S]*)$/);
+  const match = fullDataUrl.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!match) throw new Error("Image introuvable en mémoire.");
   const mime = match[1] || "image/jpeg";
   const base64Data = match[2];
