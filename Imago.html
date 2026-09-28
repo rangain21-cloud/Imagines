@@ -8971,7 +8971,22 @@ function getVideoMeta(dataUrl){
     v.muted = true;
     v.playsInline = true;
     let settled = false;
-    const finish = (result)=>{ if(!settled){ settled = true; resolve(result); } };
+    let safetyTimer = null;
+    const finish = (result)=>{
+      if(settled) return;
+      settled = true;
+      clearTimeout(safetyTimer);
+      // Libère réellement la vidéo hors-écran : sans cela, l'élément restait
+      // en vie (preload="metadata") et, dès que l'appelant révoquait l'URL
+      // objet temporaire (URL.revokeObjectURL, juste après cet appel),
+      // retentait de la recharger → "Failed to load resource:
+      // net::ERR_FILE_NOT_FOUND" en boucle (des centaines de fois sur un
+      // gros import), en plus de retenir de la mémoire pour rien.
+      v.onloadedmetadata = v.onseeked = v.onerror = null;
+      v.removeAttribute("src");
+      try{ v.load(); }catch(e){}
+      resolve(result);
+    };
     v.onloadedmetadata = ()=>{
       // Se positionne un peu après le tout début (plutôt qu'à 0s) pour
       // éviter une vignette souvent noire ou floue (fondu d'ouverture,
@@ -8995,7 +9010,7 @@ function getVideoMeta(dataUrl){
     v.onerror = ()=> finish({width:0, height:0, duration:0, poster:null});
     // Filet de sécurité : fichier corrompu ou format non décodable par ce
     // navigateur — n'attend jamais indéfiniment.
-    setTimeout(()=> finish({width:v.videoWidth||0, height:v.videoHeight||0, duration:v.duration||0, poster:null}), 4000);
+    safetyTimer = setTimeout(()=> finish({width:v.videoWidth||0, height:v.videoHeight||0, duration:v.duration||0, poster:null}), 4000);
     v.src = dataUrl;
   });
 }
@@ -9259,6 +9274,20 @@ async function readFileAsDataURLWithHeicSupport(file, stats){
   try{
     return await convertHeicToJpegDataUrl(file);
   }catch(heicErr){
+    // Repli : le navigateur sait peut-être décoder ce fichier lui-même (faux
+    // positif de détection — ex. un JPEG/PNG/WebP déclaré "image/heic" ou
+    // renommé —, ou navigateur qui lit le HEIC nativement comme Safari).
+    // On le redessine alors en JPEG, sans compter d'échec.
+    try{
+      const bmp = await createImageBitmap(file);
+      const cv = document.createElement("canvas");
+      cv.width = bmp.width; cv.height = bmp.height;
+      cv.getContext("2d").drawImage(bmp, 0, 0);
+      if(bmp.close) bmp.close();
+      const out = cv.toDataURL("image/jpeg", 0.92);
+      cv.width = 0; cv.height = 0;
+      return out;
+    }catch(_nativeErr){ /* pas décodable non plus nativement : on retombe sur l'échec habituel ci-dessous */ }
     console.warn(`Conversion HEIC impossible pour "${file.name}" — image non affichable pour l'instant.`, heicErr);
     if(stats){
       stats.heicFailed = stats.heicFailed || [];
