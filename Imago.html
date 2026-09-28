@@ -1008,7 +1008,7 @@ button{font-family:inherit;}
     <span class="gallery-count" id="galleryCount"></span>
     <div class="gallery-head-actions">
       <span class="gallery-select-count hidden" id="gallerySelectCount"></span>
-      <button class="btn hidden" id="btnGalleryShareSelection" title="Envoyer les images sélectionnées dans Drive" disabled>⇪ Partager</button>
+      <button class="btn hidden" id="btnGalleryShareSelection" title="Partager les images sélectionnées (Drive ou e-mail)" disabled>⇪ Partager</button>
       <button class="btn" id="btnSortOrderGallery" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
       <button class="btn" id="btnSortByFileName" title="Trier les images et vidéos par nom de fichier">🔤 Tri par Nom de fichier</button>
       <button class="btn" id="btnGalleryQuickMode" title="Marquer Favori / Art / Concert / Culture / Partition directement sur les miniatures, sans ouvrir les photos (au survol à la souris ; ce bouton sert surtout sur écran tactile)">⚡ Marquage rapide</button>
@@ -1437,18 +1437,28 @@ button{font-family:inherit;}
 <!-- ============== MODAL: PARTAGER ============== -->
 <div class="modal-overlay" id="modalShare">
   <div class="modal">
-    <div class="modal-head"><h2>Envoyer dans Google Drive</h2><button class="modal-close" data-close="modalShare">×</button></div>
+    <div class="modal-head"><h2>Partager</h2><button class="modal-close" data-close="modalShare">×</button></div>
     <div class="modal-body">
+      <div id="shareModeBox" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="radio" name="shareMode" value="drive" checked> ☁ Téléverser vers Google Drive (dossier « IMAGINES ») et partager</label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="radio" name="shareMode" value="mail"> ✉ Envoyer par e-mail (images en pièces jointes)</label>
+      </div>
       <input class="combo-input" type="text" size="46" role="combobox"
              aria-owns=":1" aria-controls=":1" aria-description="Aucun destinataire sélectionné" autofocus
              placeholder="Saisissez un nom / numéro de tél. / adresse e-mail" id="shareCombo" list="shareEmailList" autocomplete="off">
       <datalist id="shareEmailList"></datalist>
       <div id="shareChips" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;"></div>
       <p class="drive-note hidden" id="shareBatchNote" style="margin-top:10px;"></p>
-      <p class="drive-note" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
+      <div id="shareMailFields" class="hidden" style="margin-top:12px;">
+        <div class="field-row"><label for="shareSubject">Objet</label><input type="text" id="shareSubject" placeholder="Objet du message" autocomplete="off"></div>
+        <div class="field-row"><label for="shareMessage">Message (facultatif)</label><textarea id="shareMessage" rows="3" placeholder="Un petit mot pour accompagner les images…"></textarea></div>
+      </div>
+      <p class="drive-note" id="shareDriveNote" style="margin-top:10px;">L'envoi réel utilise Google Drive (dossier « IMAGINES ») : il faut être connecté (menu ☰), et seules les <b>adresses e-mail complètes</b> déclenchent un partage effectif (un numéro ou un nom seul sera ignoré à l'envoi).</p>
+      <p class="drive-note hidden" id="shareMailNote" style="margin-top:10px;">Un seul e-mail est envoyé, depuis <b>votre compte Gmail</b>, à toutes les adresses saisies (chacune voit les autres destinataires). Les images sont jointes ; si leur poids dépasse ~17 Mo, elles sont réparties en plusieurs e-mails. Au premier envoi, Google demande l'autorisation « Envoyer des e-mails » (l'API Gmail doit être activée dans votre projet Google Cloud). Sans cela, le bouton « Ouvrir ma messagerie » ouvre un brouillon <b>sans</b> pièce jointe.</p>
     </div>
     <div class="modal-foot">
       <button class="btn reset" data-close="modalShare">Annuler</button>
+      <button class="btn hidden" id="btnShareMailto" title="Ouvre un brouillon dans votre application de messagerie (destinataires, objet et message pré-remplis, sans pièce jointe)">Ouvrir ma messagerie</button>
       <button class="btn copper" id="btnConfirmShare">Envoyer</button>
     </div>
   </div>
@@ -10661,17 +10671,48 @@ function openShareModal(photos){
   confirmBtn.disabled = false; // réinitialise le verrou anti double-clic à chaque nouvelle ouverture
   confirmBtn.textContent = "Envoyer";
   const n = photos.length;
-  document.querySelector("#modalShare .modal-head h2").textContent =
-    n>1 ? `Envoyer ${n} images dans Google Drive` : "Envoyer dans Google Drive";
+  document.getElementById("shareSubject").value = n>1 ? `${n} photos` : (photos[0].fileName || "Photo");
+  document.getElementById("shareMessage").value = "";
+  const savedMode = localStorage.getItem("imago_share_mode") === "mail" ? "mail" : "drive";
+  document.querySelector(`input[name="shareMode"][value="${savedMode}"]`).checked = true;
+  updateShareModeUi();
+  openModal("modalShare");
+}
+function getShareMode(){
+  const r = document.querySelector('input[name="shareMode"]:checked');
+  return r && r.value === "mail" ? "mail" : "drive";
+}
+// Adapte titre, notes, champs et boutons de la modale Partager au mode choisi (Drive ou e-mail).
+function updateShareModeUi(){
+  const mail = getShareMode() === "mail";
+  const n = shareTargets.length;
+  document.querySelector("#modalShare .modal-head h2").textContent = mail
+    ? (n>1 ? `Envoyer ${n} images par e-mail` : "Envoyer par e-mail")
+    : (n>1 ? `Envoyer ${n} images dans Google Drive` : "Envoyer dans Google Drive");
   const batchNote = document.getElementById("shareBatchNote");
-  if(n>1){
+  if(!mail && n>1){
     batchNote.textContent = `Les ${n} images seront regroupées dans un dossier Drive dédié (créé dans « IMAGINES ») puis partagées en une seule fois : chaque destinataire ne recevra qu'un seul e-mail Google, pas ${n}.`;
     batchNote.classList.remove("hidden");
   } else {
     batchNote.classList.add("hidden");
   }
-  openModal("modalShare");
+  document.getElementById("shareMailFields").classList.toggle("hidden", !mail);
+  document.getElementById("shareMailNote").classList.toggle("hidden", !mail);
+  document.getElementById("shareDriveNote").classList.toggle("hidden", mail);
+  document.getElementById("btnShareMailto").classList.toggle("hidden", !mail);
+  document.getElementById("shareCombo").placeholder = mail
+    ? "Saisissez une ou plusieurs adresses e-mail (Entrée pour valider chacune)"
+    : "Saisissez un nom / numéro de tél. / adresse e-mail";
+  const btn = document.getElementById("btnConfirmShare");
+  if(!btn.disabled) btn.textContent = mail ? "Envoyer l'e-mail" : "Envoyer";
+  if(mail) loadGisScript().catch(()=>{}); // pré-charge la bibliothèque Google pour que la demande d'autorisation Gmail parte sans délai au clic
 }
+document.querySelectorAll('input[name="shareMode"]').forEach(r=>{
+  r.addEventListener("change", ()=>{
+    try{ localStorage.setItem("imago_share_mode", getShareMode()); }catch(e){}
+    updateShareModeUi();
+  });
+});
 document.getElementById("btnShare").addEventListener("click", ()=>{
   const p = getSelected();
   if(!p) return;
@@ -10721,11 +10762,22 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
     toast("Ajoutez au moins un destinataire (saisissez une adresse e-mail).");
     return;
   }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if(getShareMode() === "mail"){
+    // Mode e-mail : pas besoin d'être connecté à Drive (seulement d'avoir configuré l'identifiant client Google).
+    const mailTo = [...new Set(chips.filter(c=>emailRegex.test(c)).map(e=>e.toLowerCase()))];
+    const mailRejected = chips.filter(c=>!emailRegex.test(c));
+    if(mailTo.length===0){
+      toast("Saisissez au moins une adresse e-mail complète (ex. nom@exemple.com).");
+      return;
+    }
+    await sendShareByMail(targets, mailTo, mailRejected, btn);
+    return;
+  }
   if(!State.drive.token){
     toast("Connectez-vous d'abord à Drive (menu ☰ → Connexion → Connecter à Drive) : le partage envoie réellement l'image, il faut être authentifié.");
     return;
   }
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const emails = [...new Set(chips.filter(c=>emailRegex.test(c)).map(e=>e.toLowerCase()))]; // dédoublonnage (insensible à la casse) des adresses
   const rejected = chips.filter(c=>!emailRegex.test(c));
   if(emails.length===0){
@@ -10810,6 +10862,174 @@ document.getElementById("btnConfirmShare").addEventListener("click", async ()=>{
     SHARE_DONE_QUIPS
   );
   btn.textContent = originalLabel; btn.disabled = false;
+});
+
+/* -----------------------------------------------------------------
+   Partage par e-mail (alternative au téléversement Drive) : envoi via l'API
+   Gmail (scope gmail.send, demandé à part pour ne pas toucher à la connexion
+   Drive) d'UN e-mail par lot, images en pièces jointes.
+   ----------------------------------------------------------------- */
+let gmailToken = null, gmailTokenExpiry = 0;
+function requestGmailToken(){
+  return new Promise((resolve, reject)=>{
+    if(!State.drive.clientId){
+      reject(new Error("Configurez d'abord votre identifiant client OAuth sur CET appareil (menu ☰ → lien sous les boutons Drive)."));
+      return;
+    }
+    loadGisScript().then(()=>{
+      const tc = google.accounts.oauth2.initTokenClient({
+        client_id: State.drive.clientId,
+        scope: "https://www.googleapis.com/auth/gmail.send",
+        callback: (resp)=>{
+          if(resp.error){ reject(new Error("autorisation Gmail refusée (" + resp.error + ")")); return; }
+          gmailToken = resp.access_token;
+          gmailTokenExpiry = Date.now() + ((resp.expires_in||3600) - 60)*1000;
+          resolve(gmailToken);
+        },
+        error_callback: (err)=> reject(new Error("autorisation Gmail interrompue (" + ((err && err.type) || "fenêtre fermée ou bloquée") + ")"))
+      });
+      tc.requestAccessToken();
+    }).catch(reject);
+  });
+}
+async function ensureGmailToken(){
+  if(gmailToken && Date.now() < gmailTokenExpiry) return gmailToken;
+  return requestGmailToken();
+}
+function utf8ToBase64(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for(let i=0;i<bytes.length;i+=0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000));
+  return btoa(bin);
+}
+function mimeHeaderEncode(str){
+  return /^[\x20-\x7e]*$/.test(str) ? str : "=?UTF-8?B?" + utf8ToBase64(str) + "?=";
+}
+function wrapBase64(b64){ return b64.replace(/[^A-Za-z0-9+\/=]/g, "").replace(/.{1,76}/g, "$&\r\n").replace(/\r\n$/, ""); }
+// Pièce jointe d'une photo : même source et même rattrapage HEIC que le téléversement Drive.
+async function getPhotoAttachment(p){
+  let url = await getFullDataUrl(p);
+  if(!url) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
+  if(stillNeedsHeicConversion(p.fileName, url)){
+    url = await convertHeicDataUrlToJpeg(url);
+  }
+  const m = url.match(/^data:([^;]+);base64,([\s\S]*)$/);
+  if(!m) throw new Error("image illisible");
+  const mime = m[1] || "image/jpeg";
+  return {name: driveUploadFileName(p, mime), mime, base64: m[2], bytes: Math.floor(m[2].length*3/4)};
+}
+function buildMimeMessage(emails, subject, message, attachments){
+  const boundary = "imago_mail_" + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const lines = [
+    "To: " + emails.join(", "),
+    "Subject: " + mimeHeaderEncode(subject),
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(utf8ToBase64(message || " "))
+  ];
+  attachments.forEach(a=>{
+    const ascii = a.name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    lines.push(
+      `--${boundary}`,
+      `Content-Type: ${a.mime}; name="${ascii}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(a.name)}`,
+      "",
+      wrapBase64(a.base64)
+    );
+  });
+  lines.push(`--${boundary}--`, "");
+  return lines.join("\r\n");
+}
+async function gmailSend(emails, subject, message, attachments){
+  const mime = buildMimeMessage(emails, subject, message, attachments);
+  for(let attempt=0; attempt<2; attempt++){
+    const token = await ensureGmailToken();
+    const res = await fetch("https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media", {
+      method: "POST",
+      headers: {"Authorization": "Bearer " + token, "Content-Type": "message/rfc822"},
+      body: new Blob([mime], {type:"message/rfc822"})
+    });
+    if(res.ok) return;
+    if(res.status === 401 && attempt === 0){ gmailToken = null; continue; } // jeton expiré : on en redemande un
+    let detail = "";
+    try{ const j = await res.json(); detail = (j && j.error && j.error.message) || ""; }catch(e){}
+    if(res.status === 403) throw new Error("Gmail a refusé l'envoi (403" + (detail ? " : " + detail : "") + ") — vérifiez que l'API Gmail est activée dans votre projet Google Cloud et que l'autorisation « Envoyer des e-mails » a été accordée. Vous pouvez utiliser « Ouvrir ma messagerie » en attendant.");
+    throw new Error("Gmail : erreur " + res.status + (detail ? " — " + detail : ""));
+  }
+}
+async function sendShareByMail(targets, emails, rejected, btn){
+  if(btn.disabled) return;
+  const originalLabel = btn.textContent;
+  btn.disabled = true; // verrou anti double-envoi, posé avant tout "await"
+  const failures = [];
+  const subjectBase = document.getElementById("shareSubject").value.trim() || (targets.length>1 ? `${targets.length} photos` : (targets[0].fileName || "Photo"));
+  const message = document.getElementById("shareMessage").value.trim();
+  let sentCount = 0;
+  try{
+    btn.textContent = "Autorisation Gmail…";
+    await ensureGmailToken(); // 1re étape : la fenêtre d'autorisation Google doit partir du clic de l'utilisateur
+    const MAX_BATCH_BYTES = 17*1024*1024; // limite Gmail ≈ 25 Mo APRÈS encodage base64 (+ ~37 %)
+    const batches = [];
+    let batch = [], batchBytes = 0;
+    for(let i=0;i<targets.length;i++){
+      const p = targets[i];
+      btn.textContent = `Préparation… (${i+1}/${targets.length})`;
+      let att;
+      try{ att = await getPhotoAttachment(p); }
+      catch(err){ console.error("Pièce jointe impossible pour " + (p.fileName||p.id) + " :", err); failures.push(p.fileName || p.id); continue; }
+      if(att.bytes > MAX_BATCH_BYTES){ failures.push((p.fileName || p.id) + " (trop volumineux pour un e-mail)"); continue; }
+      if(batch.length && batchBytes + att.bytes > MAX_BATCH_BYTES){ batches.push(batch); batch = []; batchBytes = 0; }
+      batch.push(att); batchBytes += att.bytes;
+    }
+    if(batch.length) batches.push(batch);
+    if(batches.length === 0) throw new Error("aucune image n'a pu être préparée en pièce jointe.");
+    for(let b=0;b<batches.length;b++){
+      btn.textContent = batches.length>1 ? `Envoi e-mail ${b+1}/${batches.length}…` : "Envoi de l'e-mail…";
+      const subject = batches.length>1 ? `${subjectBase} (${b+1}/${batches.length})` : subjectBase;
+      await gmailSend(emails, subject, message, batches[b]);
+      sentCount += batches[b].length;
+    }
+  }catch(err){
+    console.error("Échec de l'envoi par e-mail :", err);
+    toast("Échec de l'envoi par e-mail : " + err.message);
+    btn.textContent = originalLabel; btn.disabled = false;
+    return;
+  }
+  rememberShareEmails(emails);
+  if(document.getElementById("galleryScreen").classList.contains("select-mode")){
+    setGallerySelectMode(false);
+  }
+  closeModal("modalShare");
+  const plural = sentCount>1 ? "s" : "";
+  celebrate(
+    sentCount>0,
+    `${sentCount} image${plural} envoyée${plural} par e-mail à ${emails.join(", ")}.` +
+    (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "") +
+    (failures.length ? ` Non jointes : ${failures.join(", ")}.` : ""),
+    undefined,
+    SHARE_DONE_QUIPS
+  );
+  btn.textContent = originalLabel; btn.disabled = false;
+}
+// Repli sans API : brouillon dans l'application de messagerie (aucune pièce jointe possible avec mailto:).
+document.getElementById("btnShareMailto").addEventListener("click", ()=>{
+  const comboEl = document.getElementById("shareCombo");
+  if(comboEl.value.trim()){ addShareChip(comboEl.value, "shareChips"); comboEl.value = ""; }
+  const chips = [...document.getElementById("shareChips").children].map(c=>c.textContent.trim());
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const to = [...new Set(chips.filter(c=>emailRegex.test(c)))];
+  const subject = document.getElementById("shareSubject").value.trim();
+  let body = document.getElementById("shareMessage").value.trim();
+  if(shareTargets.length){
+    body += (body ? "\n\n" : "") + "(Images à joindre : " + shareTargets.map(p=>p.fileName||p.id).join(", ") + ")";
+  }
+  window.location.href = "mailto:" + to.map(encodeURIComponent).join(",") + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
 });
 
 /* -----------------------------------------------------------------
@@ -12379,7 +12599,8 @@ function openDiaporama(id){
    garderait ses bandes). On compare sa taille actuellement affichée (déjà
    ajustée selon le niveau Ajusté/Équilibré/Plein écran) à la taille qu'il
    lui faudrait en mode "Plein écran" (object-fit:cover) pour ce cadre. */
-const SLIDESHOW_EXIT_FOCUS_UP = 0.25; // point fixe du zoom de sortie : 25 % de la hauteur affichée de la photo AU-DESSUS de son centre (0 = centre exact, 0.5 = bord haut)
+const SLIDESHOW_EXIT_FOCUS_UP = 0.4; // point fixe du zoom de sortie : 40 % de la hauteur affichée de la photo AU-DESSUS de son centre (0 = centre exact, 0.5 = bord haut)
+const SLIDESHOW_EXIT_MIN_SCALE = 1.25, SLIDESHOW_EXIT_MAX_SCALE = 1.7; // amplitude du zoom de sortie (plus élevé = mouvement vers le haut plus visible)
 function computeExitZoom(img){
   const stageW = slideshowStageEl.clientWidth, stageH = slideshowStageEl.clientHeight;
   const ew = parseFloat(img.style.width), eh = parseFloat(img.style.height);
@@ -12394,7 +12615,7 @@ function computeExitZoom(img){
   // — c'est lui qui limite l'agrandissement nécessaire pour ne laisser aucune bande noire en haut.
   const bandY = (stageH - Hs) / 2;
   if(bandY > 0) needed = Math.max(needed, 1 + bandY / ((0.5 - k) * Hs));
-  const scale = Math.max(1.08, Math.min(1.6, needed)); // borné : toujours un peu de mouvement, jamais un saut brutal
+  const scale = Math.max(SLIDESHOW_EXIT_MIN_SCALE, Math.min(SLIDESHOW_EXIT_MAX_SCALE, needed)); // borné : toujours un mouvement bien visible, jamais un saut brutal
   return {scale, shiftY: (scale - 1) * k * Hs};
 }
 async function showSlideshowFrame(instant){
