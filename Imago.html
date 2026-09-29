@@ -1814,6 +1814,7 @@ button{font-family:inherit;}
         <input type="number" id="ssFondu" min="0.5" max="15" step="0.5" style="width:100%;">
       </div>
       <p class="drive-note" id="ssTotalInfo" style="margin-top:6px;"></p>
+      <p class="drive-note" id="ssFilterInfo" style="margin-top:6px;"></p>
     </div>
     <div class="modal-foot" style="flex-wrap:wrap;">
       <button class="btn reset" id="btnSlideshowSettingsDefault">Valeurs par défaut (3s + 4s)</button>
@@ -12999,8 +13000,32 @@ document.getElementById("actSlideshow").addEventListener("click", ()=>{
   document.getElementById("ssPlateau").value = plateau;
   document.getElementById("ssFondu").value = fondu;
   updateSsTotalInfo();
+  updateSsFilterInfo();
   openModal("modalSlideshowSettings");
 });
+/* Rappelle, dans la modale des réglages, QUELLES photos seront lues / exportées :
+   uniquement celles qui respectent les filtres du panneau Recherches (Auteur,
+   Personnage, Lieu, Favori, Type, Mot clé) — les vidéos sont exclues du
+   diaporama et de l'export. Permet de vérifier d'un coup d'œil, avant
+   d'exporter, que les filtres voulus sont bien actifs. */
+function describeActiveFilters(){
+  const f = State.filters, parts = [];
+  if(f.auteur) parts.push(`Auteur = ${f.auteur}`);
+  if(f.personnage) parts.push(`Personnage = ${f.personnage}`);
+  if(f.lieu) parts.push(`Lieu = ${f.lieu}`);
+  if(f.favori === "oui") parts.push("Favori = Oui");
+  if(f.favori === "non") parts.push("Favori = Non");
+  if(f.type) parts.push(`Type = ${f.type}`);
+  if(f.titre) parts.push(`Mot clé « ${f.titre} »`);
+  return parts;
+}
+function updateSsFilterInfo(){
+  const n = activePhotos().filter(p=> !p.isVideo).length;
+  const parts = describeActiveFilters();
+  document.getElementById("ssFilterInfo").textContent = parts.length
+    ? `${n} photo(s) concernée(s) par les filtres de « Recherches » : ${parts.join(" ; ")}.`
+    : `${n} photo(s) concernée(s) — aucun filtre actif dans « Recherches » (toutes les photos).`;
+}
 function updateSsTotalInfo(){
   const plateau = parseFloat(document.getElementById("ssPlateau").value) || 0;
   const fondu = parseFloat(document.getElementById("ssFondu").value) || 0;
@@ -13062,8 +13087,11 @@ function vobExportSetProgress(fracDone, statusText){
   document.getElementById("vobExportStatus").textContent = statusText;
 }
 async function exportDiaporamaAsVob(plateau, fondu){
+  // Uniquement les photos qui respectent les filtres actifs du panneau « Recherches »
+  // (activePhotos applique Auteur / Personnage / Lieu / Favori / Type / Mot clé), sans les vidéos.
   const list = activePhotos().filter(p=> !p.isVideo);
-  if(!list.length){ toast("Aucune photo à exporter en vidéo."); return; }
+  const filterParts = describeActiveFilters();
+  if(!list.length){ toast(filterParts.length ? "Aucune photo ne correspond aux filtres actifs (" + filterParts.join(" ; ") + ") : rien à exporter." : "Aucune photo à exporter en vidéo."); return; }
   if(typeof MediaRecorder === "undefined" || !HTMLCanvasElement.prototype.captureStream){
     toast("Votre navigateur ne permet pas d'exporter une vidéo (API MediaRecorder/captureStream indisponible).");
     return;
@@ -13071,7 +13099,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
   vobExportCancelled = false;
   const overlay = document.getElementById("vobExportOverlay");
   overlay.classList.remove("hidden");
-  vobExportSetProgress(0, "Préparation…");
+  vobExportSetProgress(0, `Préparation… ${list.length} photo(s)` + (filterParts.length ? ` (${filterParts.join(" ; ")})` : ""));
 
   // Charge l'image complète d'UNE SEULE photo à la fois, à la demande
   // (IndexedDB — voir getFullDataUrl), plutôt que de précharger tout le
@@ -13212,7 +13240,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
   a.href = url; a.download = "diaporama.vob";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=> URL.revokeObjectURL(url), 30000);
-  toast(`Vidéo exportée : ${list.length} photo(s), ${Math.round(totalSeconds)}s — fichier "diaporama.vob" téléchargé (lisible avec VLC).`);
+  toast(`Vidéo exportée : ${list.length} photo(s)` + (filterParts.length ? ` filtrée(s) (${filterParts.join(" ; ")})` : "") + `, ${Math.round(totalSeconds)}s — fichier "diaporama.vob" téléchargé (lisible avec VLC).`);
 }
 document.getElementById("btnVobExportCancel").addEventListener("click", ()=>{ vobExportCancelled = true; });
 document.getElementById("btnSlideshowExportVob").addEventListener("click", ()=>{
