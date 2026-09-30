@@ -4557,7 +4557,8 @@ const State = {
   photos: [],        // {id, fileName, dataUrl, dateAchat, personnage, lieu, support, etiquette, auteur, favori, art, corbeille, rotation, albums:[]}
   albums: [],         // {id, name}
   auteurs: [],         // {id, name, note}
-  filters: {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""},
+  filters: loadSavedFilters(), // filtres du panneau Recherches mémorisés d'une session à l'autre (voir saveFilters)
+  userNavigated: false, // true dès que l'utilisateur choisit/parcourt une image : on ne le repositionne alors plus automatiquement
   sortOrder: localStorage.getItem("imago_sort_order") || "antichrono", // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien) — "antichrono" par défaut pour rester cohérent avec le tri historique de l'écran d'accueil (planche-contact triée du plus récent au plus ancien)
   sortByFileName: localStorage.getItem("imago_sort_by_filename") === "1", // true : le visualiseur principal ("Main 90%") trie images/vidéos par ordre alphabétique du nom de fichier plutôt que par date (bouton "🔤 Tri par Nom de fichier")
   selectedId: null,
@@ -5377,6 +5378,7 @@ document.getElementById("galleryGrid").addEventListener("click", (e)=>{
   if(State.galleryQuickMode){ attachQuickBar(tile); return; } // "Marquage rapide" : toucher une vignette y place la barre au lieu d'ouvrir la photo
   State.selectedId = p.id;
   State.viewIndex = 0; // recalculé dans renderGrid() selon la liste filtrée active
+  State.userNavigated = true;
   closeGallery();
   renderGrid();
 });
@@ -5542,9 +5544,46 @@ function populateInfoModalDatalists(){
   const lieuDl = document.getElementById("lieuList");
   if(lieuDl) lieuDl.innerHTML = uniqueValues("lieu").map(t=>`<option value="${escapeHtml(t)}">`).join("");
 }
+/* Mémorisation des filtres du panneau Recherches (Auteur, Personnage, Lieu,
+   Favori, Type, Mot clé) : au rechargement d'un catalogue on retrouve les
+   mêmes critères, et le visualiseur se place sur le PREMIER fichier qui les
+   respecte (puis ‹ › passe au suivant de la liste filtrée) au lieu de repartir
+   de la toute première image du catalogue. */
+const FILTERS_KEY = "imago_filters";
+function loadSavedFilters(){
+  const empty = {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""};
+  try{
+    const o = JSON.parse(localStorage.getItem(FILTERS_KEY) || "null");
+    if(o && typeof o === "object"){
+      for(const k of Object.keys(empty)) if(typeof o[k] === "string") empty[k] = o[k];
+    }
+  }catch(e){}
+  return empty;
+}
+function saveFilters(){
+  try{ localStorage.setItem(FILTERS_KEY, JSON.stringify(State.filters)); }catch(e){}
+}
+// Reflète State.filters dans les contrôles (Favori et Mot clé n'ont pas de
+// liste dépendant des photos ; les 4 autres sont réglés par fillSelect).
+function syncFilterControls(){
+  document.getElementById("fFavori").value = State.filters.favori || "";
+  document.getElementById("fEtiquette").value = State.filters.titre || "";
+}
+// Repositionne le visualiseur sur le 1er fichier respectant les filtres (tri
+// actuel), sauf si l'utilisateur a déjà choisi une image entre-temps.
+function goToFirstMatchUnlessNavigated(){
+  if(State.userNavigated) return;
+  State.selectedId = null;
+  State.viewIndex = 0;
+  renderGrid();
+}
 function fillSelect(id, values, current){
   const sel = document.getElementById(id);
-  sel.innerHTML = `<option value="">— Tous —</option>` + values.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+  // Valeur de filtre mémorisée pas (encore) présente dans la liste — cas d'un
+  // catalogue en cours de chargement : on la garde visible pour que le
+  // contrôle reste cohérent avec le filtre réellement appliqué.
+  const all = (current && !values.includes(current)) ? [...values, current] : values;
+  sel.innerHTML = `<option value="">— Tous —</option>` + all.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
   sel.value = current || "";
 }
 function populateAuteurDatalist(){
@@ -5552,12 +5591,12 @@ function populateAuteurDatalist(){
   dl.innerHTML = State.auteurs.map(a=>`<option value="${escapeHtml(a.name)}">`).join("");
 }
 
-document.getElementById("fAuteur").addEventListener("change", e=>{State.filters.auteur=e.target.value; renderGrid();});
-document.getElementById("fPersonnage").addEventListener("change", e=>{State.filters.personnage=e.target.value; renderGrid();});
-document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; renderGrid();});
-document.getElementById("fFavori").addEventListener("change", e=>{State.filters.favori=e.target.value; renderGrid();});
-document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; renderGrid();});
-document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.titre=e.target.value; renderGrid();});
+document.getElementById("fAuteur").addEventListener("change", e=>{State.filters.auteur=e.target.value; saveFilters(); renderGrid();});
+document.getElementById("fPersonnage").addEventListener("change", e=>{State.filters.personnage=e.target.value; saveFilters(); renderGrid();});
+document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; saveFilters(); renderGrid();});
+document.getElementById("fFavori").addEventListener("change", e=>{State.filters.favori=e.target.value; saveFilters(); renderGrid();});
+document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; saveFilters(); renderGrid();});
+document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.titre=e.target.value; saveFilters(); renderGrid();});
 /* Bouton "Tri chronologique" / "Tri anti-chronologique" — présent à deux
    endroits (écran d'accueil "l'heuristique" et visualiseur principal
    "Main 90%"), synchronisés puisqu'ils pilotent le même State.sortOrder,
@@ -5616,6 +5655,7 @@ function resetFilters(){
 }
 document.getElementById("btnResetFilters").addEventListener("click", ()=>{
   resetFilters();
+  saveFilters(); // « Réinitialiser » explicite : on oublie aussi les filtres mémorisés
   renderGrid();
 });
 
@@ -8363,6 +8403,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
       else setTimeout(step, 0);
     } else {
       importTotalCount = 0; importDoneCount = 0; updateGalleryCounter(); // import terminé : le compteur revient à l'affichage simple du total
+      goToFirstMatchUnlessNavigated(); // toutes les photos sont là : le vrai 1er fichier du filtre peut être arrivé après le lot prioritaire
       const recovered = await retryFailedFilesOnce(stats, csvRowByFileName);
       if(recovered){ populateFilterOptions(); renderGallery(); }
       const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
@@ -8486,6 +8527,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   importTotalCount = files.length;
   importDoneCount = 0;
   importCheckpointNext = IMPORT_CHECKPOINT_EVERY;
+  State.userNavigated = false; // nouveau chargement : le visualiseur visera le 1er fichier respectant les filtres
   updateGalleryCounter();
 
   // ---- 1) Catalogue existant : choisi parmi les .csv déjà présents dans
@@ -8647,7 +8689,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // dossier (s'il y en a) continue de se charger en arrière-plan sans que
   // l'utilisateur ait à attendre.
   populateFilterOptions();
-  renderGrid();
+  goToFirstMatchUnlessNavigated(); // 1er fichier respectant les filtres mémorisés (renderGrid inclus)
   openGallery();
   reportImportProgress(folderName, catalogCandidates, stats, restFiles.length>0);
   if(restFiles.length===0){
@@ -10496,6 +10538,7 @@ function goToImage(step){
   if(list.length===0) return;
   State.viewIndex = ((State.viewIndex||0) + step + list.length) % list.length;
   State.selectedId = list[State.viewIndex].id;
+  State.userNavigated = true;
   State.view.scale = 1;
   renderGrid();
   viewerScroll.scrollTo(0,0);
@@ -14341,6 +14384,7 @@ pushExitGuard();
 /* ---------------------------------------------------------------
    18. Démarrage
    --------------------------------------------------------------- */
+syncFilterControls();
 loadAll();
 </script>
 </body>
