@@ -5259,7 +5259,7 @@ function buildGalleryTile(p){
   }
   const dateEl = document.createElement("div");
   dateEl.className = "gallery-date";
-  dateEl.textContent = p.dateAchat ? fmtDateFr(p.dateAchat) : (p.fileName||"");
+  dateEl.textContent = thumbDateLabel(p);
   tile.appendChild(dateEl);
   return tile;
 }
@@ -12081,6 +12081,18 @@ function fmtDateShort(iso){
   if(!m) return iso;
   const [, yyyy, mm, dd] = m;
   return `${dd}-${mm}-${yyyy.slice(2)}`;
+}
+/* Date affichée sur les miniatures : jour de prise de vue EXIF (« Date cliché »,
+   DateTimeOriginal) SANS hh:mm:ss ; à défaut d'EXIF, jour de dateAchat (sans heure). */
+function exifShotDay(p){
+  const s = p && p.exif && p.exif.dateTimeOriginal;
+  const m = s && String(s).match(/^(\d{4}):(\d{2}):(\d{2})/);
+  if(!m || m[1]==="0000") return "";
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
+function thumbDateLabel(p){
+  const day = exifShotDay(p) || (p.dateAchat ? p.dateAchat.slice(0,10) : "");
+  return day ? fmtDateFr(day) : (p.fileName||"");
 }
 function fmtDateFr(iso){
   if(!iso) return "Date inconnue";
