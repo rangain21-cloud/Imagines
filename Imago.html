@@ -868,13 +868,13 @@ button{font-family:inherit;}
 }
 .slideshow-fullscreen-toggle:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
 .slideshow-fullscreen-toggle.active{border-color:var(--copper); background:rgba(199,125,59,.35); color:var(--copper-hi);}
-.slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#cfcfcf; font-size:12px; letter-spacing:.04em; z-index:5; transition:opacity .6s ease;}
+.slideshow-hint{position:absolute; bottom:14px; left:0; right:0; text-align:center; color:#b47bff; font-family:'Calibri','Carlito','Candara','Segoe UI',sans-serif; font-size:10pt; letter-spacing:.04em; z-index:5; transition:opacity .6s ease;}
 /* Date (bas-gauche) et lieu (bas-droite) incrustés sur chaque photo du
    diaporama, mis à jour en même temps que le fondu enchaîné (voir
    showSlideshowFrame). */
 .slide-caption{
   position:absolute; bottom:16px; z-index:4; max-width:44%;
-  font-family:'Calibri','Candara','Segoe UI',sans-serif; font-size:10pt; color:#f4efe6;
+  font-family:'Calibri','Carlito','Candara','Segoe UI',sans-serif; font-size:10pt; color:#b47bff; /* Calibri 10 pt, violet clair (lisible sur fond noir) */
   text-shadow:0 1px 3px rgba(0,0,0,.9), 0 0 8px rgba(0,0,0,.55);
   pointer-events:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   transition:opacity .5s ease;
@@ -12705,7 +12705,7 @@ async function showSlideshowFrame(instant){
       }, (getSlideshowTiming().plateau + getSlideshowTiming().fondu)*1000 + 300);
     }
     activeSlideKey = (incoming===slideshowImgA) ? "A" : "B";
-    updateSlideCaptions(p);
+    updateSlideCaptions(p, instant, myToken);
     scheduleNextAutoAdvance(); // planifie la prochaine avance auto SEULEMENT maintenant que cette photo est réellement affichée (voir plus bas) — jamais à durée fixe déconnectée du décodage réel
   };
   incoming.onerror = ()=>{
@@ -12750,7 +12750,7 @@ function armSlideshowHint(){
   slideshowHintTimer = setTimeout(()=>{
     slideshowHintExpired = true;
     slideshowHintEl.style.opacity = 0;
-    slideCaptionTitreEl.style.opacity = 1; // révèle le titre déjà posé en arrière-plan par updateSlideCaptions
+    slideCaptionTitreEl.style.opacity = slideCaptionsOn ? 1 : 0; // révèle le titre déjà posé en arrière-plan, mais seulement si les légendes de la photo sont déjà à l'écran (sinon setSlideCaptionsVisible s'en chargera)
   }, 10000);
 }
 /* Date (bas-gauche), lieu (bas-droite) et titre (bas-centre, une fois le
@@ -12759,18 +12759,49 @@ function armSlideshowHint(){
    nouvelle image (appelé depuis l'onload de showSlideshowFrame). Un léger
    fondu d'opacité (voir CSS .slide-caption) adoucit le changement de texte
    au lieu d'un remplacement brutal. */
-function updateSlideCaptions(p){
-  slideCaptionDateEl.style.opacity = 0;
-  slideCaptionLieuEl.style.opacity = 0;
-  if(slideshowHintExpired) slideCaptionTitreEl.style.opacity = 0;
-  requestAnimationFrame(()=>{
+/* Les légendes (date, lieu, titre) suivent désormais l'IMAGE À L'ÉCRAN et non
+   plus l'image qui vient d'être chargée en arrière-plan :
+   - à l'arrivée d'une photo (onload), la photo précédente est encore
+     affichée pendant tout le « plateau » : on garde SA légende jusqu'au début
+     du fondu croisé, puis on l'efface ;
+   - la légende de la nouvelle photo n'apparaît qu'à la FIN du fondu croisé,
+     quand la photo est entièrement visible (50 ms avant la fin, pour passer
+     toujours avant l'avance automatique suivante) ;
+   - 1ère photo (ouverture, apparition en .5 s) : légende juste après.
+   Le fondu d'opacité de .5 s est fait par le CSS (.slide-caption). */
+let slideCaptionsOn = false;   // true tant que les légendes de la photo à l'écran sont affichées
+let slideCaptionTimers = [];
+function clearSlideCaptionTimers(){
+  slideCaptionTimers.forEach(clearTimeout);
+  slideCaptionTimers = [];
+}
+function setSlideCaptionsVisible(on, p){
+  slideCaptionsOn = !!on;
+  if(on && p){
     slideCaptionDateEl.textContent = p.fileName || "";
     slideCaptionLieuEl.textContent = p.lieu || "";
-    slideCaptionTitreEl.textContent = p.titre || ""; // posé même hint encore visible (opacité 0 tant qu'armSlideshowHint ne l'a pas révélé)
-    slideCaptionDateEl.style.opacity = 1;
-    slideCaptionLieuEl.style.opacity = 1;
-    if(slideshowHintExpired) slideCaptionTitreEl.style.opacity = 1;
-  });
+    slideCaptionTitreEl.textContent = p.titre || "";
+  }
+  slideCaptionDateEl.style.opacity = on ? 1 : 0;
+  slideCaptionLieuEl.style.opacity = on ? 1 : 0;
+  slideCaptionTitreEl.style.opacity = (on && slideshowHintExpired) ? 1 : 0; // le titre ne remplace l'aide clavier qu'après ses 10 s
+}
+function updateSlideCaptions(p, instant, myToken){
+  clearSlideCaptionTimers();
+  if(instant){
+    setSlideCaptionsVisible(false);
+    slideCaptionTimers.push(setTimeout(()=>{
+      if(myToken === slideshowFrameToken) setSlideCaptionsVisible(true, p);
+    }, 500));
+    return;
+  }
+  const {plateau, fondu} = getSlideshowTiming();
+  const tHide = plateau * 1000;                                   // début du fondu croisé : la légende sortante s'efface
+  const tShow = Math.max(tHide + 1, (plateau + fondu) * 1000 - 50); // fin du fondu croisé : la légende entrante apparaît
+  slideCaptionTimers.push(setTimeout(()=> setSlideCaptionsVisible(false), tHide));
+  slideCaptionTimers.push(setTimeout(()=>{
+    if(myToken === slideshowFrameToken) setSlideCaptionsVisible(true, p);
+  }, tShow));
 }
 /* Remplace l'ancien setInterval à durée fixe : re-planifie l'avance
    automatique à chaque fois qu'une photo vient d'être réellement affichée
@@ -12799,6 +12830,8 @@ function closeSlideshow(){
   exitSlideshowFullscreen();
   clearTimeout(slideshowHintTimer);
   slideshowFrameToken++; // invalide tout onload encore en attente pour l'image en cours de chargement
+  clearSlideCaptionTimers();
+  setSlideCaptionsVisible(false);
   clearTimeout(State.slideshowTimer);
   State.slideshowTimer = null;
   slideshowImgA.classList.remove("active", "exiting");
@@ -13209,7 +13242,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.font = `${CAPTION_PX}px Calibri, Candara, "Segoe UI", sans-serif`;
-    ctx.fillStyle = "#f4efe6";
+    ctx.fillStyle = "#b47bff"; // même violet que le diaporama à l'écran
     ctx.textBaseline = "alphabetic";
     ctx.shadowColor = "rgba(0,0,0,.9)"; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
     const left = fitText(p.fileName || "", W*0.44);
