@@ -1840,7 +1840,7 @@ button{font-family:inherit;}
 <div class="vob-export-overlay hidden" id="vobExportOverlay">
   <div class="vob-export-box">
     <h3>Export vidéo en cours…</h3>
-    <p>Le diaporama est rejoué en accéléré à l'écran pour être enregistré. Merci de garder cet onglet au premier plan jusqu'à la fin.</p>
+    <p id="vobExportNote">Le diaporama est rejoué en accéléré à l'écran pour être enregistré. Merci de garder cet onglet au premier plan jusqu'à la fin.</p>
     <div class="vob-export-track"><div class="vob-export-bar" id="vobExportBar"></div></div>
     <div class="vob-export-status" id="vobExportStatus">Préparation…</div>
     <button class="btn reset" id="btnVobExportCancel">Annuler</button>
@@ -13174,7 +13174,235 @@ function vobExportSetProgress(fracDone, statusText){
   document.getElementById("vobExportBar").style.width = Math.round(fracDone*100)+"%";
   document.getElementById("vobExportStatus").textContent = statusText;
 }
+/* ---------- Export vidéo RAPIDE (WebCodecs) ----------------------------------
+   Au lieu d'enregistrer le diaporama « en direct » (ce qui dure aussi longtemps
+   que le diaporama lui-même et exige un onglet au premier plan), chaque image
+   est dessinée puis envoyée à l'encodeur vidéo du navigateur (VideoEncoder), qui
+   travaille aussi vite que le processeur le permet : plus aucune attente de
+   plateau/fondu, et aucune dépendance aux minuteurs ou à requestAnimationFrame
+   (ralentis en arrière-plan).
+   - Pendant un plateau, l'image est fixe : 1 image par seconde suffit (le lecteur
+     tient l'image jusqu'à la suivante) ; pendant un fondu : VOB_FADE_FPS images/s.
+   - Le fichier est assemblé par un muxeur WebM minimal (WebmMuxer ci-dessous).
+   - Si le navigateur n'a pas WebCodecs, on retombe sur l'ancien export en temps
+     réel (exportDiaporamaAsVobRealtime). */
+const VOB_W = 720, VOB_H = 576, VOB_FPS = 25; // DVD-Vidéo PAL (France)
+const VOB_FADE_FPS = 12; // images/s pendant un fondu : un fondu lent (plusieurs secondes) ne gagne rien à 25 i/s, et c'est le nombre d'images à encoder qui fait la durée de l'export
+function vobDrawCaptions(ctx, W, H, p, alpha){
+  if(!p || alpha <= 0) return;
+  const CAPTION_PX = 15;
+  const fitText = (text, maxW)=>{
+    if(!text || ctx.measureText(text).width <= maxW) return text || "";
+    let t = text;
+    while(t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+    return t + "…";
+  };
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = `${CAPTION_PX}px Calibri, Carlito, Candara, "Segoe UI", sans-serif`;
+  ctx.fillStyle = "#b47bff"; // même violet que le diaporama à l'écran
+  ctx.textBaseline = "alphabetic";
+  ctx.shadowColor = "rgba(0,0,0,.9)"; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
+  const left = fitText(p.fileName || "", W*0.44);
+  const right = fitText(p.lieu || "", W*0.44);
+  ctx.textAlign = "left";  if(left)  ctx.fillText(left, 18, H-16);
+  ctx.textAlign = "right"; if(right) ctx.fillText(right, W-18, H-16);
+  // le titre (centré) prend la place restante pour ne jamais chevaucher le nom de fichier ni le lieu
+  const sideMax = Math.max(left ? ctx.measureText(left).width : 0, right ? ctx.measureText(right).width : 0);
+  const centerMax = Math.max(W*0.2, Math.min(W*0.6, W - 2*(sideMax + 18) - 24));
+  const titre = fitText(p.titre || "", centerMax);
+  ctx.textAlign = "center"; if(titre) ctx.fillText(titre, W/2, H-14);
+  ctx.restore();
+}
+/* Muxeur WebM (Matroska) minimal : 1 piste vidéo, SeekHead + Info + Tracks +
+   Clusters + Cues (pour pouvoir avancer/reculer dans VLC). Tailles d'éléments
+   toujours codées sur 8 octets (valide, et simplifie le calcul des positions). */
+class WebmMuxer{
+  constructor(w, h, codecId){ this.w = w; this.h = h; this.codecId = codecId; this.clusters = []; this.cur = null; }
+  static id(hex){ const a = new Uint8Array(hex.length/2); for(let i=0;i<a.length;i++) a[i] = parseInt(hex.substr(i*2,2),16); return a; }
+  static uint(n, min){ const o = []; do{ o.unshift(n % 256); n = Math.floor(n/256); }while(n > 0); while(o.length < (min||1)) o.unshift(0); return Uint8Array.from(o); }
+  static size(n){ const b = new Uint8Array(8); b[0] = 1; for(let i=7;i>=1;i--){ b[i] = n % 256; n = Math.floor(n/256); } return b; }
+  static leaf(idHex, bytes){ return {parts:[WebmMuxer.id(idHex), WebmMuxer.size(bytes.length), bytes], size: idHex.length/2 + 8 + bytes.length}; }
+  static master(idHex, kids){
+    let sz = 0; const parts = [WebmMuxer.id(idHex), null];
+    for(const k of kids){ sz += k.size; for(const x of k.parts) parts.push(x); }
+    parts[1] = WebmMuxer.size(sz);
+    return {parts, size: idHex.length/2 + 8 + sz};
+  }
+  static str(s){ return new TextEncoder().encode(s); }
+  static f64(x){ const b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, x); return b; }
+  addChunk(chunk){
+    const ms = Math.max(0, Math.round(chunk.timestamp/1000));
+    const key = chunk.type === "key";
+    if(!this.cur || key || ms - this.cur.ts > 30000){ this._closeCluster(); this.cur = {ts:ms, key, blocks:[]}; } // le temps relatif d'un bloc tient sur 16 bits signés
+    const data = new Uint8Array(4 + chunk.byteLength);
+    const rel = ms - this.cur.ts;
+    data[0] = 0x81; data[1] = (rel >> 8) & 255; data[2] = rel & 255; data[3] = key ? 0x80 : 0;
+    chunk.copyTo(data.subarray(4));
+    this.cur.blocks.push(WebmMuxer.leaf("A3", data));
+  }
+  _closeCluster(){
+    if(!this.cur) return;
+    const L = WebmMuxer.leaf, U = WebmMuxer.uint;
+    this.clusters.push({ts:this.cur.ts, key:this.cur.key, el: WebmMuxer.master("1F43B675", [L("E7", U(this.cur.ts,4)), ...this.cur.blocks])});
+    this.cur = null;
+  }
+  finish(durationMs){
+    this._closeCluster();
+    const M = WebmMuxer.master, L = WebmMuxer.leaf, U = WebmMuxer.uint, S = WebmMuxer.str;
+    const header = M("1A45DFA3", [L("4286",U(1)), L("42F7",U(1)), L("42F2",U(4)), L("42F3",U(8)), L("4282",S("webm")), L("4287",U(4)), L("4285",U(2))]);
+    const info = M("1549A966", [L("2AD7B1",U(1000000,4)), L("4489",WebmMuxer.f64(durationMs)), L("4D80",S("Imago")), L("5741",S("Imago"))]);
+    const tracks = M("1654AE6B", [M("AE", [L("D7",U(1)), L("73C5",U(1)), L("83",U(1)), L("9C",U(0)), L("86",S(this.codecId)), M("E0", [L("B0",U(this.w,2)), L("BA",U(this.h,2))])])]);
+    const seekEntry = (idHex, pos)=> M("4DBB", [L("53AB", WebmMuxer.id(idHex)), L("53AC", U(pos,4))]);
+    const mkSeek = (pi, pt, pc)=> M("114D9B74", [seekEntry("1549A966",pi), seekEntry("1654AE6B",pt), seekEntry("1C53BB6B",pc)]);
+    let pos = mkSeek(0,0,0).size;                 // positions relatives au début des données du Segment
+    const infoPos = pos; pos += info.size;
+    const tracksPos = pos; pos += tracks.size;
+    const cuePts = [];
+    for(const c of this.clusters){
+      if(c.key) cuePts.push(M("BB", [L("B3",U(c.ts,4)), M("B7", [L("F7",U(1)), L("F1",U(pos,4))])]));
+      pos += c.el.size;
+    }
+    const cues = M("1C53BB6B", cuePts);
+    const seek = mkSeek(infoPos, tracksPos, pos);
+    const segSize = seek.size + info.size + tracks.size + (pos - infoPos - info.size - tracks.size) + cues.size;
+    const out = [...header.parts, WebmMuxer.id("18538067"), WebmMuxer.size(segSize)];
+    const add = (el)=>{ for(const x of el.parts) out.push(x); };
+    add(seek); add(info); add(tracks);
+    for(const c of this.clusters) add(c.el);
+    add(cues);
+    return new Blob(out, {type:"video/webm"});
+  }
+}
+async function vobPickEncoderConfig(){
+  if(typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") return null;
+  for(const c of [{codec:"vp09.00.10.08", id:"V_VP9"}, {codec:"vp8", id:"V_VP8"}]){
+    const conf = {codec:c.codec, width:VOB_W, height:VOB_H, bitrate:5000000, framerate:VOB_FPS};
+    try{ const s = await VideoEncoder.isConfigSupported(conf); if(s && s.supported) return {conf, codecId:c.id}; }catch(e){}
+  }
+  return null;
+}
+const vobYield = ()=> new Promise(r=>{ const ch = new MessageChannel(); ch.port1.onmessage = ()=>r(); ch.port2.postMessage(0); }); // rend la main sans minuteur (non ralenti en arrière-plan)
+async function vobLoadSlideImage(p){
+  const src = (await getFullDataUrl(p)) || p.thumbDataUrl;
+  if(!src) throw new Error(`Image introuvable pour "${p.fileName}".`);
+  return loadImageEl(src);
+}
+function vobDownloadBlob(blob){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "diaporama.vob";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=> URL.revokeObjectURL(url), 30000);
+}
+async function exportDiaporamaAsVobFast(list, filterParts, plateau, fondu, picked){
+  const W = VOB_W, H = VOB_H, FPS = VOB_FPS;
+  vobExportCancelled = false;
+  const overlay = document.getElementById("vobExportOverlay");
+  document.getElementById("vobExportNote").textContent = "Le diaporama est encodé image par image, bien plus vite que sa durée réelle. L'onglet n'a pas besoin de rester au premier plan, mais ne fermez pas cette page avant la fin.";
+  overlay.classList.remove("hidden");
+  vobExportSetProgress(0, `Préparation… ${list.length} photo(s)` + (filterParts.length ? ` (${filterParts.join(" ; ")})` : ""));
+
+  const canvas = document.createElement("canvas"); canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  // Chaque photo est redimensionnée UNE fois à 720×576 (bandes noires, comme avant) : le fondu ne redessine ensuite que deux petits canevas.
+  function prep(img){
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const g = c.getContext("2d"); g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+    const ir = img.width / img.height, cr = W / H;
+    let dw, dh;
+    if(ir > cr){ dw = W; dh = W / ir; } else { dh = H; dw = H * ir; }
+    g.drawImage(img, (W-dw)/2, (H-dh)/2, dw, dh);
+    return c;
+  }
+  const drawStill = (pr, p)=>{ ctx.globalAlpha = 1; ctx.drawImage(pr, 0, 0); vobDrawCaptions(ctx, W, H, p, 1); };
+  const drawFade = (a, b, t, pa, pb)=>{
+    ctx.globalAlpha = 1; ctx.drawImage(a, 0, 0);
+    ctx.globalAlpha = t; ctx.drawImage(b, 0, 0);
+    ctx.globalAlpha = 1;
+    vobDrawCaptions(ctx, W, H, pa, 1 - t); // les pieds de page fondent au même rythme que les images
+    vobDrawCaptions(ctx, W, H, pb, t);
+  };
+
+  const mux = new WebmMuxer(W, H, picked.codecId);
+  let encError = null, lastT = -1, needKey = true;
+  const enc = new VideoEncoder({output: chunk=> mux.addChunk(chunk), error: e=>{ encError = e; }});
+  enc.configure(picked.conf);
+  async function push(tSec){
+    if(encError) throw encError;
+    while(enc.encodeQueueSize > 12){ // contre-pression : on n'empile pas des centaines d'images en mémoire
+      await Promise.race([new Promise(r=> enc.addEventListener("dequeue", r, {once:true})), new Promise(r=> setTimeout(r, 250))]);
+      if(encError) throw encError;
+    }
+    tSec = Math.max(tSec, lastT + 0.001); lastT = tSec;
+    const vf = new VideoFrame(canvas, {timestamp: Math.round(tSec * 1e6)});
+    enc.encode(vf, {keyFrame: needKey}); // image clé au début de chaque photo (permet d'avancer/reculer dans VLC)
+    needKey = false;
+    vf.close();
+  }
+  const closeEnc = ()=>{ try{ enc.close(); }catch(e){} };
+
+  const total = list.length*plateau + Math.max(0, list.length-1)*fondu;
+  let T = 0;
+  const tStart = performance.now();
+  const etaText = ()=>{ // estimation du temps restant, affichée une fois assez de recul
+    const frac = Math.min(1, T/total), el = (performance.now() - tStart)/1000;
+    if(frac < 0.03 || el < 8) return "";
+    const rest = Math.max(0, el/frac - el);
+    return rest >= 90 ? ` — environ ${Math.round(rest/60)} min restantes` : ` — environ ${Math.max(5, Math.round(rest/5)*5)} s restantes`;
+  };
+  try{
+    let cur, curPhoto = list[0];
+    try{ cur = prep(await vobLoadSlideImage(list[0])); }
+    catch(e){ closeEnc(); overlay.classList.add("hidden"); toast("Échec du chargement de la 1ère photo — export annulé."); return; }
+    for(let i = 0; i < list.length && !vobExportCancelled; i++){
+      const nextPromise = (i < list.length-1) ? vobLoadSlideImage(list[i+1]).then(prep).catch(()=>null) : null; // chargement en parallèle de l'encodage
+      drawStill(cur, curPhoto);
+      needKey = true;
+      const steps = (plateau > 0 || i === list.length-1) ? Math.max(1, Math.ceil(plateau)) : 0;
+      for(let k = 0; k < steps; k++) await push(T + k); // plateau : 1 image par seconde suffit
+      T += plateau;
+      vobExportSetProgress(Math.min(1, T/total), `Photo ${i+1} / ${list.length}…` + etaText());
+      let next = null;
+      if(nextPromise){
+        next = await nextPromise;
+        if(!next) console.warn(`Diaporama VOB : photo "${list[i+1].fileName}" ignorée (chargement impossible).`);
+      }
+      if(!vobExportCancelled && next && fondu > 0){
+        const N = Math.max(1, Math.round(fondu*VOB_FADE_FPS));
+        for(let k = 0; k < N; k++){ drawFade(cur, next, k/N, curPhoto, list[i+1]); await push(T + fondu*k/N); }
+        T += fondu;
+      }
+      if(next){ curPhoto = list[i+1]; cur = next; }
+      await vobYield();
+    }
+    if(vobExportCancelled){ closeEnc(); overlay.classList.add("hidden"); toast("Export vidéo annulé."); return; }
+    // dernière image tenue jusqu'à la fin de la dernière photo (durée exacte de la vidéo)
+    if(T - 1/FPS > lastT){ drawStill(cur, curPhoto); await push(T - 1/FPS); }
+    vobExportSetProgress(1, "Finalisation du fichier…");
+    await enc.flush(); closeEnc();
+    if(encError) throw encError;
+    const blob = mux.finish(T*1000);
+    overlay.classList.add("hidden");
+    vobDownloadBlob(blob);
+    toast(`Vidéo exportée : ${list.length} photo(s)` + (filterParts.length ? ` filtrée(s) (${filterParts.join(" ; ")})` : "") + `, ${Math.round(T)}s — fichier "diaporama.vob" téléchargé (lisible avec VLC).`);
+  }catch(e){
+    console.error("Export vidéo rapide :", e);
+    closeEnc(); overlay.classList.add("hidden");
+    toast("Échec de l'encodage vidéo : " + (e && e.message ? e.message : e));
+  }
+}
 async function exportDiaporamaAsVob(plateau, fondu){
+  const list = activePhotos().filter(p=> !p.isVideo);
+  const filterParts = describeActiveFilters();
+  if(!list.length){ toast(filterParts.length ? "Aucune photo ne correspond aux filtres actifs (" + filterParts.join(" ; ") + ") : rien à exporter." : "Aucune photo à exporter en vidéo."); return; }
+  const picked = await vobPickEncoderConfig();
+  if(picked) return exportDiaporamaAsVobFast(list, filterParts, plateau, fondu, picked);
+  return exportDiaporamaAsVobRealtime(plateau, fondu); // navigateur sans WebCodecs : ancien export en temps réel
+}
+
+/* Ancien export en TEMPS RÉEL (MediaRecorder) : conservé uniquement en secours si le navigateur n'a pas WebCodecs. */
+async function exportDiaporamaAsVobRealtime(plateau, fondu){
   // Uniquement les photos qui respectent les filtres actifs du panneau « Recherches »
   // (activePhotos applique Auteur / Personnage / Lieu / Favori / Type / Mot clé), sans les vidéos.
   const list = activePhotos().filter(p=> !p.isVideo);
@@ -13186,6 +13414,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
   }
   vobExportCancelled = false;
   const overlay = document.getElementById("vobExportOverlay");
+  document.getElementById("vobExportNote").textContent = "Le diaporama est enregistré en temps réel à l'écran (votre navigateur ne permet pas l'encodage rapide). Merci de garder cet onglet au premier plan jusqu'à la fin.";
   overlay.classList.remove("hidden");
   vobExportSetProgress(0, `Préparation… ${list.length} photo(s)` + (filterParts.length ? ` (${filterParts.join(" ; ")})` : ""));
 
@@ -13230,32 +13459,7 @@ async function exportDiaporamaAsVob(plateau, fondu){
      portée pour rester lisibles sur fond clair. Le titre est toujours
      affiché (à l'écran, il n'apparaît qu'après les 10 s du message d'aide
      clavier, sans objet dans une vidéo). */
-  const CAPTION_PX = 15;
-  function fitText(text, maxW){
-    if(!text || ctx.measureText(text).width <= maxW) return text || "";
-    let t = text;
-    while(t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
-    return t + "…";
-  }
-  function drawCaptions(p, alpha){
-    if(!p || alpha <= 0) return;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.font = `${CAPTION_PX}px Calibri, Candara, "Segoe UI", sans-serif`;
-    ctx.fillStyle = "#b47bff"; // même violet que le diaporama à l'écran
-    ctx.textBaseline = "alphabetic";
-    ctx.shadowColor = "rgba(0,0,0,.9)"; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
-    const left = fitText(p.fileName || "", W*0.44);
-    const right = fitText(p.lieu || "", W*0.44);
-    ctx.textAlign = "left";  if(left)  ctx.fillText(left, 18, H-16);
-    ctx.textAlign = "right"; if(right) ctx.fillText(right, W-18, H-16);
-    // le titre (centré) prend la place restante pour ne jamais chevaucher le nom de fichier ni le lieu
-    const sideMax = Math.max(left ? ctx.measureText(left).width : 0, right ? ctx.measureText(right).width : 0);
-    const centerMax = Math.max(W*0.2, Math.min(W*0.6, W - 2*(sideMax + 18) - 24));
-    const titre = fitText(p.titre || "", centerMax);
-    ctx.textAlign = "center"; if(titre) ctx.fillText(titre, W/2, H-14);
-    ctx.restore();
-  }
+  function drawCaptions(p, alpha){ vobDrawCaptions(ctx, W, H, p, alpha); } // dessin partagé avec l'export rapide
   function drawFrame(img, p){
     drawContain(img);
     drawCaptions(p, 1);
