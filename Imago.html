@@ -1070,6 +1070,9 @@ button{font-family:inherit;}
          défaut ; affiché uniquement s'il reste des fichiers en échec (voir
          showRetryFailedButton / hideRetryFailedButton). -->
     <button class="btn copper hidden" id="btnRetryFailedImports" style="width:100%; margin-top:8px;"></button>
+    <!-- Rapport des fichiers NON importés (raison + chemin), téléchargeable en CSV : affiché en fin d'import
+         seulement s'il y en a (voir importTrace / updateImportReportButton). -->
+    <button class="btn hidden" id="btnImportReport" style="width:100%; margin-top:8px;"></button>
   </div>
 
   <div class="pave">
@@ -7961,6 +7964,62 @@ function checkSlowStorage(fileCount, elapsedMs){
    d'images déjà cataloguées. */
 let importTotalCount = 0;
 let importDoneCount = 0;
+/* ---- Journal des fichiers NON importés ----------------------------------
+   Avant, un fichier écarté pendant l'import ne laissait de trace durable que
+   dans quelques cas (échec de lecture : simple message de statut, éphémère) ;
+   les doublons de nom (même nom de fichier dans deux dossiers : le 2e est
+   ignoré) et les extensions non gérées étaient écartés SANS AUCUN message.
+   Chaque fichier écarté est maintenant consigné ici avec sa raison, et un
+   bouton de fin d'import permet de télécharger le rapport en CSV. Remis à
+   zéro à chaque nouvel import. */
+let importTrace = [];
+function traceSkipped(file, raison, detail){
+  importTrace.push({fileName:file.name, chemin:file.webkitRelativePath || file.name, raison, detail: detail || ""});
+}
+// extensions de photo/vidéo/scan plausibles mais NON gérées par l'import (les fichiers système .db/.ini/.txt... ne sont pas signalés : trop de bruit)
+const IMPORT_UNSUPPORTED_MEDIA_RE = /\.(tiff?|jfif|jpe|jp2|jxl|svg|psd|raw|cr2|cr3|nef|arw|dng|orf|rw2|avi|mkv|wmv|webm|m4v|3gp|mpe?g|mts|m2ts)$/i;
+// 2 chemins désignent le même endroit même si l'un a été importé depuis un dossier racine différent (ex. "A/B" et "X/A/B")
+function samePlace(a, b){
+  const n = x => (x || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+  a = n(a); b = n(b);
+  return !a || !b || a === b || a.endsWith("/" + b) || b.endsWith("/" + a);
+}
+function currentImportTrace(){
+  // dédoublonne (une nouvelle tentative peut re-consigner le même fichier) et retire les échecs finalement récupérés
+  const imported = new Set(State.photos.map(p=>p.fileName));
+  const seen = new Map();
+  for(const t of importTrace){
+    if(t.raison === "Lecture impossible" && imported.has(t.fileName)) continue;
+    seen.set(t.chemin + "\u0000" + t.raison, t);
+  }
+  return [...seen.values()];
+}
+function updateImportReportButton(){
+  const btn = document.getElementById("btnImportReport");
+  if(!btn) return;
+  const items = currentImportTrace();
+  const filtered = items.filter(t=>t.raison.startsWith("Exclu par le filtre")).length;
+  const lost = items.length - filtered;
+  if(!items.length){ btn.classList.add("hidden"); return; }
+  btn.textContent = lost
+    ? `📋 Rapport : ${lost} fichier(s) non importé(s)` + (filtered ? ` (+ ${filtered} exclus par filtre)` : "") + " — télécharger (CSV)"
+    : `📋 ${filtered} fichier(s) exclus par les filtres — télécharger la liste (CSV)`;
+  btn.classList.remove("hidden");
+}
+function downloadImportReport(){
+  const items = currentImportTrace();
+  if(!items.length){ toast("Aucun fichier écarté pendant le dernier import."); return; }
+  const lines = [["fichier","chemin","raison","detail"].join(";")];
+  for(const t of items) lines.push([t.fileName, t.chemin, t.raison, t.detail].map(csvEscape).join(";"));
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "Import-fichiers-non-importes.csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=> URL.revokeObjectURL(url), 30000);
+  toast(`Rapport enregistré : ${items.length} ligne(s) — fichier « Import-fichiers-non-importes.csv ».`);
+}
+document.getElementById("btnImportReport").addEventListener("click", downloadImportReport);
 /* Alerte de sécurité périodique pendant un gros import (voir échange
    utilisateur sur les plantages avec 15 000+ fichiers) : tous les
    IMPORT_CHECKPOINT_EVERY fichiers traités, on interrompt le déroulé pour
@@ -8060,7 +8119,11 @@ function estimateFileDate(file, existingRow){
    compteurs partagés `stats`. Ne touche à AUCUN élément d'écran : c'est à
    l'appelant de rafraîchir l'affichage, par lots, une fois un paquet traité. */
 async function importOneFile(file, csvRowByFileName, stats){
-  if(State.photos.find(p=>p.fileName===file.name)){ importDoneCount++; updateGalleryCounter(); return; } // doublon dans la sélection elle-même
+  const dupOf = State.photos.find(p=>p.fileName===file.name);
+  if(dupOf){ // doublon dans la sélection elle-même : le 2e fichier de même NOM est ignoré — désormais consigné (avant : silencieux)
+    traceSkipped(file, "Nom déjà utilisé par une autre photo", `non importée ; photo retenue : ${dupOf.sousDossier ? dupOf.sousDossier + "/" : ""}${dupOf.fileName}`);
+    importDoneCount++; updateGalleryCounter(); return;
+  }
   // Sous-dossier de provenance (ex. "2024\Vidéo") : disponible via
   // webkitRelativePath UNIQUEMENT quand le fichier vient du sélecteur de
   // DOSSIER (vide pour "Sélectionner des images…"/"Nouvelle entrée", qui ne
@@ -8215,6 +8278,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     }
   }catch(err){
     console.warn(`Échec de lecture pour "${file.name}" — image ignorée.`, err);
+    traceSkipped(file, "Lecture impossible", err && err.message ? err.message : String(err));
     stats.failedFiles.push(file.name);
     // Référence au fichier lui-même (pas seulement son nom) conservée pour
     // permettre une nouvelle tentative isolée en toute fin d'import, une
@@ -8293,6 +8357,7 @@ document.getElementById("btnRetryFailedImports").addEventListener("click", async
     renderGrid();
     if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
   }
+  updateImportReportButton(); // certains échecs ont pu être récupérés : le rapport doit refléter l'état actuel
   if(stats.failedFiles.length === 0){
     hideRetryFailedButton();
     toast(`✅ ${recovered} fichier(s) récupéré(s) — tous les fichiers en échec ont finalement pu être lus.`);
@@ -8331,6 +8396,7 @@ function reportImportProgress(folderName, catalogCandidates, stats, stillLoading
     ? `Dossier "${folderName}" : ${reused} image(s) déjà cataloguée(s) reprise(s) telles quelles, ${added} nouvelle(s) image(s) à vérifier. Catalogue « ${State.catalogFileName} ».`
     : `Dossier "${folderName}" : ${added} image(s) ajoutée(s). Aucun catalogue trouvé — « ${State.catalogFileName} » sera créé à la prochaine sauvegarde locale.`
   ) + failNote + heicNote + videoDeferredNote + loadingNote;
+  if(!stillLoading) updateImportReportButton(); // import terminé : propose le rapport des fichiers écartés, s'il y en a
 }
 
 /* Traite le reste du dossier (au-delà des IMPORT_PRIORITY_COUNT photos déjà
@@ -8479,11 +8545,17 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const allFiles = [...fileList];
   const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
+  importTrace = []; // nouveau journal pour cet import
+  document.getElementById("btnImportReport").classList.add("hidden");
+  for(const f of allFiles){
+    if(IMPORT_UNSUPPORTED_MEDIA_RE.test(f.name)) traceSkipped(f, "Extension non prise en charge", "format de photo/vidéo non géré par l'import");
+  }
   // Photos déjà chargées dans cette session (import précédent non effacé,
   // ou session reprise après plantage — voir loadAll) : on ne les efface
   // plus jamais silencieusement (c'est justement ce qui faisait perdre des
   // heures de traitement en cas de nouvel essai après un plantage). On
   // demande explicitement quoi faire.
+  let existingSousDossierByName = null; // nom -> sous-dossier d'origine des photos déjà présentes (mode "Compléter"), pour repérer un fichier de MÊME NOM mais d'un AUTRE dossier
   let existingFileNames = null; // rempli seulement si "Compléter" est choisi — voir filesToImport plus bas
   if(State.photos.length){
     const choice = await confirmChoice(
@@ -8518,6 +8590,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
       // n'affiche donc plus jamais le total complet du dossier, seulement
       // ce qu'il reste réellement à faire).
       existingFileNames = new Set(State.photos.map(p=>p.fileName));
+      existingSousDossierByName = new Map(State.photos.map(p=>[p.fileName, p.sousDossier || ""]));
     }
   }
   const folderName = folderNameOverride || (files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier");
@@ -8616,10 +8689,18 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const restrictionActive = !!(pick.critere || pick.personnages);
   const skippedAlreadyPresentCount = existingFileNames ? files.filter(f=> existingFileNames.has(f.name)).length : 0;
   const filesToImport = files.filter(f=>{
-    if(existingFileNames && existingFileNames.has(f.name)) return false; // déjà importé lors d'un lot précédent — vraie reprise, on ne le retraite même pas
+    if(existingFileNames && existingFileNames.has(f.name)){ // déjà importé lors d'un lot précédent — vraie reprise, on ne le retraite même pas
+      const rel = f.webkitRelativePath ? f.webkitRelativePath.slice(0, f.webkitRelativePath.length - f.name.length - 1) : "";
+      const keptIn = existingSousDossierByName ? existingSousDossierByName.get(f.name) : "";
+      // même nom mais dossier différent : ce n'est PAS le même fichier déjà importé, c'est un 2e fichier écarté à cause du nom
+      if(!samePlace(keptIn, rel)) traceSkipped(f, "Nom déjà utilisé par une autre photo", `non importée ; photo déjà présente : ${keptIn ? keptIn + "/" : ""}${f.name}`);
+      return false;
+    }
     if(restrictionActive){
       const row = csvRowByFileName.get(f.name);
-      return !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
+      const keep = !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
+      if(!keep) traceSkipped(f, "Exclu par le filtre Critère/Personnage", row ? "ne correspond pas aux critères choisis" : "absent du catalogue (jamais importé) : exclu dès qu'un filtre est actif");
+      return keep;
     }
     return true;
   });
