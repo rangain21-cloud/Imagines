@@ -1153,7 +1153,7 @@ button{font-family:inherit;}
           </div>
           <div class="viewer-video-pending hidden" id="viewerVideoPending">
             <button class="btn copper" id="btnLoadPendingVideo">▶ Charger la vidéo (<span id="pendingVideoSize"></span>)</button>
-            <div class="sub">Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.</div>
+            <div class="sub" id="pendingVideoNote">Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.</div>
           </div>
           <div class="viewer-missing hidden" id="viewerMissing">
             📷 Image non disponible sur cet appareil
@@ -1785,7 +1785,7 @@ button{font-family:inherit;}
     <div class="modal-body">
       <div class="field-row">
         <label for="neFile">Image</label>
-        <input type="file" id="neFile" accept="image/*,video/mp4,video/quicktime,.mov">
+        <input type="file" id="neFile" accept="image/*,video/mp4,video/quicktime,.mov,.avi,video/x-msvideo">
       </div>
       <div class="field-grid">
         <div class="field-row"><label for="neDate">Date cliché</label><input type="datetime-local" id="neDate"></div>
@@ -4756,7 +4756,7 @@ async function loadAll(){
       ]
     );
     if(choice === "resume"){
-      State.photos = await idbAllPhotosLight();
+      State.photos = (await idbAllPhotosLight()).map(stripLegacyAutoTitre);
       State.folderName = lastFolder;
       resumed = true;
     }
@@ -4926,6 +4926,13 @@ function renderGrid(){
     img.classList.remove("hidden");
     missing.classList.add("hidden");
     img.src = p.posterDataUrl || "";
+    const pendingIsAvi = /\.avi$/i.test(p.fileName || "");
+    document.getElementById("btnLoadPendingVideo").innerHTML = pendingIsAvi
+      ? '⬇ Enregistrer une copie pour l\'ouvrir (<span id="pendingVideoSize"></span>)'
+      : '▶ Charger la vidéo (<span id="pendingVideoSize"></span>)';
+    document.getElementById("pendingVideoNote").textContent = pendingIsAvi
+      ? "Format AVI : les navigateurs ne savent pas le lire. Enregistrez une copie du fichier pour l'ouvrir dans le lecteur de votre ordinateur (VLC, Lecteur Windows…)."
+      : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.";
     document.getElementById("pendingVideoSize").textContent = fmtSize(p.videoSizeBytes) || "?";
     videoPending.classList.remove("hidden");
   } else if(p.isVideo){
@@ -7977,7 +7984,7 @@ function traceSkipped(file, raison, detail){
   importTrace.push({fileName:file.name, chemin:file.webkitRelativePath || file.name, raison, detail: detail || ""});
 }
 // extensions de photo/vidéo/scan plausibles mais NON gérées par l'import (les fichiers système .db/.ini/.txt... ne sont pas signalés : trop de bruit)
-const IMPORT_UNSUPPORTED_MEDIA_RE = /\.(tiff?|jfif|jpe|jp2|jxl|svg|psd|raw|cr2|cr3|nef|arw|dng|orf|rw2|avi|mkv|wmv|webm|m4v|3gp|mpe?g|mts|m2ts)$/i;
+const IMPORT_UNSUPPORTED_MEDIA_RE = /\.(tiff?|jfif|jpe|jp2|jxl|svg|psd|raw|cr2|cr3|nef|arw|dng|orf|rw2|mkv|wmv|webm|m4v|3gp|mpe?g|mts|m2ts)$/i;
 // 2 chemins désignent le même endroit même si l'un a été importé depuis un dossier racine différent (ex. "A/B" et "X/A/B")
 function samePlace(a, b){
   const n = x => (x || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
@@ -8136,7 +8143,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     : "";
   try{
     const isVideo = isVideoFile(file);
-    const deferVideo = isVideo && file.size > VIDEO_INLINE_MAX_BYTES; // grosse vidéo : contenu chargé à la demande, voir plus bas
+    const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isAviFile(file)); // grosse vidéo (ou AVI, que <video> ne sait pas lire) : contenu chargé à la demande, voir plus bas
     // Sur Android, un fichier "vu" dans le sélecteur de dossier peut ne pas
     // être réellement lisible (ex. photo Google Photos non téléchargée sur
     // l'appareil, permission révoquée entre-temps…) : la lecture échoue
@@ -8153,15 +8160,19 @@ async function importOneFile(file, csvRowByFileName, stats){
       // Vignette + métadonnées seulement, via une URL objet temporaire
       // (aucune conversion en base64, donc aucun coût mémoire proportionnel
       // à la taille du fichier vidéo — contrairement à readFileAsDataURL).
-      const objectUrl = URL.createObjectURL(file);
-      try{
-        videoMeta = await getVideoMeta(objectUrl);
-      } finally {
-        URL.revokeObjectURL(objectUrl);
+      if(isAviFile(file)){
+        videoMeta = await getAviMeta(file); // en-tête AVI lu directement (le navigateur ne sait pas ouvrir ce conteneur)
+      } else {
+        const objectUrl = URL.createObjectURL(file);
+        try{
+          videoMeta = await getVideoMeta(objectUrl);
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
+        stats.videoDeferred = (stats.videoDeferred||0) + 1;
       }
       dims = {width: videoMeta.width, height: videoMeta.height};
       finalDataUrl = null; // chargé à la demande, voir loadPendingVideoFile()
-      stats.videoDeferred = (stats.videoDeferred||0) + 1;
     } else if(isVideo){
       videoMeta = await getVideoMeta(dataUrl);
       dims = {width: videoMeta.width, height: videoMeta.height};
@@ -8224,10 +8235,10 @@ async function importOneFile(file, csvRowByFileName, stats){
       const lieu = "";
       const personnage = meta.personnage;
       rec = {
-        id: uid("ph"), fileName: file.name, sousDossier, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl, thumbDataUrl, dateAchat,
+        id: uid("ph"), fileName: file.name, sousDossier, titre: meta.etiquette || "", dataUrl: finalDataUrl, thumbDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
-        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: meta.etiquette||"", auteur:"Philippe",
+        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: "", auteur:"Philippe",
         favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
         sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
         optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
@@ -8498,7 +8509,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
    introuvable) ; corbeille est forcé à true quel que soit ce que disait le
    catalogue, conformément à la règle demandée. */
 function buildOrphanRecordFromCsvRow(row, fileName){
-  const isVideo = /\.(mp4|mov)$/i.test(fileName);
+  const isVideo = /\.(mp4|mov|avi)$/i.test(fileName);
   const lieu = row.lieu || "";
   return {
     id: uid("ph"), fileName, sousDossier: row.sousDossier || "", dataUrl: null,
@@ -8543,7 +8554,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
   slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
   const allFiles = [...fileList];
-  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov)$/i.test(f.name));
+  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov|avi)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
   importTrace = []; // nouveau journal pour cet import
   document.getElementById("btnImportReport").classList.add("hidden");
@@ -9404,7 +9415,7 @@ async function getFullDataUrl(idOrPhoto){
    galerie/le visualiseur (une balise <img> ne peut pas afficher une vidéo).
    ----------------------------------------------------------------- */
 function isVideoFile(file){
-  return /^video\/(mp4|quicktime)/i.test(file.type||"") || /\.(mp4|mov)$/i.test(file.name||"");
+  return /^video\/(mp4|quicktime|x-msvideo|avi|msvideo)/i.test(file.type||"") || /\.(mp4|mov|avi)$/i.test(file.name||"");
 }
 function getVideoMeta(dataUrl){
   return new Promise((resolve)=>{
@@ -9456,6 +9467,151 @@ function getVideoMeta(dataUrl){
     v.src = dataUrl;
   });
 }
+/* -----------------------------------------------------------------
+   Vidéos AVI. Les navigateurs (Chrome, Edge, Firefox) ne savent PAS lire le conteneur AVI dans une
+   balise <video> : getVideoMeta() échouerait (ni durée, ni dimensions, ni vignette). Le fichier est donc
+   analysé directement (en-tête RIFF) pour en tirer durée, dimensions et codec, et sa vignette est :
+   - la vraie 1re image quand la vidéo est en Motion-JPEG (courant sur les anciens appareils photo : chaque
+     image est un JPEG, décodable par le navigateur) ;
+   - sinon une vignette de remplacement « AVI » (DivX/Xvid/H.264… ne sont pas décodables ici).
+   Une vidéo AVI est toujours « différée » (jamais convertie en base64) ; pour la voir, le visualiseur
+   propose d'en enregistrer une copie à ouvrir dans le lecteur de l'ordinateur.
+   ----------------------------------------------------------------- */
+function isAviFile(file){
+  return /\.avi$/i.test((file && file.name) || "") || /^video\/(x-msvideo|avi|msvideo)/i.test((file && file.type) || "");
+}
+const AVI_HEADER_READ_BYTES = 2 * 1024 * 1024; // en-tête + 1re image (une image Motion-JPEG de définition courante fait < 1 Mo)
+const AVI_CODEC_NAMES = {
+  MJPG:"Motion JPEG", MJPEG:"Motion JPEG", DIVX:"MPEG-4 (DivX)", DX50:"MPEG-4 (DivX)", XVID:"MPEG-4 (Xvid)", FMP4:"MPEG-4",
+  MP4V:"MPEG-4", MP42:"MPEG-4 v2", MP43:"MPEG-4 v3", H264:"H.264", X264:"H.264", AVC1:"H.264",
+  WMV1:"WMV", WMV2:"WMV", WMV3:"WMV", DVSD:"DV", CVID:"Cinepak", IV50:"Indeo 5", MSVC:"MS Video 1"
+};
+// Tables de Huffman standard (annexe K de la norme JPEG) : de nombreuses caméras écrivent leurs images
+// Motion-JPEG SANS ces tables (elles sont implicites en MJPEG), ce qui les rend illisibles pour un décodeur JPEG normal.
+const STD_JPEG_DHT = (()=>{
+  const hex = s => s.trim().split(/\s+/).map(h=>parseInt(h,16));
+  const AC_LUM = hex(`01 02 03 00 04 11 05 12 21 31 41 06 13 51 61 07 22 71 14 32 81 91 a1 08 23 42 b1 c1 15 52 d1 f0 24 33 62 72 82 09 0a 16 17 18 19 1a 25 26 27 28 29 2a 34 35 36 37 38 39 3a 43 44 45 46 47 48 49 4a 53 54 55 56 57 58 59 5a 63 64 65 66 67 68 69 6a 73 74 75 76 77 78 79 7a 83 84 85 86 87 88 89 8a 92 93 94 95 96 97 98 99 9a a2 a3 a4 a5 a6 a7 a8 a9 aa b2 b3 b4 b5 b6 b7 b8 b9 ba c2 c3 c4 c5 c6 c7 c8 c9 ca d2 d3 d4 d5 d6 d7 d8 d9 da e1 e2 e3 e4 e5 e6 e7 e8 e9 ea f1 f2 f3 f4 f5 f6 f7 f8 f9 fa`);
+  const AC_CHR = hex(`00 01 02 03 11 04 05 21 31 06 12 41 51 07 61 71 13 22 32 81 08 14 42 91 a1 b1 c1 09 23 33 52 f0 15 62 72 d1 0a 16 24 34 e1 25 f1 17 18 19 1a 26 27 28 29 2a 35 36 37 38 39 3a 43 44 45 46 47 48 49 4a 53 54 55 56 57 58 59 5a 63 64 65 66 67 68 69 6a 73 74 75 76 77 78 79 7a 82 83 84 85 86 87 88 89 8a 92 93 94 95 96 97 98 99 9a a2 a3 a4 a5 a6 a7 a8 a9 aa b2 b3 b4 b5 b6 b7 b8 b9 ba c2 c3 c4 c5 c6 c7 c8 c9 ca d2 d3 d4 d5 d6 d7 d8 d9 da e2 e3 e4 e5 e6 e7 e8 e9 ea f2 f3 f4 f5 f6 f7 f8 f9 fa`);
+  const DC = [0,1,2,3,4,5,6,7,8,9,10,11];
+  const tables = [
+    [0x00, [0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0], DC],
+    [0x10, [0,2,1,3,3,2,4,3,5,5,4,4,0,0,1,0x7d], AC_LUM],
+    [0x01, [0,3,1,1,1,1,1,1,1,1,1,0,0,0,0,0], DC],
+    [0x11, [0,2,1,2,4,4,3,4,7,5,4,4,0,1,2,0x77], AC_CHR]
+  ];
+  const out = [];
+  for(const [tcth, bits, vals] of tables){
+    const len = 2 + 1 + 16 + vals.length;
+    out.push(0xFF, 0xC4, len >> 8, len & 255, tcth, ...bits, ...vals);
+  }
+  return new Uint8Array(out);
+})();
+function jpegHasHuffmanTables(bytes){
+  for(let i = 2; i + 4 < bytes.length;){
+    if(bytes[i] !== 0xFF) return false;
+    const m = bytes[i+1];
+    if(m === 0xC4) return true;          // DHT présent
+    if(m === 0xDA) return false;         // début des données sans avoir vu de DHT
+    i += 2 + ((bytes[i+2] << 8) | bytes[i+3]);
+  }
+  return false;
+}
+function ensureJpegHasHuffmanTables(bytes){
+  if(jpegHasHuffmanTables(bytes)) return bytes;
+  const out = new Uint8Array(bytes.length + STD_JPEG_DHT.length);
+  out.set(bytes.subarray(0, 2), 0);                 // SOI
+  out.set(STD_JPEG_DHT, 2);                         // tables standard juste après
+  out.set(bytes.subarray(2), 2 + STD_JPEG_DHT.length);
+  return out;
+}
+// Vignette de remplacement quand l'image de la vidéo n'est pas décodable : fond sombre + « AVI » + infos.
+function makeVideoPlaceholderPoster(w, h, title, lines){
+  const W = 640, H = Math.max(240, Math.min(640, Math.round(W * ((w && h) ? h / w : 0.75))));
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const grad = g.createLinearGradient(0, 0, W, H); grad.addColorStop(0, "#2a3140"); grad.addColorStop(1, "#12161d");
+  g.fillStyle = grad; g.fillRect(0, 0, W, H);
+  g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillStyle = "rgba(255,255,255,.9)"; g.font = `bold ${Math.round(H*0.28)}px sans-serif`; g.fillText(title, W/2, H*0.38);
+  g.fillStyle = "rgba(255,255,255,.65)"; g.font = `${Math.round(H*0.075)}px sans-serif`;
+  lines.filter(Boolean).forEach((t, i)=> g.fillText(t, W/2, H*0.62 + i*H*0.1));
+  return c.toDataURL("image/jpeg", 0.8);
+}
+async function getAviMeta(file){
+  const out = {width:0, height:0, duration:0, poster:null, codec:""};
+  let u8 = null, dv = null;
+  try{ u8 = new Uint8Array(await file.slice(0, AVI_HEADER_READ_BYTES).arrayBuffer()); dv = new DataView(u8.buffer); }
+  catch(e){ u8 = null; }
+  let handler = "", compression = "", usPerFrame = 0, totalFrames = 0, vLength = 0, vScale = 0, vRate = 0;
+  let moviStart = -1, moviEnd = -1, inVideoStream = false, jpegBytes = null;
+  if(u8 && u8.length > 12){
+    const fcc = o => String.fromCharCode(u8[o], u8[o+1], u8[o+2], u8[o+3]);
+    try{
+      if(fcc(0) === "RIFF" && fcc(8) === "AVI "){
+        const walk = (start, end)=>{
+          let o = start;
+          while(o + 8 <= end && o + 8 <= u8.length){
+            const id = fcc(o), size = dv.getUint32(o + 4, true), body = o + 8;
+            if(id === "LIST"){
+              const type = fcc(body);
+              if(type === "movi"){ moviStart = body + 4; moviEnd = Math.min(body + size, u8.length); return; } // les images commencent : l'en-tête est entièrement lu
+              if(type === "hdrl" || type === "strl") walk(body + 4, Math.min(body + size, end));
+            }else if(id === "avih" && body + 40 <= u8.length){
+              usPerFrame = dv.getUint32(body, true); totalFrames = dv.getUint32(body + 16, true);
+              out.width = dv.getUint32(body + 32, true); out.height = dv.getUint32(body + 36, true);
+            }else if(id === "strh" && body + 36 <= u8.length){
+              inVideoStream = fcc(body) === "vids";
+              if(inVideoStream && !handler){ handler = fcc(body + 4); vScale = dv.getUint32(body + 20, true); vRate = dv.getUint32(body + 24, true); vLength = dv.getUint32(body + 32, true); }
+            }else if(id === "strf" && inVideoStream && !compression && body + 20 <= u8.length){
+              const bw = dv.getInt32(body + 4, true), bh = dv.getInt32(body + 8, true);
+              if(bw > 0) out.width = bw;
+              if(bh) out.height = Math.abs(bh);
+              compression = fcc(body + 16);
+            }
+            o = body + size + (size & 1);
+          }
+        };
+        walk(12, u8.length);
+        if(vRate > 0 && vLength > 0) out.duration = vLength * vScale / vRate;
+        else if(usPerFrame > 0 && totalFrames > 0) out.duration = totalFrames * usPerFrame / 1e6;
+        const code = ((compression || handler || "").replace(/[^\x20-\x7e]/g, "")).trim().toUpperCase();
+        out.codec = AVI_CODEC_NAMES[code] || code;
+        // 1re image vidéo du bloc « movi » : si c'est un JPEG (Motion-JPEG), elle sert de vignette
+        if(moviStart >= 0){
+          let o = moviStart;
+          while(o + 8 <= moviEnd){
+            const id = fcc(o), size = dv.getUint32(o + 4, true), body = o + 8;
+            if(id === "LIST"){ o = body + 4; continue; } // groupe « rec » : on y descend
+            if(/^\d\d(dc|db)$/.test(id) && size > 0){
+              if(body + size <= u8.length && u8[body] === 0xFF && u8[body + 1] === 0xD8) jpegBytes = u8.subarray(body, body + size);
+              break;
+            }
+            o = body + size + (size & 1);
+          }
+        }
+      }
+    }catch(e){ /* en-tête atypique : on se contente de ce qui a été lu */ }
+  }
+  if(jpegBytes){
+    try{
+      const bmp = await createImageBitmap(new Blob([ensureJpegHasHuffmanTables(jpegBytes)], {type:"image/jpeg"}));
+      const scale = Math.min(1, 640 / bmp.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bmp.width * scale)); canvas.height = Math.max(1, Math.round(bmp.height * scale));
+      canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      out.poster = canvas.toDataURL("image/jpeg", 0.75);
+      if(!out.width || !out.height){ out.width = bmp.width; out.height = bmp.height; }
+      if(bmp.close) bmp.close();
+    }catch(e){ out.poster = null; }
+  }
+  if(!out.poster){
+    out.poster = makeVideoPlaceholderPoster(out.width, out.height, "AVI", [
+      out.codec, (out.width && out.height) ? `${out.width} × ${out.height}` : "", out.duration ? formatDuration(out.duration) : ""
+    ]);
+  }
+  return out;
+}
+
 /* Icône ▶ discrète superposée à la vignette d'une vidéo (galerie, bande du
    diaporama…), avec la durée si connue. */
 function formatDuration(sec){
@@ -9567,9 +9723,11 @@ function toXPBytes(str){
   bytes.push(0,0); // terminateur nul (UTF-16 : 2 octets)
   return bytes;
 }
-async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage, etiquette, dateAchat}){
+/* motsCles = rubrique « titre » (« Mots clés » Windows). favori/art/concert pilotent la « Notation »
+   Windows : favori → 5 étoiles ; sinon Art et/ou Concert → 3 étoiles ; sinon aucune notation écrite. */
+async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage, motsCles, dateAchat, favori, art, concert}){
   if(!dataUrl || !dataUrl.startsWith("data:image/jpeg")) return dataUrl;
-  if(!cameraModel && !lieu && !mapField && !auteur && !personnage && !etiquette && !dateAchat) return dataUrl; // rien à écrire
+  if(!cameraModel && !lieu && !mapField && !auteur && !personnage && !motsCles && !dateAchat && !favori && !art && !concert) return dataUrl; // rien à écrire
   // Normalise vers EXACTEMENT le préfixe attendu par piexifjs
   // ("data:image/jpeg;base64,"), quitte à corriger une variante proche —
   // ex. "image/jpg" (non standard mais parfois rencontré) que la
@@ -9621,7 +9779,14 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     // XPSubject (propre à Windows), à encoder en UTF-16LE (voir toXPBytes).
     if(lieu) zeroth[piexif.ImageIFD.XPSubject] = toXPBytes(lieu);
     // "Mots clés"/Keywords (Windows) — même famille de tags que XPSubject.
-    if(etiquette) zeroth[piexif.ImageIFD.XPKeywords] = toXPBytes(etiquette);
+    if(motsCles) zeroth[piexif.ImageIFD.XPKeywords] = toXPBytes(motsCles);
+    // "Notation" (Windows) : EXIF Rating (0-5 étoiles) + RatingPercent (1/25/50/75/99 = 1 à 5 étoiles),
+    // les deux tags que l'Explorateur Windows lit et écrit lui-même sur les JPEG.
+    const rating = favori ? 5 : ((art || concert) ? 3 : 0);
+    if(rating){
+      zeroth[piexif.ImageIFD.Rating] = rating;
+      zeroth[piexif.ImageIFD.RatingPercent] = {1:1, 2:25, 3:50, 4:75, 5:99}[rating];
+    }
     const gps = {};
     const q = mapField ? mapEmbedQueryFromMapField(mapField) : "";
     // "Commentaires"/Comments (Windows) reçoit la rubrique Map — la valeur
@@ -9648,6 +9813,12 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     try{ exifObj = piexif.load(jpegDataUrl); }
     catch(e){ exifObj = {"0th":{}, "Exif":{}, "GPS":{}, "1st":{}, "thumbnail":null}; }
     exifObj["0th"] = Object.assign({}, exifObj["0th"], zeroth);
+    // Plus ni favori, ni Art, ni Concert : une notation de 5 ou 3 étoiles (celles qu'Imago attribue) devenue
+    // fausse est retirée ; toute autre notation (1, 2, 4 étoiles, posée à la main) est laissée intacte.
+    if(!rating){
+      const cur = exifObj["0th"][piexif.ImageIFD.Rating];
+      if(cur === 5 || cur === 3){ delete exifObj["0th"][piexif.ImageIFD.Rating]; delete exifObj["0th"][piexif.ImageIFD.RatingPercent]; }
+    }
     if(Object.keys(gps).length) exifObj["GPS"] = Object.assign({}, exifObj["GPS"], gps);
     // "Prise de vue" (Windows, section Origine) — DateTimeOriginal, dans
     // l'IFD "Exif" (pas "0th" comme les autres tags ci-dessus). Format EXIF
@@ -10562,7 +10733,7 @@ document.getElementById("viewerVideo").addEventListener("error", ()=>{
    ----------------------------------------------------------------- */
 const singleVideoPickerInput = document.createElement("input");
 singleVideoPickerInput.type = "file";
-singleVideoPickerInput.accept = "video/mp4,video/quicktime,.mov";
+singleVideoPickerInput.accept = "video/mp4,video/quicktime,.mov,.avi,video/x-msvideo";
 singleVideoPickerInput.className = "hidden";
 document.body.appendChild(singleVideoPickerInput);
 let singleVideoPickerTargetId = null;
@@ -10582,10 +10753,22 @@ function playVideoFromFile(p, file){
   videoPending.classList.add("hidden");
   video.classList.remove("hidden");
 }
+// AVI : pas de lecture dans le navigateur -> on enregistre une copie du fichier d'origine (à ouvrir dans le lecteur du système).
+function saveVideoCopy(p, file){
+  const url = URL.createObjectURL(file);
+  const a = document.createElement("a");
+  a.href = url; a.download = p.fileName || file.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=> URL.revokeObjectURL(url), 60000);
+  toast(`Copie de « ${p.fileName} » enregistrée dans vos téléchargements : ouvrez-la avec votre lecteur vidéo.`, 6000);
+}
+function openOrPlayVideoFile(p, file){
+  if(/\.avi$/i.test(p.fileName || "")) saveVideoCopy(p, file); else playVideoFromFile(p, file);
+}
 async function loadPendingVideoFile(p){
   const cachedFile = pendingVideoFiles.get(p.id);
   if(cachedFile){
-    playVideoFromFile(p, cachedFile);
+    openOrPlayVideoFile(p, cachedFile);
     return;
   }
   // Session précédente terminée (page rechargée) : le File d'origine n'est
@@ -10607,7 +10790,7 @@ singleVideoPickerInput.addEventListener("change", ()=>{
     return;
   }
   pendingVideoFiles.set(p.id, file); // reste disponible pour le reste de la session
-  playVideoFromFile(p, file);
+  openOrPlayVideoFile(p, file);
 });
 document.getElementById("btnLoadPendingVideo").addEventListener("click", ()=>{
   const p = getSelected();
@@ -11970,7 +12153,7 @@ document.getElementById("btnEdit").addEventListener("click", async ()=>{
   document.getElementById("edSupport").value = p.support || "";
   document.getElementById("edPersonnage").value = p.personnage || "";
   document.getElementById("edLieu").value = p.lieu || "";
-  document.getElementById("edEtiquette").value = p.etiquette || "";
+  document.getElementById("edEtiquette").value = p.titre || ""; // ce champ « Étiquette (mots-clés) » EST la rubrique « titre » du CSV (et non « etiquette »)
   const edEtiquetteInput = document.getElementById("edEtiquette");
   edEtiquetteInput.oninput = null;
   // Même comportement que le champ Titre de la modale Infos (info-title-input) :
@@ -11978,7 +12161,8 @@ document.getElementById("btnEdit").addEventListener("click", async ()=>{
   // "Enregistrer" du reste de la modale (qui relit de toute façon la même
   // valeur au moment de sa propre sauvegarde — pas de conflit).
   edEtiquetteInput.onchange = async ()=>{
-    p.etiquette = edEtiquetteInput.value.trim();
+    p.titre = edEtiquetteInput.value.trim();
+    if(p.titre){ sessionTitleSuggestions.add(p.titre); populateInfoModalDatalists(); }
     await idbPut("photos", p);
     renderGrid();
     autoBuildCsv();
@@ -12037,7 +12221,7 @@ document.getElementById("edRecalcBtn").addEventListener("click", async ()=>{
   let changed = [];
   if(meta.dateAchat){ document.getElementById("edDate").value = toDateTimeLocalValue(meta.dateAchat); changed.push("date"); }
   if(meta.personnage){ document.getElementById("edPersonnage").value = meta.personnage; changed.push("personnage"); }
-  if(meta.etiquette){ document.getElementById("edEtiquette").value = meta.etiquette; changed.push("étiquette"); }
+  if(meta.etiquette && !document.getElementById("edEtiquette").value.trim()){ document.getElementById("edEtiquette").value = meta.etiquette; changed.push("étiquette"); } // ne remplace pas des mots-clés déjà saisis
   if(meta.lieuCandidate){
     const verified = await verifyCommuneWikipedia(meta.lieuCandidate);
     if(verified.ok){
@@ -12069,7 +12253,6 @@ document.getElementById("edLieu").addEventListener("input", (e)=>{
 
 async function applyEditFormToSelectedPhoto(){
   const p = getSelected(); if(!p || !editDraft) return null;
-  const previousAutoTitre = buildTitre(p.lieu, p.personnage); // titre "auto" avant modification
   // Nom du fichier : modifiable, avec garde-fous pour ne jamais aboutir à un
   // nom vide ou en collision avec une autre image déjà cataloguée (ce nom
   // sert de clé de correspondance avec les fichiers du dossier).
@@ -12096,7 +12279,7 @@ async function applyEditFormToSelectedPhoto(){
   p.support = document.getElementById("edSupport").value.trim();
   p.personnage = document.getElementById("edPersonnage").value.trim();
   p.lieu = document.getElementById("edLieu").value.trim();
-  p.etiquette = document.getElementById("edEtiquette").value.trim();
+  p.titre = document.getElementById("edEtiquette").value.trim(); // rubrique « titre » (le champ s'appelle « Étiquette (mots-clés…) » dans cette modale)
   p.auteur = document.getElementById("edAuteur").value.trim() || "Philippe";
   p.optique = document.getElementById("edOptique").value.trim();
   p.poids = Number(document.getElementById("edPoids").value) || p.poids || 0;
@@ -12119,18 +12302,14 @@ async function applyEditFormToSelectedPhoto(){
     p.poids = Math.round((editDraft.dataUrl.length * 0.75) / 1024);
     p.sizeBytes = Math.round(editDraft.dataUrl.length * 0.75);
   }
-  // Le titre reste "Lieu - Personnage" tant qu'il n'a pas été personnalisé à la main
-  // (dans la modale Information) ; sinon on respecte le titre choisi par l'utilisateur.
-  if(!p.titre || p.titre === previousAutoTitre){
-    p.titre = buildTitre(p.lieu, p.personnage);
-  }
+  // (Plus de titre automatique « Lieu Personnage » : le titre est exactement celui du champ ci-dessus.)
   // Reporte aussi Caméra/Lieu/Map dans les métadonnées EXIF du fichier
   // lui-même (voir writeMetadataIntoJpegDataUrl), pas seulement dans le
   // catalogue Imago — uniquement pour les photos JPEG (jamais les vidéos).
   if(!p.isVideo && fullDataUrl){
     const before = fullDataUrl;
     fullDataUrl = await writeMetadataIntoJpegDataUrl(fullDataUrl, {
-      cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette, dateAchat: p.dateAchat
+      cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert
     });
     if(fullDataUrl !== before){
       p.poids = Math.round((fullDataUrl.length * 0.75) / 1024);
@@ -13140,7 +13319,7 @@ async function renderFinalImageDataUrl(p, sourceDataUrl){
       // Lieu/Map au téléchargement, même juste après les avoir écrits.
       try{
         out = await writeMetadataIntoJpegDataUrl(out, {
-          cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette, dateAchat: p.dateAchat
+          cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert
         });
       }catch(e){ console.warn("[Imago] Réinjection EXIF après aplatissement impossible :", e); }
       resolve(out);
@@ -13728,14 +13907,18 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   if(!fileInput.files[0]) return toast("Choisissez une image ou une vidéo.");
   const file = fileInput.files[0];
   const isVideo = isVideoFile(file);
-  const deferVideo = isVideo && file.size > VIDEO_INLINE_MAX_BYTES; // même seuil "petite vidéo" que pour l'import de dossier
+  const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isAviFile(file)); // même seuil "petite vidéo" que pour l'import de dossier ; un AVI est toujours différé
   const dataUrl = (isVideo && !deferVideo) ? await readFileAsDataURL(file)
                  : (!isVideo) ? await readFileAsDataURLWithHeicSupport(file)
                  : null;
   let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
   if(isVideo && deferVideo){
-    const objectUrl = URL.createObjectURL(file);
-    try{ videoMeta = await getVideoMeta(objectUrl); } finally { URL.revokeObjectURL(objectUrl); }
+    if(isAviFile(file)){
+      videoMeta = await getAviMeta(file);
+    } else {
+      const objectUrl = URL.createObjectURL(file);
+      try{ videoMeta = await getVideoMeta(objectUrl); } finally { URL.revokeObjectURL(objectUrl); }
+    }
     dims = {width: videoMeta.width, height: videoMeta.height};
     finalDataUrl = null;
   } else if(isVideo){
@@ -13751,7 +13934,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   const lieu = document.getElementById("neLieu").value.trim();
   const personnage = document.getElementById("nePersonnage").value.trim();
   const rec = {
-    id: uid("ph"), fileName: file.name, titre: buildTitre(lieu, personnage), dataUrl: finalDataUrl,
+    id: uid("ph"), fileName: file.name, titre: document.getElementById("neEtiquette").value.trim(), dataUrl: finalDataUrl,
     thumbDataUrl: (!isVideo && finalDataUrl) ? await makeThumbnail(finalDataUrl) : null,
     hasFullImage: !deferVideo && !!finalDataUrl,
     isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
@@ -13760,7 +13943,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
     personnage,
     lieu,
     support: document.getElementById("neSupport").value.trim(),
-    etiquette: document.getElementById("neEtiquette").value.trim(),
+    etiquette: "", // rubrique historique, plus alimentée : le champ « Étiquette » ci-dessus va dans « titre »
     auteur: document.getElementById("neAuteur").value.trim() || "Philippe",
     favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
     sizeBytes:encodedSize, width:dims.width, height:dims.height, exif,
@@ -13814,8 +13997,25 @@ function cleanTitrePart(s){
     .join(" ")
     .trim();
 }
+/* Le titre (rubrique « titre » du CSV, champ Titre de la modale Infos et champ « Étiquette » de la
+   modale Modifier : une seule et même donnée) n'est PLUS fabriqué automatiquement à partir du lieu et
+   du personnage : il contient exactement ce que l'utilisateur a saisi / ce que le CSV contient, vide
+   compris. L'ancien comportement (« Lieu Personnage » si vide) recopiait ce texte automatique dans la
+   colonne « titre » du CSV et faisait afficher dans le champ autre chose que la rubrique du CSV.
+   buildTitre() est conservée (renvoie ""), car de nombreux appels existants l'utilisent comme repli :
+   ils deviennent sans effet. */
 function buildTitre(lieu, personnage){
+  return "";
+}
+// Ancienne formule, gardée UNIQUEMENT pour reconnaître et vider un titre automatique déjà enregistré.
+function legacyBuildTitre(lieu, personnage){
   return [cleanTitrePart(lieu), cleanTitrePart(personnage)].filter(Boolean).join(" ");
+}
+// Prudence : on ne vide que si lieu ET personnage sont renseignés et que le titre est exactement leur
+// fusion automatique (un vrai mot-clé comme « Gaspésie » ne risque donc pas d'être effacé).
+function stripLegacyAutoTitre(p){
+  if(p && p.titre && p.lieu && p.personnage && p.titre === legacyBuildTitre(p.lieu, p.personnage)) p.titre = "";
+  return p;
 }
 function csvEscape(v){
   const s = (v===undefined||v===null) ? "" : String(v);
@@ -14031,7 +14231,7 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
       const original = await getFullDataUrl(p);
       if(!original) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
       const updated = await writeMetadataIntoJpegDataUrl(original, {
-        cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, etiquette: p.etiquette, dateAchat: p.dateAchat
+        cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert
       });
       if(updated !== original){
         p.poids = Math.round((updated.length * 0.75) / 1024);
