@@ -1612,7 +1612,7 @@ button{font-family:inherit;}
         </div>
         <div class="field-grid">
           <div class="field-row"><label for="edDate">Date cliché</label><input type="datetime-local" id="edDate"></div>
-          <div class="field-row"><label for="edSupport">Support</label><input type="text" id="edSupport" placeholder="tirage, négatif, numérique…"></div>
+          <div class="field-row"><label for="edSupport">Support</label><input type="text" id="edSupport" placeholder="tirage, négatif… (vide = extension du fichier : jpg, mp4…)"></div>
           <div class="field-row"><label for="edPersonnage">Personnage</label><input type="text" id="edPersonnage"></div>
           <div class="field-row">
             <label for="edLieu">Lieu</label>
@@ -1789,7 +1789,7 @@ button{font-family:inherit;}
       </div>
       <div class="field-grid">
         <div class="field-row"><label for="neDate">Date cliché</label><input type="datetime-local" id="neDate"></div>
-        <div class="field-row"><label for="neSupport">Support</label><input type="text" id="neSupport" placeholder="tirage, négatif, numérique…"></div>
+        <div class="field-row"><label for="neSupport">Support</label><input type="text" id="neSupport" placeholder="tirage, négatif… (vide = extension du fichier : jpg, mp4…)"></div>
         <div class="field-row"><label for="nePersonnage">Personnage</label><input type="text" id="nePersonnage"></div>
         <div class="field-row"><label for="neLieu">Lieu</label><input type="text" id="neLieu"></div>
         <div class="field-row" style="grid-column:1/-1;"><label for="neEtiquette">Étiquette (mots-clés séparés par une virgule)</label><input type="text" id="neEtiquette"></div>
@@ -5497,6 +5497,43 @@ function fileTypeOf(p){
   if(ext==="JPEG") ext = "JPG";
   return ext;
 }
+/* ---- Rubrique « support » du catalogue (CSV) : suffixe du nom de fichier, en minuscules
+   ('jpg', 'jpeg', 'mp4', 'mov', 'mpg', 'avi'…) et non plus la valeur « Numérique ».
+   Une valeur saisie à la main (« tirage », « négatif »…) est conservée ; seules les
+   valeurs vides ou « Numérique » (ancienne valeur par défaut) sont remplacées. */
+function supportFromFileName(name){
+  const m = /\.([a-zA-Z0-9]+)\s*$/.exec(String(name||""));
+  return m ? m[1].toLowerCase() : "";
+}
+function normalizeSupport(value, fileName){
+  const v = String(value==null ? "" : value).trim();
+  const plain = v.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+  if(plain !== "" && plain !== "numerique") return v;
+  return supportFromFileName(fileName) || v;
+}
+/* ---- Recherche tolérante d'une ligne de catalogue par nom de fichier :
+   exact d'abord, puis sans tenir compte de la casse, des espaces de bord ni de
+   la forme Unicode (accents composés/décomposés). */
+const catalogLooseKey = n => String(n==null ? "" : n).normalize("NFC").trim().toLowerCase();
+class CatalogRowMap extends Map {
+  constructor(){ super(); this.loose = new Map(); }
+  set(k, v){ super.set(k, v); const lk = catalogLooseKey(k); if(!this.loose.has(lk)) this.loose.set(lk, v); return this; }
+  get(k){ const v = super.get(k); return v !== undefined ? v : this.loose.get(catalogLooseKey(k)); }
+}
+const CATALOG_VIDEO_EXT_RE = /\.(mp4|mov|avi|mpe?g)$/i;
+function catalogStem(n){ return catalogLooseKey(n).replace(/\.[a-z0-9]+$/, ""); }
+function describeMissingCatalogRow(name, rows, catalogFile){
+  if(!rows._stems){
+    rows._stems = new Map();
+    for(const k of rows.keys()){ const s = catalogStem(k); if(!rows._stems.has(s)) rows._stems.set(s, []); rows._stems.get(s).push(k); }
+    rows._videoCount = [...rows.keys()].filter(k=>CATALOG_VIDEO_EXT_RE.test(k)).length;
+  }
+  const near = (rows._stems.get(catalogStem(name)) || []).filter(k => k !== name);
+  const cat = catalogFile ? `« ${catalogFile.name} » : ${rows.size} ligne(s) dont ${rows._videoCount} vidéo(s)` : "aucun catalogue";
+  return near.length
+    ? `absent du catalogue sous ce nom exact — ligne approchante : « ${near[0]} » (${cat})`
+    : `aucune ligne « ${name} » dans le catalogue choisi (${cat}) : ce n'est pas un souci d'extension ou de casse, le fichier n'est pas dans CE .csv (jamais importé) ; exclu dès qu'un filtre est actif`;
+}
 function uniqueFileTypes(){
   return [...new Set(State.photos.filter(p=>!p.corbeille).map(fileTypeOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
 }
@@ -6528,11 +6565,16 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   // valeurs pour les lignes venant d'un catalogue à l'ancien format.
   // COLUMN_ALIASES permet de reconnaître ces anciens intitulés.
   const normalizeCols = normalizeColNames;
-  const remapRowToCanonical = (cells, normalizedCols) =>
-    CSV_COLUMNS.map(name=>{
+  const supportOutIdx = CSV_COLUMNS.indexOf("support"), fileNameOutIdx = CSV_COLUMNS.indexOf("fileName");
+  const remapRowToCanonical = (cells, normalizedCols) => {
+    const out = CSV_COLUMNS.map(name=>{
       const idx = normalizedCols.indexOf(name);
       return idx >= 0 ? (cells[idx] ?? "") : "";
     });
+    // rubrique « support » : suffixe du fileName (jpg, mp4…) à la place de « Numérique »
+    if(supportOutIdx >= 0 && fileNameOutIdx >= 0) out[supportOutIdx] = normalizeSupport(out[supportOutIdx], out[fileNameOutIdx]);
+    return out;
+  };
   const sousDossierOutIdx = CSV_COLUMNS.indexOf("sousDossier");
   const header = CSV_COLUMNS.join(";");
 
@@ -8206,7 +8248,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         personnage: existingRow.personnage || "",
         lieu: existingRow.lieu || "",
         lieuCandidate: "",
-        support: existingRow.support || "numérique",
+        support: normalizeSupport(existingRow.support, file.name),
         etiquette: existingRow.etiquette || "",
         auteur: existingRow.auteur || "Philippe",
         favori: existingRow.favori === "true",
@@ -8239,7 +8281,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         id: uid("ph"), fileName: file.name, sousDossier, titre: meta.etiquette || "", dataUrl: finalDataUrl, thumbDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
-        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support:"numérique", etiquette: "", auteur:"Philippe",
+        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support: supportFromFileName(file.name), etiquette: "", auteur:"Philippe",
         favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
         sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
         optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
@@ -8520,7 +8562,7 @@ function buildOrphanRecordFromCsvRow(row, fileName){
     dateAchat: row.dateAchat || "",
     personnage: row.personnage || "",
     lieu, lieuCandidate: "",
-    support: row.support || "numérique",
+    support: normalizeSupport(row.support, fileName),
     etiquette: row.etiquette || "",
     auteur: row.auteur || "Philippe",
     favori: row.favori === "true",
@@ -8632,7 +8674,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
   applyCatalogPickTri(pick.tri); // "Tri" de la modale : appliqué tout de suite, avant le tri prioritaire ci-dessous qui en dépend
   const chosen = pick.file;
-  let csvRowByFileName = new Map();
+  let csvRowByFileName = new CatalogRowMap();
   const catalogCandidates = chosen ? [chosen] : [];
   if(chosen){
     // Instrumentation temporaire (voir échange utilisateur) : la lecture de
@@ -8678,9 +8720,9 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // pris, à tort, pour un fichier disparu.
   let orphanedCount = 0;
   if(csvRowByFileName.size){
-    const foundFileNames = new Set(files.map(f=>f.name));
+    const foundFileNames = new Set(files.map(f=>catalogLooseKey(f.name)));
     for(const [fileName, row] of csvRowByFileName){
-      if(foundFileNames.has(fileName)) continue;
+      if(foundFileNames.has(catalogLooseKey(fileName))) continue;
       if(State.photos.find(p=>p.fileName===fileName)) continue; // déjà présent (sécurité ; improbable juste après la purge de session)
       const rec = buildOrphanRecordFromCsvRow(row, fileName);
       State.photos.push(rec);
@@ -8700,6 +8742,13 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // est actif : impossible de savoir s'il correspondrait au critère demandé.
   const restrictionActive = !!(pick.critere || pick.personnages);
   const skippedAlreadyPresentCount = existingFileNames ? files.filter(f=> existingFileNames.has(f.name)).length : 0;
+  if(restrictionActive && csvRowByFileName.size){
+    const vids = [...csvRowByFileName.values()].filter(r=>CATALOG_VIDEO_EXT_RE.test(r.fileName||""));
+    const vidsOk = vids.filter(r=>catalogRowMatchesFilters(r, pick.critere, pick.personnages, pick.combineMode));
+    const diskVideos = files.filter(f=>CATALOG_VIDEO_EXT_RE.test(f.name));
+    const diskNoRow = diskVideos.filter(f=>!csvRowByFileName.get(f.name));
+    console.info(`[Imago] Catalogue « ${chosen ? chosen.name : "?"} » : ${csvRowByFileName.size} ligne(s), dont ${vids.length} vidéo(s) (${vidsOk.length} retenue(s) par le filtre). Dossier : ${diskVideos.length} fichier(s) vidéo, dont ${diskNoRow.length} sans ligne au catalogue.`);
+  }
   const filesToImport = files.filter(f=>{
     if(existingFileNames && existingFileNames.has(f.name)){ // déjà importé lors d'un lot précédent — vraie reprise, on ne le retraite même pas
       const rel = f.webkitRelativePath ? f.webkitRelativePath.slice(0, f.webkitRelativePath.length - f.name.length - 1) : "";
@@ -8711,7 +8760,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     if(restrictionActive){
       const row = csvRowByFileName.get(f.name);
       const keep = !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
-      if(!keep) traceSkipped(f, "Exclu par le filtre Critère/Personnage", row ? "ne correspond pas aux critères choisis" : "absent du catalogue (jamais importé) : exclu dès qu'un filtre est actif");
+      if(!keep) traceSkipped(f, "Exclu par le filtre Critère/Personnage", row ? "ne correspond pas aux critères choisis" : describeMissingCatalogRow(f.name, csvRowByFileName, chosen));
       return keep;
     }
     return true;
@@ -10318,11 +10367,21 @@ document.getElementById("ptBulkDelete").addEventListener("click", ()=>{
    ses images/vidéos et pas seulement celles qui correspondaient en plus
    aux filtres Auteur/Lieu/Favori/Type/Étiquette déjà en cours. */
 function viewPersonnageMedia(tok){
-  resetFilters();
-  State.filters.personnage = tok;
-  document.getElementById("fPersonnage").value = tok;
-  renderGrid();
-  closeModal("modalPersonnages");
+  closeModal("modalPersonnages"); // d'abord : la modale ne reste jamais figée si l'affichage échoue
+  try{
+    resetFilters();
+    State.filters.personnage = tok;
+    fillSelect("fPersonnage", uniquePersonnageTokens(), tok);
+    document.getElementById("fPersonnage").value = tok;
+    State.selectedId = null; State.viewIndex = 0; State.userNavigated = true;
+    closeGallery(); // la planche-contact d'accueil n'est pas filtrée : on passe au visualiseur
+    renderGrid();
+    const n = activePhotos().length;
+    toast(n ? `🧑 « ${tok} » : ${n} image(s)/vidéo(s).` : `Aucune image/vidéo visible pour « ${tok} » (corbeille exclue).`);
+  }catch(e){
+    console.error("[Imago] Voir (Personnages) a échoué :", e);
+    toast("⚠️ Affichage du personnage impossible : " + (e && e.message ? e.message : e));
+  }
 }
 function promptEditPersonnageKeyword(oldTok){
   const val = prompt(`Remplacer le personnage « ${oldTok} » par :`, oldTok);
@@ -12275,7 +12334,7 @@ document.getElementById("btnEdit").addEventListener("click", async ()=>{
   edPreviewImg.src = fullDataUrl || p.thumbDataUrl || "";
   document.getElementById("edFileName").value = p.fileName || "";
   document.getElementById("edDate").value = toDateTimeLocalValue(p.dateAchat);
-  document.getElementById("edSupport").value = p.support || "";
+  document.getElementById("edSupport").value = normalizeSupport(p.support, p.fileName);
   document.getElementById("edPersonnage").value = p.personnage || "";
   document.getElementById("edLieu").value = p.lieu || "";
   document.getElementById("edEtiquette").value = p.titre || ""; // ce champ « Étiquette (mots-clés) » EST la rubrique « titre » du CSV (et non « etiquette »)
@@ -12401,7 +12460,7 @@ async function applyEditFormToSelectedPhoto(){
     }
   }
   p.dateAchat = normalizeDateAchatInput(document.getElementById("edDate").value) || p.dateAchat;
-  p.support = document.getElementById("edSupport").value.trim();
+  p.support = normalizeSupport(document.getElementById("edSupport").value, p.fileName);
   p.personnage = document.getElementById("edPersonnage").value.trim();
   p.lieu = document.getElementById("edLieu").value.trim();
   p.titre = document.getElementById("edEtiquette").value.trim(); // rubrique « titre » (le champ s'appelle « Étiquette (mots-clés…) » dans cette modale)
@@ -12627,7 +12686,7 @@ function renderInfoModal(p){
       <div class="info-ic">🖼</div>
       <div class="info-content">
         <div class="main-line">${escapeHtml(p.fileName||'')}</div>
-        <div class="sub-line">${[dims, (p.poids?p.poids+' Ko':fmtSize(p.sizeBytes)), p.support].filter(Boolean).join(" · ")}</div>
+        <div class="sub-line">${[dims, (p.poids?p.poids+' Ko':fmtSize(p.sizeBytes)), normalizeSupport(p.support, p.fileName)].filter(Boolean).join(" · ")}</div>
       </div>
     </div>
 
@@ -14067,7 +14126,7 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
     dateAchat: normalizeDateAchatInput(document.getElementById("neDate").value) || localDateTimeFromTimestamp(Date.now()),
     personnage,
     lieu,
-    support: document.getElementById("neSupport").value.trim(),
+    support: normalizeSupport(document.getElementById("neSupport").value, file.name),
     etiquette: "", // rubrique historique, plus alimentée : le champ « Étiquette » ci-dessus va dans « titre »
     auteur: document.getElementById("neAuteur").value.trim() || "Philippe",
     favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
@@ -14151,6 +14210,7 @@ function buildCsv(){
   State.photos.forEach(p=>{
     rows.push(CSV_COLUMNS.map(c=>{
       if(c==="albums") return csvEscape((p.albums||[]).join("|"));
+      if(c==="support") return csvEscape(normalizeSupport(p.support, p.fileName));
       return csvEscape(p[c]);
     }).join(";"));
   });
@@ -14529,7 +14589,7 @@ async function mergeCsvIntoCatalog(text){
     rec.dateAchat = row.dateAchat || rec.dateAchat;
     rec.personnage = row.personnage || "";
     rec.lieu = row.lieu || "";
-    rec.support = row.support || "";
+    rec.support = normalizeSupport(row.support, row.fileName);
     rec.etiquette = row.etiquette || "";
     rec.auteur = row.auteur || "Philippe";
     rec.favori = row.favori === "true";
