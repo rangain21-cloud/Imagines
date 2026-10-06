@@ -1214,7 +1214,7 @@ button{font-family:inherit;}
     </div>
     <div class="search-field">
       <label for="fEtiquette">Mot clé de l'étiquette</label>
-      <input type="text" id="fEtiquette" placeholder="rechercher…">
+      <input type="text" id="fEtiquette" placeholder="rechercher… (mots clés séparés par des virgules)" title="Plusieurs mots clés possibles, séparés par des virgules : les photos dont l'étiquette contient au moins un d'entre eux sont affichées.">
     </div>
 
     <div class="sidebar-actions">
@@ -4832,8 +4832,12 @@ function activePhotos(){
     if(f.favori === "oui" && !p.favori) return false;
     if(f.favori === "non" && p.favori) return false;
     if(f.titre){
-      const kw = f.titre.toLowerCase();
-      if(!(p.titre||"").toLowerCase().includes(kw)) return false;
+      // Plusieurs mots clés séparés par des virgules : UNION (au moins un doit figurer dans le titre)
+      const kws = titreKeywords(f.titre);
+      if(kws.length){
+        const t = (p.titre||"").toLowerCase();
+        if(!kws.some(kw => t.includes(kw))) return false;
+      }
     }
     return true;
   }).sort((a,b)=>{
@@ -5482,6 +5486,12 @@ function updateToolbarState(){
 /* ---------------------------------------------------------------
    5. Filtres (Recherches)
    --------------------------------------------------------------- */
+/* Champ « Mot clé de l'étiquette » : liste de mots clés séparés par des virgules
+   (union : une photo est retenue dès qu'un des mots clés figure dans son titre).
+   Les espaces de bord et les éléments vides sont ignorés. */
+function titreKeywords(raw){
+  return String(raw||"").split(",").map(k=>k.trim().toLowerCase()).filter(Boolean);
+}
 function uniqueValues(field){
   return [...new Set(State.photos.filter(p=>!p.corbeille).map(p=>p[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
 }
@@ -13548,7 +13558,7 @@ function describeActiveFilters(){
   if(f.favori === "oui") parts.push("Favori = Oui");
   if(f.favori === "non") parts.push("Favori = Non");
   if(f.type) parts.push(`Type = ${f.type}`);
-  if(f.titre) parts.push(`Mot clé « ${f.titre} »`);
+  if(f.titre){ const kws = titreKeywords(f.titre); if(kws.length) parts.push(kws.length>1 ? `Mots clés « ${kws.join(" » ou « ")} »` : `Mot clé « ${kws[0]} »`); }
   return parts;
 }
 function updateSsFilterInfo(){
