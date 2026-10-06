@@ -1785,7 +1785,7 @@ button{font-family:inherit;}
     <div class="modal-body">
       <div class="field-row">
         <label for="neFile">Image</label>
-        <input type="file" id="neFile" accept="image/*,video/mp4,video/quicktime,.mov,.avi,video/x-msvideo">
+        <input type="file" id="neFile" accept="image/*,video/mp4,video/quicktime,.mov,.avi,video/x-msvideo,.mpg,.mpeg,video/mpeg">
       </div>
       <div class="field-grid">
         <div class="field-row"><label for="neDate">Date cliché</label><input type="datetime-local" id="neDate"></div>
@@ -4926,12 +4926,13 @@ function renderGrid(){
     img.classList.remove("hidden");
     missing.classList.add("hidden");
     img.src = p.posterDataUrl || "";
-    const pendingIsAvi = /\.avi$/i.test(p.fileName || "");
+    const pendingIsAvi = isUnplayableVideoName(p.fileName); // AVI ou MPG : illisibles dans le navigateur
+    const pendingFmt = unplayableVideoLabel(p.fileName);
     document.getElementById("btnLoadPendingVideo").innerHTML = pendingIsAvi
       ? '⬇ Enregistrer une copie pour l\'ouvrir (<span id="pendingVideoSize"></span>)'
       : '▶ Charger la vidéo (<span id="pendingVideoSize"></span>)';
     document.getElementById("pendingVideoNote").textContent = pendingIsAvi
-      ? "Format AVI : les navigateurs ne savent pas le lire. Enregistrez une copie du fichier pour l'ouvrir dans le lecteur de votre ordinateur (VLC, Lecteur Windows…)."
+      ? `Format ${pendingFmt} : les navigateurs ne savent pas le lire. Enregistrez une copie du fichier pour l'ouvrir dans le lecteur de votre ordinateur (VLC, Lecteur Windows…).`
       : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.";
     document.getElementById("pendingVideoSize").textContent = fmtSize(p.videoSizeBytes) || "?";
     videoPending.classList.remove("hidden");
@@ -7984,7 +7985,7 @@ function traceSkipped(file, raison, detail){
   importTrace.push({fileName:file.name, chemin:file.webkitRelativePath || file.name, raison, detail: detail || ""});
 }
 // extensions de photo/vidéo/scan plausibles mais NON gérées par l'import (les fichiers système .db/.ini/.txt... ne sont pas signalés : trop de bruit)
-const IMPORT_UNSUPPORTED_MEDIA_RE = /\.(tiff?|jfif|jpe|jp2|jxl|svg|psd|raw|cr2|cr3|nef|arw|dng|orf|rw2|mkv|wmv|webm|m4v|3gp|mpe?g|mts|m2ts)$/i;
+const IMPORT_UNSUPPORTED_MEDIA_RE = /\.(tiff?|jfif|jpe|jp2|jxl|svg|psd|raw|cr2|cr3|nef|arw|dng|orf|rw2|mkv|wmv|webm|m4v|3gp|mts|m2ts)$/i;
 // 2 chemins désignent le même endroit même si l'un a été importé depuis un dossier racine différent (ex. "A/B" et "X/A/B")
 function samePlace(a, b){
   const n = x => (x || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
@@ -8143,7 +8144,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     : "";
   try{
     const isVideo = isVideoFile(file);
-    const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isAviFile(file)); // grosse vidéo (ou AVI, que <video> ne sait pas lire) : contenu chargé à la demande, voir plus bas
+    const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isUnplayableVideoFile(file)); // grosse vidéo (ou AVI/MPG, que <video> ne sait pas lire) : contenu chargé à la demande, voir plus bas
     // Sur Android, un fichier "vu" dans le sélecteur de dossier peut ne pas
     // être réellement lisible (ex. photo Google Photos non téléchargée sur
     // l'appareil, permission révoquée entre-temps…) : la lecture échoue
@@ -8160,8 +8161,8 @@ async function importOneFile(file, csvRowByFileName, stats){
       // Vignette + métadonnées seulement, via une URL objet temporaire
       // (aucune conversion en base64, donc aucun coût mémoire proportionnel
       // à la taille du fichier vidéo — contrairement à readFileAsDataURL).
-      if(isAviFile(file)){
-        videoMeta = await getAviMeta(file); // en-tête AVI lu directement (le navigateur ne sait pas ouvrir ce conteneur)
+      if(isUnplayableVideoFile(file)){
+        videoMeta = isAviFile(file) ? await getAviMeta(file) : await getMpgMeta(file); // en-tête lu directement (le navigateur ne sait pas ouvrir ces conteneurs)
       } else {
         const objectUrl = URL.createObjectURL(file);
         try{
@@ -8509,7 +8510,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
    introuvable) ; corbeille est forcé à true quel que soit ce que disait le
    catalogue, conformément à la règle demandée. */
 function buildOrphanRecordFromCsvRow(row, fileName){
-  const isVideo = /\.(mp4|mov|avi)$/i.test(fileName);
+  const isVideo = /\.(mp4|mov|avi|mpe?g)$/i.test(fileName);
   const lieu = row.lieu || "";
   return {
     id: uid("ph"), fileName, sousDossier: row.sousDossier || "", dataUrl: null,
@@ -8554,7 +8555,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   const preImportStart = performance.now(); // instrumentation temporaire : mesure tout ce qui se passe avant la 1ère image (voir échange utilisateur sur les ~25 s de silence constatées)
   slowStorageWarningShown = false; // ré-autorise l'avertissement de lenteur pour ce nouvel import
   const allFiles = [...fileList];
-  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov|avi)$/i.test(f.name));
+  const files = allFiles.filter(f=>/\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov|avi|mpe?g)$/i.test(f.name));
   if(files.length===0){ toast("Aucune image trouvée dans ce dossier."); return; }
   importTrace = []; // nouveau journal pour cet import
   document.getElementById("btnImportReport").classList.add("hidden");
@@ -9415,7 +9416,7 @@ async function getFullDataUrl(idOrPhoto){
    galerie/le visualiseur (une balise <img> ne peut pas afficher une vidéo).
    ----------------------------------------------------------------- */
 function isVideoFile(file){
-  return /^video\/(mp4|quicktime|x-msvideo|avi|msvideo)/i.test(file.type||"") || /\.(mp4|mov|avi)$/i.test(file.name||"");
+  return /^video\/(mp4|quicktime|x-msvideo|avi|msvideo|mpeg)/i.test(file.type||"") || /\.(mp4|mov|avi|mpe?g)$/i.test(file.name||"");
 }
 function getVideoMeta(dataUrl){
   return new Promise((resolve)=>{
@@ -9480,7 +9481,9 @@ function getVideoMeta(dataUrl){
 function isAviFile(file){
   return /\.avi$/i.test((file && file.name) || "") || /^video\/(x-msvideo|avi|msvideo)/i.test((file && file.type) || "");
 }
-const AVI_HEADER_READ_BYTES = 2 * 1024 * 1024; // en-tête + 1re image (une image Motion-JPEG de définition courante fait < 1 Mo)
+const AVI_HEADER_READ_BYTES = 256 * 1024; // l'en-tête AVI tient en quelques Ko ; la 1re image Motion-JPEG, si elle dépasse, est relue à part (lecture ciblée) : on évite de lire 2 Mo par fichier sur un gros import
+const AVI_MAX_POSTER_FRAME_BYTES = 16 * 1024 * 1024;
+const aviPlaceholderPosterCache = new Map(); // même codec + mêmes dimensions = même vignette : générée une seule fois pour tout l'import
 const AVI_CODEC_NAMES = {
   MJPG:"Motion JPEG", MJPEG:"Motion JPEG", DIVX:"MPEG-4 (DivX)", DX50:"MPEG-4 (DivX)", XVID:"MPEG-4 (Xvid)", FMP4:"MPEG-4",
   MP4V:"MPEG-4", MP42:"MPEG-4 v2", MP43:"MPEG-4 v3", H264:"H.264", X264:"H.264", AVC1:"H.264",
@@ -9537,13 +9540,20 @@ function makeVideoPlaceholderPoster(w, h, title, lines){
   lines.filter(Boolean).forEach((t, i)=> g.fillText(t, W/2, H*0.62 + i*H*0.1));
   return c.toDataURL("image/jpeg", 0.8);
 }
+function cachedPlaceholderPoster(title, codec, w, h){
+  const key = `${title}|${codec}|${w}x${h}`;
+  if(!aviPlaceholderPosterCache.has(key)){
+    aviPlaceholderPosterCache.set(key, makeVideoPlaceholderPoster(w, h, title, [codec, (w && h) ? `${w} × ${h}` : ""]));
+  }
+  return aviPlaceholderPosterCache.get(key);
+}
 async function getAviMeta(file){
   const out = {width:0, height:0, duration:0, poster:null, codec:""};
   let u8 = null, dv = null;
   try{ u8 = new Uint8Array(await file.slice(0, AVI_HEADER_READ_BYTES).arrayBuffer()); dv = new DataView(u8.buffer); }
   catch(e){ u8 = null; }
   let handler = "", compression = "", usPerFrame = 0, totalFrames = 0, vLength = 0, vScale = 0, vRate = 0;
-  let moviStart = -1, moviEnd = -1, inVideoStream = false, jpegBytes = null;
+  let moviStart = -1, moviEnd = -1, inVideoStream = false, jpegBytes = null, jpegBody = 0, jpegSize = 0;
   if(u8 && u8.length > 12){
     const fcc = o => String.fromCharCode(u8[o], u8[o+1], u8[o+2], u8[o+3]);
     try{
@@ -9583,7 +9593,7 @@ async function getAviMeta(file){
             const id = fcc(o), size = dv.getUint32(o + 4, true), body = o + 8;
             if(id === "LIST"){ o = body + 4; continue; } // groupe « rec » : on y descend
             if(/^\d\d(dc|db)$/.test(id) && size > 0){
-              if(body + size <= u8.length && u8[body] === 0xFF && u8[body + 1] === 0xD8) jpegBytes = u8.subarray(body, body + size);
+              if(body + 2 <= u8.length && u8[body] === 0xFF && u8[body + 1] === 0xD8){ jpegBody = body; jpegSize = size; } // Motion-JPEG : image lue plus bas
               break;
             }
             o = body + size + (size & 1);
@@ -9591,6 +9601,13 @@ async function getAviMeta(file){
         }
       }
     }catch(e){ /* en-tête atypique : on se contente de ce qui a été lu */ }
+  }
+  if(jpegSize > 0 && jpegSize <= AVI_MAX_POSTER_FRAME_BYTES){
+    try{
+      jpegBytes = (jpegBody + jpegSize <= u8.length)
+        ? u8.subarray(jpegBody, jpegBody + jpegSize)
+        : new Uint8Array(await file.slice(jpegBody, jpegBody + jpegSize).arrayBuffer()); // relecture ciblée de cette seule image
+    }catch(e){ jpegBytes = null; }
   }
   if(jpegBytes){
     try{
@@ -9605,10 +9622,118 @@ async function getAviMeta(file){
     }catch(e){ out.poster = null; }
   }
   if(!out.poster){
-    out.poster = makeVideoPlaceholderPoster(out.width, out.height, "AVI", [
-      out.codec, (out.width && out.height) ? `${out.width} × ${out.height}` : "", out.duration ? formatDuration(out.duration) : ""
-    ]);
+    // la durée n'est pas dessinée sur la vignette (elle s'affiche déjà en surimpression dans la galerie) : ainsi la vignette ne dépend que du
+    // codec et des dimensions et peut être mise en cache (des centaines d'AVI identiques = 1 seul dessin)
+    out.poster = cachedPlaceholderPoster("AVI", out.codec, out.width, out.height);
   }
+  return out;
+}
+
+/* -----------------------------------------------------------------
+   Vidéos MPG / MPEG (MPEG-1 ou MPEG-2 « Program Stream » : anciens caméscopes numériques, DVD, appareils photo).
+   Comme pour l'AVI, les navigateurs ne savent pas lire ce format et WebCodecs ne décode pas le MPEG-1/2 : ni
+   durée ni vignette ne peuvent venir d'un <video>. Le fichier est donc analysé directement, en ne lisant qu'un
+   petit morceau au début (en-tête de séquence : dimensions, cadence, version MPEG ; 1er horodatage « SCR ») et un
+   petit morceau à la fin (dernier horodatage) : la durée est la différence entre les deux. La vignette est une
+   image de remplacement « MPG » (aucun décodage d'image possible ici).
+   ----------------------------------------------------------------- */
+function isMpgFile(file){
+  return /\.mpe?g$/i.test((file && file.name) || "") || /^video\/mpeg/i.test((file && file.type) || "");
+}
+// Vidéos que <video> ne sait pas lire (AVI, MPG) : toujours « différées », visionnage par copie vers le lecteur du système.
+function isUnplayableVideoFile(file){ return isAviFile(file) || isMpgFile(file); }
+function isUnplayableVideoName(name){ return /\.(avi|mpe?g)$/i.test(name || ""); }
+function unplayableVideoLabel(name){ return /\.avi$/i.test(name || "") ? "AVI" : "MPG"; }
+const MPG_HEAD_BYTES = 128 * 1024; // une trame de séquence se trouve dans les tout premiers paquets
+const MPG_TAIL_BYTES = 64 * 1024;  // un « pack » (avec son horodatage) revient au plus tous les ~2 Ko
+const MPG_FRAME_RATES = [0, 23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
+// Horodatage SCR (horloge 90 kHz, 33 bits) d'un en-tête de « pack » 00 00 01 BA situé en o ; renvoie -1 si invalide.
+function mpgReadScr(u8, o){
+  if(o + 10 > u8.length) return -1;
+  const b0 = u8[o+4], b1 = u8[o+5], b2 = u8[o+6], b3 = u8[o+7], b4 = u8[o+8], b5 = u8[o+9];
+  if((b0 & 0xC4) === 0x44 && (b2 & 0x04) && (b4 & 0x04) && (b5 & 0x01)){ // MPEG-2 (6 octets, marqueurs « 01 »)
+    return ((b0 >> 3) & 7) * 2**30 + (b0 & 3) * 2**28 + b1 * 2**20 + (b2 >> 3) * 2**15 + (b2 & 3) * 2**13 + b3 * 32 + (b4 >> 3);
+  }
+  if((b0 & 0xF1) === 0x21 && (b2 & 0x01) && (b4 & 0x01)){ // MPEG-1 (5 octets, marqueur « 0010 »)
+    return ((b0 >> 1) & 7) * 2**30 + b1 * 2**22 + (b2 >> 1) * 2**15 + b3 * 128 + (b4 >> 1);
+  }
+  return -1;
+}
+// Horodatage de présentation (PTS, horloge 90 kHz) d'un paquet vidéo PES « 00 00 01 E0..EF » situé en o ; -1 s'il n'en porte pas.
+function mpgReadPts(u8, o){
+  let p = o + 6; // après le code de début (4) et la longueur (2)
+  if(p + 2 >= u8.length) return -1;
+  if((u8[p] & 0xC0) === 0x80){ // en-tête PES MPEG-2 : le drapeau PTS est le bit 7 de l'octet suivant ; la PTS commence 3 octets plus loin
+    if(!(u8[p+1] & 0x80)) return -1;
+    p += 3;
+  }else{                       // en-tête PES MPEG-1 : octets de bourrage 0xFF, éventuel bloc « STD », puis PTS (0010) ou PTS+DTS (0011)
+    let n = 0; while(p < u8.length && u8[p] === 0xFF && n < 16){ p++; n++; }
+    if(p < u8.length && (u8[p] & 0xC0) === 0x40) p += 2;
+    if(p >= u8.length || ((u8[p] & 0xF0) !== 0x20 && (u8[p] & 0xF0) !== 0x30)) return -1;
+  }
+  if(p + 5 > u8.length) return -1;
+  const b0 = u8[p], b1 = u8[p+1], b2 = u8[p+2], b3 = u8[p+3], b4 = u8[p+4];
+  if(!(b0 & 1) || !(b2 & 1) || !(b4 & 1)) return -1; // bits marqueurs absents : fausse détection
+  return ((b0 >> 1) & 7) * 2**30 + b1 * 2**22 + (b2 >> 1) * 2**15 + b3 * 128 + (b4 >> 1);
+}
+async function getMpgMeta(file){
+  const out = {width:0, height:0, duration:0, poster:null, codec:""};
+  let head = null, frameRate = 25;
+  try{ head = new Uint8Array(await file.slice(0, MPG_HEAD_BYTES).arrayBuffer()); }catch(e){ head = null; }
+  if(head && head.length > 16){
+    try{
+      if(head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70){ // « ftyp » : en réalité un MP4 renommé
+        out.codec = "MP4 (extension .mpg)";
+      }else if(head[0] === 0x47 && head.length > 188 && head[188] === 0x47){ // paquets de 188 octets : flux de transport MPEG (pas un Program Stream)
+        out.codec = "MPEG-TS";
+      }else{
+        // 1) en-tête de séquence vidéo 00 00 01 B3 : dimensions, cadence ; extension 00 00 01 B5 (id 1) = MPEG-2
+        for(let i = 0; i + 12 < head.length; i++){
+          if(head[i] === 0 && head[i+1] === 0 && head[i+2] === 1 && head[i+3] === 0xB3){
+            const s = i + 4;
+            const w = (head[s] << 4) | (head[s+1] >> 4), h = ((head[s+1] & 0x0F) << 8) | head[s+2], fr = head[s+3] & 0x0F;
+            if(w < 16 || h < 16 || fr < 1 || fr > 8) continue; // fausse détection dans des données : on poursuit
+            out.width = w; out.height = h;
+            let mpeg2 = false;
+            for(let j = s + 8; j < s + 8 + 140 && j + 5 < head.length; j++){
+              if(head[j] === 0 && head[j+1] === 0 && head[j+2] === 1 && head[j+3] === 0xB5){ mpeg2 = ((head[j+4] >> 4) === 1); break; }
+            }
+            frameRate = MPG_FRAME_RATES[fr];
+            out.codec = (mpeg2 ? "MPEG-2" : "MPEG-1") + ` · ${frameRate} i/s`;
+            break;
+          }
+        }
+        // 2) durée : (dernière PTS vidéo − première PTS vidéo) + 1 image — les mêmes horodatages que lit ffmpeg ;
+        //    à défaut de PTS exploitable, repli sur les horodatages SCR de multiplexage (un peu moins précis : écart d'une fraction de seconde)
+        if(file.size > MPG_HEAD_BYTES){
+          const tail = new Uint8Array(await file.slice(Math.max(0, file.size - MPG_TAIL_BYTES), file.size).arrayBuffer());
+          const WRAP = 2**33;
+          const fix = d => (d < 0 ? d + WRAP / 90000 : d); // l'horloge (33 bits) a fait un tour
+          const ok = d => d > 0 && d < 48 * 3600;
+          let firstPts = -1, lastPts = -1;
+          for(let i = 0; i + 12 < head.length && firstPts < 0; i++){
+            if(head[i] === 0 && head[i+1] === 0 && head[i+2] === 1 && (head[i+3] & 0xF0) === 0xE0) firstPts = mpgReadPts(head, i);
+          }
+          for(let i = tail.length - 12; i >= 0 && lastPts < 0; i--){
+            if(tail[i] === 0 && tail[i+1] === 0 && tail[i+2] === 1 && (tail[i+3] & 0xF0) === 0xE0) lastPts = mpgReadPts(tail, i);
+          }
+          let d = (firstPts >= 0 && lastPts >= 0) ? fix((lastPts - firstPts) / 90000) + 1 / frameRate : 0;
+          if(!ok(d)){
+            let first = -1, last = -1;
+            for(let i = 0; i + 10 < head.length && first < 0; i++){
+              if(head[i] === 0 && head[i+1] === 0 && head[i+2] === 1 && head[i+3] === 0xBA) first = mpgReadScr(head, i);
+            }
+            for(let i = tail.length - 12; i >= 0 && last < 0; i--){
+              if(tail[i+3] === 0xBA && tail[i] === 0 && tail[i+1] === 0 && tail[i+2] === 1) last = mpgReadScr(tail, i);
+            }
+            d = (first >= 0 && last >= 0) ? fix((last - first) / 90000) : 0;
+          }
+          if(ok(d)) out.duration = d;
+        }
+      }
+    }catch(e){ /* flux atypique : on se contente de ce qui a été lu */ }
+  }
+  out.poster = cachedPlaceholderPoster("MPG", out.codec, out.width, out.height);
   return out;
 }
 
@@ -10733,7 +10858,7 @@ document.getElementById("viewerVideo").addEventListener("error", ()=>{
    ----------------------------------------------------------------- */
 const singleVideoPickerInput = document.createElement("input");
 singleVideoPickerInput.type = "file";
-singleVideoPickerInput.accept = "video/mp4,video/quicktime,.mov,.avi,video/x-msvideo";
+singleVideoPickerInput.accept = "video/mp4,video/quicktime,.mov,.avi,video/x-msvideo,.mpg,.mpeg,video/mpeg";
 singleVideoPickerInput.className = "hidden";
 document.body.appendChild(singleVideoPickerInput);
 let singleVideoPickerTargetId = null;
@@ -10763,7 +10888,7 @@ function saveVideoCopy(p, file){
   toast(`Copie de « ${p.fileName} » enregistrée dans vos téléchargements : ouvrez-la avec votre lecteur vidéo.`, 6000);
 }
 function openOrPlayVideoFile(p, file){
-  if(/\.avi$/i.test(p.fileName || "")) saveVideoCopy(p, file); else playVideoFromFile(p, file);
+  if(isUnplayableVideoName(p.fileName)) saveVideoCopy(p, file); else playVideoFromFile(p, file);
 }
 async function loadPendingVideoFile(p){
   const cachedFile = pendingVideoFiles.get(p.id);
@@ -13907,14 +14032,14 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   if(!fileInput.files[0]) return toast("Choisissez une image ou une vidéo.");
   const file = fileInput.files[0];
   const isVideo = isVideoFile(file);
-  const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isAviFile(file)); // même seuil "petite vidéo" que pour l'import de dossier ; un AVI est toujours différé
+  const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isUnplayableVideoFile(file)); // même seuil "petite vidéo" que pour l'import de dossier ; un AVI/MPG est toujours différé
   const dataUrl = (isVideo && !deferVideo) ? await readFileAsDataURL(file)
                  : (!isVideo) ? await readFileAsDataURLWithHeicSupport(file)
                  : null;
   let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
   if(isVideo && deferVideo){
-    if(isAviFile(file)){
-      videoMeta = await getAviMeta(file);
+    if(isUnplayableVideoFile(file)){
+      videoMeta = isAviFile(file) ? await getAviMeta(file) : await getMpgMeta(file);
     } else {
       const objectUrl = URL.createObjectURL(file);
       try{ videoMeta = await getVideoMeta(objectUrl); } finally { URL.revokeObjectURL(objectUrl); }
@@ -14283,6 +14408,26 @@ function ensureJSZipLoaded(){
   if(window.JSZip) return Promise.resolve();
   return Promise.reject(new Error("Bibliothèque .zip introuvable dans la page (fichier Imago.html incomplet ou corrompu)."));
 }
+/* Sous-dossiers de destination d'une photo exportée : on reproduit son sousDossier d'origine
+   (ex. « ALBUMS PHOTO/2014/2014-09 Russie »). Si le dossier de destination choisi porte déjà le nom du
+   dossier racine d'origine (on exporte vers un dossier « ALBUMS PHOTO »), ce 1er niveau n'est pas répété. */
+function exportSubdirParts(p, destName){
+  const parts = (p.sousDossier || "").split("/").filter(Boolean);
+  if(parts.length && destName && parts[0].toLowerCase() === destName.toLowerCase()) parts.shift();
+  return parts;
+}
+// Sous-dossier de destination, avec mémoire des dossiers déjà ouverts (des milliers de photos partagent quelques dizaines de dossiers :
+// inutile de redescendre l'arborescence à chaque photo). En cas d'échec de création (nom refusé par le système de fichiers),
+// la photo est écrite à la racine plutôt que perdue.
+async function getExportTargetDir(rootHandle, parts, cache){
+  const key = parts.join("/");
+  if(cache.has(key)) return cache.get(key);
+  let dir;
+  try{ dir = await getOrCreateSubdir(rootHandle, parts); }
+  catch(e){ console.warn(`[Imago] Sous-dossier « ${key} » impossible à créer — photo écrite à la racine.`, e); dir = rootHandle; }
+  cache.set(key, dir);
+  return dir;
+}
 async function exportAllPhotosAsZip(targets, btn){
   try{
     await ensureJSZipLoaded();
@@ -14299,7 +14444,7 @@ async function exportAllPhotosAsZip(targets, btn){
     // qui n'est plus le cas depuis le chantier "miniatures en mémoire".
     const full = await getFullDataUrl(p);
     if(!full){ failed++; console.warn(`[Imago] Export .zip : image introuvable pour "${p.fileName}".`); }
-    else zip.file(p.fileName || `photo_${i+1}.jpg`, dataURLtoBlob(full));
+    else zip.file(exportSubdirParts(p, "").concat(p.fileName || `photo_${i+1}.jpg`).join("/"), dataURLtoBlob(full)); // arborescence d'origine conservée dans le .zip
     btn.textContent = `📦 Préparation du .zip… (${i+1}/${targets.length})`;
     if(i % 20 === 0) await delay(10); // laisse l'interface respirer sur un gros catalogue
   }
@@ -14338,11 +14483,13 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     }
     btn.disabled = true;
     let done = 0, failed = 0;
+    const dirCache = new Map();
     for(const p of targets){
       try{
         const full = await getFullDataUrl(p);
         if(!full) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
-        await writeFileToLocalDirectory(dirHandle, p.fileName || `photo_${done+1}.jpg`, dataURLtoBlob(full));
+        const targetDir = await getExportTargetDir(dirHandle, exportSubdirParts(p, dirHandle.name), dirCache); // sous-dossiers d'origine reproduits (avant : tout à la racine)
+        await writeFileToLocalDirectory(targetDir, p.fileName || `photo_${done+1}.jpg`, dataURLtoBlob(full));
       }catch(e){
         failed++;
         console.warn(`[Imago] Export impossible pour "${p.fileName}" :`, e);
