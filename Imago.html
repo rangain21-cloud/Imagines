@@ -5714,7 +5714,21 @@ burgerOverlay.addEventListener("click", ()=> toggleBurger(false));
 
 /* Pavé « Importer depuis une autre source » : dossier local et disque/USB passent par le sélecteur de dossier existant ;
    Google Drive liste les dossiers, télécharge leurs images/vidéos puis les injecte dans le même import. */
-["btnImpLocal","btnImpUsb"].forEach(id=> document.getElementById(id).addEventListener("click", ()=> document.getElementById("btnPickFolder").click()));
+/* Boutons de chargement de la Photothèque locale + « Charger depuis Drive » : si la galerie Main contient déjà
+   des images/vidéos, confirmation avant effacement (Non = l'action est annulée). Le pavé « Importer » reste, lui, additif. */
+document.addEventListener("click", async (e)=>{
+  const b = e.target.closest("#btnPickFolder,#btnPickFiles,#btnPickCatalog,#btnDriveLoad");
+  if(!b || !State.photos.length || (b.id === "btnDriveLoad" && !State.drive.token)) return;
+  e.stopPropagation(); e.preventDefault();
+  if(!confirm("Êtes-vous sûr d'effacer les images/vidéos pour en charger d'autres ?")) return;
+  await idbClear("photos");
+  State.photos = []; State.selectedId = null; State.viewIndex = 0;
+  renderGrid();
+  if(!document.getElementById("galleryScreen").classList.contains("hidden")) renderGallery();
+  ["btnPickFolder","btnPickFiles"].forEach(id=> document.getElementById(id).classList.remove("done"));
+  b.click(); // relance le clic d'origine, désormais sans photos chargées donc sans nouvelle confirmation
+}, true);
+["btnImpLocal","btnImpUsb"].forEach(id=> document.getElementById(id).addEventListener("click", ()=> folderInput.click()));
 document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (pavé Connexion)."); document.getElementById("pvConnexion").open = true; return; }
   const ov = document.createElement("div"); ov.className = "modal-overlay show";
