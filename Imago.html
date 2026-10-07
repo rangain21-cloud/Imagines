@@ -386,6 +386,23 @@ button{font-family:inherit;}
 .drive-btn .status{font-size:11px; opacity:.85;}
 .drive-note{font-size:11px; color:var(--ink-dim); margin-top:8px; line-height:1.5;}
 .drive-note a{color:var(--copper-hi);}
+details.pave>summary{list-style:none; cursor:pointer; font-family:var(--font-display); font-size:15px; color:var(--copper-hi); display:flex; align-items:center; gap:8px;}
+details.pave>summary::-webkit-details-marker{display:none;}
+details.pave>summary::before{content:"▸"; font-size:12px; transition:transform .15s;}
+details.pave[open]>summary::before{transform:rotate(90deg);}
+details.pave[open]>summary{margin-bottom:12px;}
+details.pave .btn{width:100%; margin-bottom:8px;}
+.ib{cursor:help; font-size:12px; color:var(--ink-dim); margin-left:auto;}
+.btn.copper.done,.btn.copper.done:hover{background:var(--ok); border-color:var(--ok); color:#0c1f14;}
+.hof-chips{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;}
+.hof-chips label{cursor:pointer;}
+.hof-chips input{display:none;}
+.hof-chips span{display:block; font-size:12px; padding:4px 10px; border:1px solid var(--line); border-radius:var(--radius);}
+.hof-chips input:checked+span{background:var(--copper); border-color:var(--copper); color:#1a1208; font-weight:600;}
+.hof-step{display:grid; grid-template-columns:22px minmax(0,1fr); gap:8px; align-items:start; margin-bottom:8px;}
+.hof-step>b{width:22px; height:22px; border-radius:50%; background:var(--copper); color:#1a1208; font-size:12px; display:flex; align-items:center; justify-content:center; margin-top:5px;}
+.hof-opts{display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; margin-bottom:6px;}
+.hof-opts label{display:flex; align-items:center; gap:4px; cursor:pointer;}
 .small-link{background:none; border:none; color:var(--copper-hi); text-decoration:underline; cursor:pointer; font-size:12px; padding:0;}
 
 /* ---------- écran d'accueil : l'heuristique (planche-contact générale) ---------- */
@@ -982,7 +999,6 @@ button{font-family:inherit;}
   <div class="topbar-tools">
     <button class="tool-btn" id="btnBackToGallery" title="Retour galerie"><span class="ic">▦</span><span>Retour galerie</span></button>
     <button class="tool-btn" id="btnShare" title="Partager"><span class="ic">⇪</span><span>Partager</span></button>
-    <button class="tool-btn" id="btnHOF" title="Hall of fame" style="background:#4a2a7a; border-color:#6b3fb0;"><span>HOF</span></button>
     <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
     <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
     <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
@@ -1029,91 +1045,58 @@ button{font-family:inherit;}
 <nav class="burger-panel" id="burgerPanel">
   <h2>Menu</h2>
 
-  <div class="pave">
-    <h3>Connexion</h3>
-    <button class="drive-btn" id="btnDriveConnect">
-      <span id="lblDriveConnect">Connecter à Drive</span><span class="status">●</span>
-    </button>
-    <button class="drive-btn" id="btnDriveLoad">
-      <span id="lblDriveLoad">Charger depuis Drive</span><span class="status">●</span>
-    </button>
-    <button class="drive-btn" id="btnDriveSave">
-      <span id="lblDriveSave">Sauver sur Drive</span><span class="status">●</span>
-    </button>
-    <button class="btn" id="btnPartnerAccess" style="width:100%; margin-top:8px;">🤝 Donner accès à un partenaire de confiance…</button>
-    <p class="drive-note">
-      La connexion Google Drive nécessite un identifiant client OAuth (Google Cloud Console, API Drive activée).
-      <button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
-    </p>
-    <p class="drive-note">
-      Le dossier Drive, <b>IMAGINES</b> héberge vos partages.
-    </p>
-  </div>
+  <details class="pave" id="pvConnexion"><summary>Connexion</summary>
+    <button class="drive-btn" id="btnDriveConnect"><span id="lblDriveConnect">Connecter à Drive</span><span class="status">●</span></button>
+    <button class="drive-btn" id="btnDriveLoad"><span id="lblDriveLoad">Charger depuis Drive</span><span class="status">●</span></button>
+    <button class="drive-btn" id="btnDriveSave"><span id="lblDriveSave">Sauver sur Drive</span><span class="status">●</span></button>
+    <button class="btn" id="btnPartnerAccess" style="margin-top:8px;">🤝 Donner accès à un partenaire de confiance…</button>
+    <p class="drive-note"><button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
+      <span class="ib" title="La connexion Google Drive nécessite un identifiant client OAuth (Google Cloud Console, API Drive activée). Le dossier Drive IMAGINES héberge vos partages.">ⓘ</span></p>
+  </details>
 
-  <div class="pave">
-    <h3>Photothèque locale</h3>
-    <button class="btn" id="btnPickFolder" style="width:100%; margin-bottom:8px;">📁 Choisir un dossier d'images…</button>
-    <button class="btn" id="btnPickFiles" style="width:100%; margin-bottom:8px;">🖼️ Sélectionner des images (si le dossier échoue)…</button>
-    <button class="btn" id="btnPickCatalog" style="width:100%; margin-bottom:8px;">📄 Choisir le catalogue (.csv)…</button>
-    <p class="drive-note">
-      Sur Google Drive, le sélecteur d'images n'affiche que les photos/vidéos
-      : utilisez ce bouton pour choisir vous-même le fichier catalogue
-      (.csv) de référence — plusieurs fichiers trouvés vous seront proposés
-      au choix, comme pour « Choisir un dossier… ».
-    </p>
+  <details class="pave" id="pvPhototheque" open><summary>Photothèque locale</summary>
+    <button class="btn" id="btnPickFolder" title="Choisir le dossier de vos images">📁 Choisir un dossier d'images…</button>
+    <button class="btn" id="btnPickFiles" title="À utiliser si le choix du dossier échoue">🖼️ Sélectionner des images…</button>
+    <button class="btn copper" id="btnPickCatalog" title="Sur Google Drive, le sélecteur d'images n'affiche que les photos/vidéos : choisissez ici le fichier catalogue (.csv) de référence. Plusieurs fichiers trouvés vous seront proposés au choix.">📄 Choisir le catalogue (.csv)…</button>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
-    <!-- Bouton de nouvelle tentative MANUELLE (pas automatique) pour les
-         fichiers en échec d'un précédent import : certains blocages Android
-         semblent exiger un vrai geste utilisateur (un appui) pour redonner
-         l'autorisation de lecture — une reprise déclenchée toute seule par
-         le script, même après une pause, ne suffit pas toujours. Masqué par
-         défaut ; affiché uniquement s'il reste des fichiers en échec (voir
-         showRetryFailedButton / hideRetryFailedButton). -->
-    <button class="btn copper hidden" id="btnRetryFailedImports" style="width:100%; margin-top:8px;"></button>
-    <!-- Rapport des fichiers NON importés (raison + chemin), téléchargeable en CSV : affiché en fin d'import
-         seulement s'il y en a (voir importTrace / updateImportReportButton). -->
-    <button class="btn hidden" id="btnImportReport" style="width:100%; margin-top:8px;"></button>
-  </div>
+    <button class="btn copper hidden" id="btnRetryFailedImports" style="margin-top:8px;"></button>
+    <button class="btn hidden" id="btnImportReport" style="margin-top:8px;"></button>
+  </details>
 
-  <div class="pave">
-    <button class="btn" id="btnExportCsv" style="width:100%;">Exporter le catalogue (.csv)</button>
-    <button class="btn" id="btnWriteExifBatch" style="width:100%; margin-top:8px;">🖊️ Reporter Caméra/Lieu/Map dans les métadonnées EXIF (tout le catalogue)</button>
-    <p class="drive-note" style="margin-top:6px;">
-      Utile après une modification faite directement dans le fichier .csv
-      (Excel…) plutôt que dans la modale « Modifier », qui n'écrit
-      automatiquement les métadonnées que photo par photo, à l'enregistrement.
-    </p>
-    <button class="btn" id="btnExportAllPhotos" style="width:100%; margin-top:10px;">📤 Exporter toutes les photos (dossier ou .zip)</button>
-    <p class="drive-note" style="margin-top:6px;">
-      Écrit chaque photo du catalogue (avec ses métadonnées à jour) dans un
-      dossier de votre choix sur ce PC (les fichiers de même nom sont
-      remplacés), ou dans un .zip téléchargeable si l'écriture directe n'est
-      pas possible sur cet appareil/navigateur — pour éviter de repasser par
-      « Enregistrer + télécharger » photo par photo.
-    </p>
-  </div>
+  <details class="pave" id="pvImport"><summary>Importer depuis une autre source</summary>
+    <button class="btn" id="btnImpLocal" title="Ajoute à la photothèque les photos/vidéos d'un dossier de cet ordinateur">💻 Dossier de l'ordinateur…</button>
+    <button class="btn" id="btnImpUsb" title="Choisissez le disque ou la clé USB dans le sélecteur de dossier du système">🔌 Disque ou clé USB…</button>
+    <button class="btn" id="btnImpDrive" title="Télécharge les photos/vidéos d'un dossier Google Drive (connexion requise)">☁️ Google Drive…</button>
+    <button class="btn" id="btnNewEntry" title="Crée une fiche à partir d'un fichier isolé">➕ Ajouter un fichier isolé…</button>
+  </details>
 
-  <div class="pave">
-    <div class="search-field">
-      <label for="agencementSelect">Agencement</label>
-      <select id="agencementSelect">
-        <optgroup label="Ordinateur">
-          <option value="ultracompact">Ultra-compact</option>
-          <option value="laptop1366">Laptop 1366</option>
-          <option value="bureau1920" selected>Bureau standard 1920</option>
-          <option value="bureau2560">Bureau large 2560</option>
-        </optgroup>
-        <optgroup label="Tablette & mobile">
-          <option value="tablette1024">Tablette 1024</option>
-          <option value="smartphoneGrand">Smartphone grand (Pro Max/Ultra)</option>
-          <option value="smartphoneStandard">Smartphone standard</option>
-          <option value="smartphonePetit">Smartphone petit (SE/mini)</option>
-        </optgroup>
-        <option value="lisibilite">Lisibilité max</option>
-        <option value="custom">Custom</option>
-      </select>
-    </div>
-  </div>
+  <details class="pave" id="pvSauvegarde"><summary>Sauvegarde des travaux</summary>
+    <button class="btn copper" id="btnExportCsv">Exporter le catalogue (.csv)</button>
+    <button class="btn" id="btnWriteExifBatch" title="Utile après une modification faite directement dans le fichier .csv (Excel…) : la modale « Modifier » n'écrit les métadonnées que photo par photo.">🖊️ Reporter Caméra/Lieu/Map dans l'EXIF</button>
+    <button class="btn" id="btnExportAllPhotos" title="Écrit chaque photo du catalogue (métadonnées à jour) dans un dossier de votre choix, ou dans un .zip si l'écriture directe est impossible.">📤 Exporter toutes les photos</button>
+  </details>
+
+  <details class="pave" id="pvHof"><summary>Hall of fame</summary>
+    <div class="hof-chips"><label><input type="radio" name="hofCriterion" value="favori" checked><span>★ Favori</span></label><label><input type="radio" name="hofCriterion" value="art"><span>🎨 Art</span></label><label><input type="radio" name="hofCriterion" value="concert"><span>🎤 Concert</span></label><label><input type="radio" name="hofCriterion" value="histoire"><span>📜 Culture</span></label><label><input type="radio" name="hofCriterion" value="partition"><span>🎼 Partition</span></label><label><input type="radio" name="hofCriterion" value="animaux"><span>🐾 Animaux</span></label></div>
+    <div id="hofAnimauxPrefixWrap" class="hidden" style="display:flex; align-items:center; gap:6px; margin:-4px 0 10px; font-size:12px;">Titre commençant par <input type="text" id="hofAnimauxPrefix" value="Anima" style="width:90px; font-size:12px; padding:2px 6px;"></div>
+    <div class="hof-step"><b>1</b><button class="btn" id="btnHOFGenerate" title="Construit (ou récupère) le fichier Album-….csv de la rubrique choisie à partir des catalogues. Déplacez-le ensuite dans le dossier de vos photos avant l'étape 2.">Générer l'album</button></div>
+    <div class="hof-step"><b>2</b><button class="btn" id="btnHOFPickFolder" title="Choisissez le dossier de vos photos : seules les images de l'album sont chargées.">📁 Afficher : choisir le dossier…</button></div>
+    <div class="hof-step"><b>3</b><div>
+      <div class="hof-opts"><label><input type="radio" name="hofShareDest" value="drive" checked> ☁️ Drive</label><label><input type="radio" name="hofShareDest" value="local"> 💾 Local / USB</label></div>
+      <div class="hof-opts"><label><input type="radio" name="hofExistingFilesMode" value="skip" checked> ⏭️ Passer</label><label><input type="radio" name="hofExistingFilesMode" value="overwrite"> 🔁 Réécrire</label><span class="ib" title="Fichiers image/vidéo déjà présents dans la destination (le fichier Album est toujours mis à jour). Pour les JPEG, Appareil, Lieu et Map sont incrustés dans l'EXIF avant l'envoi.">ⓘ</span></div>
+      <p class="drive-note" id="hofShareLocalNote" style="margin:0 0 6px; display:none;">Sélecteur de dossier du système (Chrome/Edge) : disque C:, clé USB, réseau…</p>
+      <button class="btn" id="btnHOFShare" style="margin-bottom:0;">☁️ Choisir le dossier Drive et partager…</button></div></div>
+    <div id="hofProgressWrap" class="hidden" style="margin-top:8px;"><div style="height:8px; border-radius:4px; background:var(--bg-panel); border:1px solid var(--line); overflow:hidden;"><div id="hofProgressBar" style="height:100%; width:0%; background:var(--copper); transition:width .15s ease;"></div></div></div>
+    <p class="drive-note" id="hofStatus"></p>
+  </details>
+
+  <details class="pave" id="pvAgencement"><summary>Agencement</summary>
+    <div class="search-field"><select id="agencementSelect">
+      <optgroup label="Ordinateur"><option value="ultracompact">Ultra-compact</option><option value="laptop1366">Laptop 1366</option><option value="bureau1920" selected>Bureau standard 1920</option><option value="bureau2560">Bureau large 2560</option></optgroup>
+      <optgroup label="Tablette & mobile"><option value="tablette1024">Tablette 1024</option><option value="smartphoneGrand">Smartphone grand (Pro Max/Ultra)</option><option value="smartphoneStandard">Smartphone standard</option><option value="smartphonePetit">Smartphone petit (SE/mini)</option></optgroup>
+      <option value="lisibilite">Lisibilité max</option>
+    </select></div>
+  </details>
 </nav>
 
 <!-- ============== APP BODY ============== -->
@@ -1177,16 +1160,6 @@ button{font-family:inherit;}
   <aside class="sidebar" id="sidebar">
     <h3>Recherches</h3>
 
-    <div class="search-field ui-scale-field">
-      <label for="uiScaleSelect">Agencement de l'affichage</label>
-      <select id="uiScaleSelect">
-        <option value="compact">Compact — petit écran / laptop</option>
-        <option value="standard" selected>Standard — par défaut</option>
-        <option value="comfortable">Confortable — écran large</option>
-        <option value="xl">Grand écran — très large moniteur</option>
-      </select>
-    </div>
-
     <div class="search-field">
       <label for="fAuteur">Liste par Auteur</label>
       <select id="fAuteur"><option value="">— Tous —</option></select>
@@ -1219,68 +1192,8 @@ button{font-family:inherit;}
 
     <div class="sidebar-actions">
       <button class="btn reset" id="btnResetFilters">Réinitialiser les filtres</button>
-      <button class="btn copper" id="btnNewEntry">Nouvelle Entrée</button>
-      <button class="btn" id="btnNewAuteur">Nouvel Auteur</button>
     </div>
   </aside>
-</div>
-
-<!-- ============== MODAL: HALL OF FAME ============== -->
-<div class="modal-overlay" id="modalHOF">
-  <div class="modal">
-    <div class="modal-head"><h2>Hall of fame</h2><button class="modal-close" data-close="modalHOF">×</button></div>
-    <div class="modal-body">
-      <p class="drive-note">
-        <b>1) Générer</b> — construit (ou récupère) un fichier « Album-Favori.csv », « Album-Art.csv », « Album-Concert.csv », « Album-Culture.csv » ou « Album-Partoche.csv » (selon la rubrique choisie ci-dessous) en intégrant les images/vidéos marquées dans les fichiers Catalogue-AAAA.csv de chaque année.
-      </p>
-      <div style="display:flex; gap:16px; margin:6px 0 4px; font-size:13px;">
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="favori" checked> ★ Favori</label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="art"> 🎨 Art</label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="concert"> 🎤 Concert</label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="histoire"> 📜 Culture</label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="partition"> 🎼 Partition</label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofCriterion" value="animaux"> 🐾 Animaux</label>
-      </div>
-      <div id="hofAnimauxPrefixWrap" class="hidden" style="display:flex; align-items:center; gap:6px; margin:2px 0 4px; font-size:12px;">
-        <label for="hofAnimauxPrefix" style="opacity:.8;">Préfixe recherché dans le titre :</label>
-        <input type="text" id="hofAnimauxPrefix" value="Anima" placeholder="Anima" style="width:110px; font-size:12px; padding:2px 6px;" title="Toute photo dont le titre commence par ce texte (insensible à la casse) sera incluse.">
-      </div>
-      <button class="btn copper" id="btnHOFGenerate" style="width:100%; margin-top:4px;">Générer</button>
-
-      <p class="drive-note" style="margin-top:18px;">
-        <b>2) Afficher</b> — une fois « Album-Favori.csv », « Album-Art.csv », « Album-Concert.csv », « Album-Culture.csv » ou « Album-Partoche.csv » (selon la rubrique choisie ci-dessus) généré et déposé dans le dossier de vos photos, choisissez ce même dossier : seules les images/vidéos qu'il référence seront chargées, pas tout le dossier.
-      </p>
-      <button class="btn" id="btnHOFPickFolder" style="width:100%; margin-top:4px;">📁 Choisir un dossier d'images…</button>
-      <div id="hofProgressWrap" class="hidden" style="margin-top:10px;">
-        <div style="height:8px; border-radius:4px; background:var(--bg-panel); border:1px solid var(--line); overflow:hidden;">
-          <div id="hofProgressBar" style="height:100%; width:0%; background:var(--copper); transition:width .15s ease;"></div>
-        </div>
-      </div>
-
-      <p class="drive-note" style="margin-top:18px;">
-        <b>3) Partager</b> — envoie le fichier Album ainsi que les images/vidéos chargées à l'étape 2) ci-dessus vers la destination choisie ci-dessous : soit un dossier Google Drive (c'est vous qui le désignez au moment de cliquer), soit un dossier local sur votre ordinateur — disque C: ou clé USB par exemple.<br>
-        🏷️ Pour les JPEG, l'Appareil, le Lieu et les coordonnées de la rubrique Map connus du catalogue sont incrustés directement dans le fichier (EXIF) avant l'envoi, quelle que soit la destination : ces infos restent donc visibles même hors d'Imago (Drive, Google Photos, explorateur de fichiers…), pas seulement dans Album-Favori.csv/Album-Art.csv/Album-Concert.csv/Album-Culture.csv/Album-Partoche.csv. Les vidéos (.mp4) sont, elles, transférées telles quelles.<br>
-        ⚠️ Pensez à déplacer vous-même le fichier Album fraîchement régénéré (étape 1) depuis votre dossier Téléchargements vers le dossier de vos photos <em>avant</em> de faire « Afficher » — sans ce déplacement manuel, « Afficher » (et donc ce partage) continuerait à utiliser l'ancienne version du fichier.
-      </p>
-      <div style="display:flex; gap:16px; margin:6px 0 8px; font-size:13px;">
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofShareDest" value="drive" checked> ☁️ Google Drive</label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofShareDest" value="local"> 💾 Dossier local (disque C:, clé USB…)</label>
-      </div>
-      <p class="drive-note" id="hofShareLocalNote" style="margin:0 0 8px; display:none;">
-        Ouvre le sélecteur de dossier de votre système : choisissez-y n'importe quel emplacement accessible depuis l'ordinateur (disque C:, clé USB branchée, disque réseau…). Nécessite un navigateur compatible (Chrome ou Edge sur ordinateur) ; ni connexion Drive ni compte Google requis pour cette option.
-      </p>
-      <p class="drive-note" style="margin:0 0 4px;">
-        Fichiers image/vidéo déjà présents dans le dossier de destination (le fichier Album, lui, est toujours mis à jour) :
-      </p>
-      <div style="display:flex; gap:16px; margin:0 0 8px; font-size:13px;">
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofExistingFilesMode" value="skip" checked> ⏭️ Passer (ignorer)</label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="hofExistingFilesMode" value="overwrite"> 🔁 Réécrire (remplacer)</label>
-      </div>
-      <button class="btn" id="btnHOFShare" style="width:100%; margin-top:4px;">☁️ Choisir le dossier Drive et partager…</button>
-
-      <p class="drive-note" id="hofStatus" style="margin-top:10px;"></p>
-    </div>
-  </div>
 </div>
 
 <!-- ============== MODAL: CHOIX DES CATALOGUES CSV (HOF, étape 1) ============== -->
@@ -5732,17 +5645,7 @@ function applyUiScale(key){
 }
 (function initUiScale(){
   const saved = localStorage.getItem("imago_ui_scale") || "standard";
-  const select = document.getElementById("uiScaleSelect");
-  select.value = UI_SCALE_FACTORS[saved] !== undefined ? saved : "standard";
-  applyUiScale(select.value);
-  select.addEventListener("change", ()=>{
-    localStorage.setItem("imago_ui_scale", select.value);
-    applyUiScale(select.value);
-    // Un réglage manuel de l'échelle décorrèle l'agencement du preset choisi
-    // dans le menu burger : on bascule ce dernier sur "Custom" pour éviter
-    // qu'il n'affiche un preset qui ne correspond plus à l'état réel.
-    markAgencementCustom();
-  });
+  applyUiScale(UI_SCALE_FACTORS[saved] !== undefined ? saved : "standard");
 })();
 
 /* ---------------------------------------------------------------
@@ -5782,8 +5685,6 @@ function applyAgencement(key, persist){
   if(!preset) return; // "custom" : on n'applique rien, l'état courant est conservé tel quel
   document.documentElement.style.setProperty("--side-panel-w", preset.sidePanelW + "px");
   document.documentElement.style.setProperty("--thumb-min", preset.thumbMin + "px");
-  const uiScaleSelect = document.getElementById("uiScaleSelect");
-  uiScaleSelect.value = preset.uiScale;
   applyUiScale(preset.uiScale);
   localStorage.setItem("imago_ui_scale", preset.uiScale);
   if(persist) localStorage.setItem(AGENCEMENT_KEY, key);
@@ -5791,7 +5692,7 @@ function applyAgencement(key, persist){
 (function initAgencement(){
   const saved = localStorage.getItem(AGENCEMENT_KEY) || "bureau1920";
   const select = document.getElementById("agencementSelect");
-  select.value = (AGENCEMENT_PRESETS[saved] || saved === "custom") ? saved : "bureau1920";
+  select.value = AGENCEMENT_PRESETS[saved] ? saved : "bureau1920";
   applyAgencement(select.value, false);
   select.addEventListener("change", ()=>{
     applyAgencement(select.value, true);
@@ -5810,6 +5711,50 @@ function toggleBurger(open){
 }
 document.getElementById("burgerToggle").addEventListener("click", ()=> toggleBurger());
 burgerOverlay.addEventListener("click", ()=> toggleBurger(false));
+
+/* Pavé « Importer depuis une autre source » : dossier local et disque/USB passent par le sélecteur de dossier existant ;
+   Google Drive liste les dossiers, télécharge leurs images/vidéos puis les injecte dans le même import. */
+["btnImpLocal","btnImpUsb"].forEach(id=> document.getElementById(id).addEventListener("click", ()=> document.getElementById("btnPickFolder").click()));
+document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (pavé Connexion)."); document.getElementById("pvConnexion").open = true; return; }
+  const ov = document.createElement("div"); ov.className = "modal-overlay show";
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Importer depuis Drive</h2><button class="modal-close">×</button></div><div class="modal-body">Chargement des dossiers…</div></div>';
+  document.body.appendChild(ov);
+  const body = ov.querySelector(".modal-body"), close = ()=> ov.remove();
+  ov.querySelector(".modal-close").onclick = close;
+  const api = "https://www.googleapis.com/drive/v3/files?";
+  try{
+    const q = encodeURIComponent("mimeType='application/vnd.google-apps.folder' and trashed=false");
+    const r = await (await driveApiFetch(api + `q=${q}&pageSize=200&orderBy=name&fields=files(id,name)`)).json();
+    body.innerHTML = "";
+    (r.files||[]).forEach(f=>{
+      const b = document.createElement("button"); b.className = "btn"; b.style.cssText = "width:100%; margin-bottom:6px; text-align:left;"; b.textContent = "📁 " + f.name;
+      b.onclick = async ()=>{
+        body.textContent = "Lecture du dossier « " + f.name + " »…";
+        try{
+          let list = [], tok = "";
+          do{
+            const mq = encodeURIComponent(`'${f.id}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')`);
+            const j = await (await driveApiFetch(api + `q=${mq}&pageSize=200&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
+            list = list.concat(j.files||[]); tok = j.nextPageToken || "";
+          }while(tok);
+          const files = [];
+          for(let i=0;i<list.length;i++){
+            body.textContent = `Téléchargement ${i+1} / ${list.length}…`;
+            const blob = await (await driveApiFetch(api.replace("?","/") + list[i].id + "?alt=media")).blob();
+            files.push(new File([blob], list[i].name, {type:list[i].mimeType, lastModified:Date.parse(list[i].modifiedTime)||Date.now()}));
+          }
+          close();
+          if(!files.length) return toast("Aucune image ni vidéo dans ce dossier.");
+          toggleBurger(false);
+          handleFilesSelected(files, f.name, true, "btnImpDrive");
+        }catch(e){ close(); toast("Import Drive impossible : " + e.message); }
+      };
+      body.appendChild(b);
+    });
+    if(!(r.files||[]).length) body.textContent = "Aucun dossier trouvé sur ce Drive.";
+  }catch(e){ close(); toast("Import Drive impossible : " + e.message); }
+});
 
 /* ---------------------------------------------------------------
    7. Chargement d'un dossier local d'images (input webkitdirectory)
@@ -6108,11 +6053,7 @@ document.querySelectorAll('input[name="hofCriterion"]').forEach(radio=>{
   radio.addEventListener("change", updateHofAnimauxPrefixVisibility);
 });
 
-document.getElementById("btnHOF").addEventListener("click", ()=>{
-  document.getElementById("hofStatus").textContent = "";
-  updateHofAnimauxPrefixVisibility();
-  openModal("modalHOF");
-});
+updateHofAnimauxPrefixVisibility();
 document.getElementById("btnHOFGenerate").addEventListener("click", ()=> hofGenerateFolderInput.click());
 document.getElementById("btnHOFPickFolder").addEventListener("click", ()=> hofDisplayFolderInput.click());
 
@@ -6926,7 +6867,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // affiché en pied de diaporama) et titre réduit au seul personnage
   // (faute de lieu pour le compléter) au lieu du vrai titre enregistré.
   await runHofImportWithProgress([...matchedFiles, albumFile], statusEl);
-  closeModal("modalHOF");
+  toggleBurger(false);
   toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`
     + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : "")
     + (staleDuplicates.length ? ` ⚠️ ${staleDuplicates.length} autre(s) version(s) de ce fichier trouvée(s) dans le dossier (${staleDuplicates.map(f=>f.name).join(", ")}) — la plus récente a été utilisée, mais supprimez les anciennes pour éviter toute confusion.` : ""));
@@ -14157,11 +14098,6 @@ document.getElementById("btnSaveNewEntry").addEventListener("click", async ()=>{
   autoBuildCsv();
 });
 
-document.getElementById("btnNewAuteur").addEventListener("click", ()=>{
-  document.getElementById("naName").value = "";
-  document.getElementById("naNote").value = "";
-  openModal("modalNewAuteur");
-});
 document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
   const name = document.getElementById("naName").value.trim();
   if(!name) return toast("Donnez un nom à l'auteur.");
@@ -15074,6 +15010,7 @@ function pushExitGuard(){
   try{ history.pushState({imagoGuard:true}, "", location.href); exitGuardPushed = true; }catch(e){ console.warn("Garde de sortie indisponible :", e); }
 }
 function markCsvDirty(){
+  if(!State.dirty){ const pv = document.getElementById("pvSauvegarde"); if(pv) pv.open = true; } // 1re correction : dépli du pavé Sauvegarde
   State.dirty = true;
   if(!exitGuardPushed) pushExitGuard();
   // Le catalogue vient de changer : l'export précédent n'est plus à jour —
