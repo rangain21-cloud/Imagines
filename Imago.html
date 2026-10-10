@@ -726,7 +726,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .edit-zoom-controls button{ background:none; border:none; color:var(--ink); font-size:16px; cursor:pointer; width:20px; padding:0; }
 .edit-zoom-controls button:hover{ color:var(--copper-hi); }
 .edit-zoom-controls input[type=range]{ width:90px; }
-.edit-preview-wrap.cropping .edit-zoom-controls{ display:none; } /* pas de zoom pendant le recadrage : voir startCropMode, qui réinitialise déjà la vue à 100% */
+/* le zoom reste disponible pendant le rognage : le calque de sélection suit l'image (voir syncCropOverlay) */
 .crop-overlay{
   position:absolute; cursor:crosshair; z-index:5;
   background:rgba(0,0,0,.35);
@@ -743,6 +743,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap;
 }
 .crop-toolbar .hint{font-size:12px; color:var(--ink-dim); margin-right:auto;}
+.crop-overlay.pan{ cursor:grab; }
+.crop-overlay.pan.dragging{ cursor:grabbing; }
+#cropPanBtn{ white-space:nowrap; }
 .edit-tabs-row{
   display:flex; flex-direction:row; align-items:flex-start; /* la colonne d'onglets ne s'étire plus jusqu'en bas de la modale : elle s'arrête juste après le 4e onglet, au lieu de laisser du vide en dessous */
 }
@@ -1429,7 +1432,8 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       </div>
     </div>
     <div class="crop-toolbar hidden" id="cropToolbar">
-      <span class="hint">Faites glisser sur l'image pour définir la zone à conserver.</span>
+      <span class="hint">Zoomez (molette ou curseur) sur la partie voulue, puis faites glisser pour définir la zone à conserver.</span>
+      <button class="btn" id="cropPanBtn" type="button" title="Déplacer la vue dans l'image zoomée (ou glisser avec le bouton du milieu de la souris)">✋ Déplacer la vue</button>
       <button class="btn reset" id="cropCancelBtn" type="button">Annuler</button>
       <button class="btn copper" id="cropApplyBtn" type="button">Appliquer le recadrage</button>
     </div>
@@ -11758,22 +11762,53 @@ function startCropMode(){
   // change encore la largeur utile ; les passes suivantes relisent cette
   // taille déjà stabilisée pour converger vers la taille finale, sans
   // dépendre du ResizeObserver asynchrone de la zone d'aperçu.
-  editViewScale = 1; applyEditZoom(); applyEditZoom(); applyEditZoom();
-  document.getElementById("editPreviewWrap").scrollTo(0,0);
+  // Le zoom en cours est CONSERVÉ : on peut zoomer sur une zone (avant ou après avoir cliqué sur
+  // « Rogner »), puis dessiner le rectangle dans cette zone. Le calque de sélection est recalé sur
+  // l'image à chaque changement de taille (voir syncCropOverlay, appelé par applyEditZoom).
+  cropNorm = null;
+  setCropPanMode(false);
+  applyEditZoom(); applyEditZoom(); applyEditZoom();
+  syncCropOverlay();
+}
+/* Rectangle de sélection mémorisé en FRACTIONS de l'image affichée (0..1) et non en pixels écran :
+   il reste donc collé au même endroit de l'image quand on zoome/dézoome, et le calcul final
+   (pixels réels) ne dépend plus du niveau de zoom. */
+let cropNorm = null; // {l, t, w, h}
+let cropPanMode = false;
+function syncCropOverlay(){
+  const wrap = document.getElementById("editPreviewWrap");
+  if(!wrap.classList.contains("cropping")) return;
   const img = document.getElementById("edPreviewImg");
   const overlay = document.getElementById("cropOverlay");
-  // L'overlay calque exactement le rectangle affiché de l'image
+  const rectEl = document.getElementById("cropRect");
   overlay.style.left = img.offsetLeft + "px";
   overlay.style.top = img.offsetTop + "px";
   overlay.style.width = img.clientWidth + "px";
   overlay.style.height = img.clientHeight + "px";
+  if(cropNorm){
+    rectEl.classList.remove("hidden");
+    rectEl.style.left = (cropNorm.l * img.clientWidth) + "px";
+    rectEl.style.top = (cropNorm.t * img.clientHeight) + "px";
+    rectEl.style.width = (cropNorm.w * img.clientWidth) + "px";
+    rectEl.style.height = (cropNorm.h * img.clientHeight) + "px";
+  }else{
+    rectEl.classList.add("hidden");
+  }
+}
+function setCropPanMode(on){
+  cropPanMode = !!on;
+  document.getElementById("cropOverlay").classList.toggle("pan", cropPanMode);
+  document.getElementById("cropPanBtn").classList.toggle("copper", cropPanMode);
 }
 function exitCropMode(){
   document.getElementById("editPreviewWrap").classList.remove("cropping");
   document.getElementById("cropOverlay").classList.add("hidden");
   document.getElementById("cropToolbar").classList.add("hidden");
   cropState = null;
+  cropNorm = null;
+  setCropPanMode(false);
 }
+document.getElementById("cropPanBtn").addEventListener("click", ()=> setCropPanMode(!cropPanMode));
 document.getElementById("edCropBtn").addEventListener("click", startCropMode);
 document.getElementById("cropCancelBtn").addEventListener("click", exitCropMode);
 
@@ -11787,55 +11822,69 @@ const cropRectEl = document.getElementById("cropRect");
    perdre le suivi du glisser juste avant. Fonctionne aussi au doigt
    (tactile), ce que mousedown/mousemove ne couvraient pas du tout. */
 cropOverlayEl.addEventListener("pointerdown", (e)=>{
+  const panning = cropPanMode || e.button === 1; // mode "Déplacer la vue" ou bouton du milieu
+  if(!panning && e.button !== 0) return;
+  e.preventDefault();
   cropOverlayEl.setPointerCapture(e.pointerId);
+  const wrap = document.getElementById("editPreviewWrap");
+  if(panning){
+    cropState = {pointerId: e.pointerId, pan: true, x: e.clientX, y: e.clientY, scrollLeft: wrap.scrollLeft, scrollTop: wrap.scrollTop};
+    cropOverlayEl.classList.add("dragging");
+    return;
+  }
   const bounds = cropOverlayEl.getBoundingClientRect();
   const startX = Math.max(0, Math.min(e.clientX - bounds.left, bounds.width));
   const startY = Math.max(0, Math.min(e.clientY - bounds.top, bounds.height));
   cropState = {pointerId: e.pointerId, bounds, startX, startY};
-  cropRectEl.classList.remove("hidden");
-  cropRectEl.style.left = startX + "px";
-  cropRectEl.style.top = startY + "px";
-  cropRectEl.style.width = "0px";
-  cropRectEl.style.height = "0px";
+  cropNorm = {l: startX / bounds.width, t: startY / bounds.height, w: 0, h: 0};
+  syncCropOverlay();
 });
 cropOverlayEl.addEventListener("pointermove", (e)=>{
   if(!cropState || cropState.pointerId !== e.pointerId) return;
+  if(cropState.pan){
+    const wrap = document.getElementById("editPreviewWrap");
+    wrap.scrollLeft = cropState.scrollLeft - (e.clientX - cropState.x);
+    wrap.scrollTop = cropState.scrollTop - (e.clientY - cropState.y);
+    return;
+  }
   const bounds = cropState.bounds; // figées au pointerdown : stables même si le pointeur ressort de l'overlay pendant le glisser
   let x = e.clientX - bounds.left, y = e.clientY - bounds.top;
   x = Math.max(0, Math.min(x, bounds.width));
   y = Math.max(0, Math.min(y, bounds.height));
-  const left = Math.min(x, cropState.startX);
-  const top = Math.min(y, cropState.startY);
-  const w = Math.abs(x - cropState.startX);
-  const h = Math.abs(y - cropState.startY);
-  cropRectEl.style.left = left + "px";
-  cropRectEl.style.top = top + "px";
-  cropRectEl.style.width = w + "px";
-  cropRectEl.style.height = h + "px";
+  cropNorm = {
+    l: Math.min(x, cropState.startX) / bounds.width,
+    t: Math.min(y, cropState.startY) / bounds.height,
+    w: Math.abs(x - cropState.startX) / bounds.width,
+    h: Math.abs(y - cropState.startY) / bounds.height
+  };
+  syncCropOverlay();
 });
 function endCropDrag(e){
   if(!cropState || cropState.pointerId !== e.pointerId) return;
   cropOverlayEl.releasePointerCapture(e.pointerId);
-  cropState = null; // le rectangle reste affiché (cropRectEl), figé, prêt pour "Appliquer le recadrage"
+  cropOverlayEl.classList.remove("dragging");
+  cropState = null; // le rectangle reste affiché (cropNorm), figé, prêt pour "Appliquer le recadrage"
 }
 cropOverlayEl.addEventListener("pointerup", endCropDrag);
 cropOverlayEl.addEventListener("pointercancel", endCropDrag);
 
 document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
   const img = document.getElementById("edPreviewImg");
-  const rectW = parseFloat(cropRectEl.style.width)||0;
-  const rectH = parseFloat(cropRectEl.style.height)||0;
+  if(!cropNorm){
+    toast("Dessinez d'abord un rectangle de sélection sur l'image.");
+    return;
+  }
+  const rectW = cropNorm.w * img.clientWidth;
+  const rectH = cropNorm.h * img.clientHeight;
   if(rectW < 8 || rectH < 8){
     toast("Dessinez d'abord un rectangle de sélection sur l'image.");
     return;
   }
-  // Mise à l'échelle : coordonnées affichées → pixels réels de l'image
-  const scaleX = img.naturalWidth / img.clientWidth;
-  const scaleY = img.naturalHeight / img.clientHeight;
-  const sx = parseFloat(cropRectEl.style.left) * scaleX;
-  const sy = parseFloat(cropRectEl.style.top) * scaleY;
-  const sw = rectW * scaleX;
-  const sh = rectH * scaleY;
+  // Fractions de l'image affichée → pixels réels (indépendant du niveau de zoom)
+  const sx = cropNorm.l * img.naturalWidth;
+  const sy = cropNorm.t * img.naturalHeight;
+  const sw = cropNorm.w * img.naturalWidth;
+  const sh = cropNorm.h * img.naturalHeight;
 
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(sw);
@@ -12155,6 +12204,7 @@ function applyEditZoom(){
   img.style.height = "auto";
   const range = document.getElementById("edZoomRange");
   if(range) range.value = Math.round(editViewScale*100);
+  syncCropOverlay(); // pendant le rognage, le calque (et le rectangle) suit l'image zoomée
 }
 function setEditZoom(scale, anchor){
   const newScale = Math.min(3, Math.max(1, scale)); // pas de dézoom sous 100% : le calage "fit" initial est déjà le minimum utile
