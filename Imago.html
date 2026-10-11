@@ -313,6 +313,8 @@ button{font-family:inherit;}
 .sidebar-actions{display:flex; flex-direction:column; gap:8px; margin-top:18px;}
 /* ---------- rotation libre (curseur -60°..60°) ---------- */
 .free-rotate-panel{margin-top:2px;}
+.free-rotate-num{display:flex; align-items:center; gap:3px; color:var(--ink-dim); font-size:13px;}
+.free-rotate-num input{width:64px; padding:6px 6px; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink); font-size:13.5px; text-align:right;}
 .free-rotate-row{display:flex; align-items:center; gap:10px;}
 .free-rotate-slider{position:relative; flex:1; padding-top:20px; padding-bottom:4px;}
 .free-rotate-ticks{
@@ -1490,8 +1492,11 @@ details.pave .btn{width:100%; margin-bottom:8px;}
                   <span data-deg="45">45°</span>
                   <span data-deg="60">60°</span>
                 </div>
-                <input type="range" id="edFreeRotateRange" min="-60" max="60" step="1" value="0">
+                <input type="range" id="edFreeRotateRange" min="-60" max="60" step="0.1" value="0">
               </div>
+              <label class="free-rotate-num" title="Saisir l'angle exact (de -60 à 60, décimales acceptées)">
+                <input type="number" id="edFreeRotateNum" min="-60" max="60" step="0.1" value="0" inputmode="decimal"><span>°</span>
+              </label>
               <button type="button" class="btn reset" id="edFreeRotateResetBtn">Réinitialiser</button>
             </div>
           </div>
@@ -11626,6 +11631,7 @@ function highlightFreeRotateTicks(val){
 function resetFreeRotate(){
   editDraft.fineRotation = 0;
   document.getElementById("edFreeRotateRange").value = 0;
+  document.getElementById("edFreeRotateNum").value = 0;
   highlightFreeRotateTicks(0);
 }
 function refreshEditPreview(){
@@ -11719,9 +11725,30 @@ document.getElementById("edFreeRotateBtn").addEventListener("click", ()=>{
 });
 document.getElementById("edFreeRotateRange").addEventListener("input", (e)=>{
   editDraft.fineRotation = Number(e.target.value);
+  document.getElementById("edFreeRotateNum").value = editDraft.fineRotation;
   highlightFreeRotateTicks(editDraft.fineRotation);
   refreshEditPreview();
 });
+// Saisie directe de l'angle en degrés (décimales acceptées, bornée à -60°…60°) : appliquée en direct
+// à chaque frappe valide ; la valeur affichée est normalisée (bornée) à la validation (Entrée / sortie du champ).
+const edFreeRotateNumEl = document.getElementById("edFreeRotateNum");
+function applyFreeRotateFromNumber(commit){
+  let v = parseFloat(String(edFreeRotateNumEl.value).replace(",", "."));
+  if(!isFinite(v)){
+    if(commit) edFreeRotateNumEl.value = editDraft.fineRotation || 0;
+    return;
+  }
+  const clamped = Math.max(-60, Math.min(60, v));
+  v = Math.round(clamped * 10) / 10;
+  editDraft.fineRotation = v;
+  document.getElementById("edFreeRotateRange").value = v;
+  highlightFreeRotateTicks(v);
+  refreshEditPreview();
+  if(commit || clamped !== parseFloat(String(edFreeRotateNumEl.value).replace(",", "."))) edFreeRotateNumEl.value = v;
+}
+edFreeRotateNumEl.addEventListener("input", ()=> applyFreeRotateFromNumber(false));
+edFreeRotateNumEl.addEventListener("change", ()=> applyFreeRotateFromNumber(true));
+edFreeRotateNumEl.addEventListener("keydown", (e)=>{ if(e.key === "Enter"){ e.preventDefault(); applyFreeRotateFromNumber(true); } });
 document.getElementById("edFreeRotateResetBtn").addEventListener("click", ()=>{
   resetFreeRotate(); refreshEditPreview();
 });
