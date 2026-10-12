@@ -12027,8 +12027,38 @@ function redEyeCorrectWindow(d, w, h, cx, cy, R){
     }
     frontier = next;
   }
+  // 3 bis) liseré : 3 px de plus autour des pixels corrigés, où subsistent des pixels de bord jaune-vert (mélange
+  //        reflet/iris) que les critères ci-dessus ne reconnaissent pas : on leur retire seulement la
+  //        teinte (désaturation vers leur propre luminance), sans les assombrir (3 px, force dégressive).
+  const desat = new Float32Array(n);
+  frontier = [];
+  for(let i = 0; i < n; i++) if(strength[i]) frontier.push(i); // part de tous les pixels déjà corrigés (reflet + halo)
+  for(let k = 0; k < 3; k++){
+    const next = [];
+    for(const i of frontier){
+      const px = i % w, py = (i - px) / w;
+      for(let t = 0; t < 4; t++){
+        const qx = px + (t === 0 ? 1 : t === 1 ? -1 : 0), qy = py + (t === 2 ? 1 : t === 3 ? -1 : 0);
+        if(qx < 0 || qy < 0 || qx >= w || qy >= h) continue;
+        const j = qy * w + qx;
+        if(strength[j] || desat[j]) continue;
+        const o = j * 4, r = d[o], g = d[o+1], b = d[o+2];
+        if(g >= r * 0.85 && g > b + 10 && g > 40){ desat[j] = k === 0 ? 0.85 : k === 1 ? 0.65 : 0.4; next.push(j); }
+      }
+    }
+    frontier = next;
+  }
   let count = 0;
   for(let i = 0; i < n; i++){
+    const q = desat[i];
+    if(q){
+      const o = i * 4, r = d[o], g = d[o+1], b = d[o+2], lum = 0.3*r + 0.59*g + 0.11*b;
+      d[o]   = r + (lum - r) * q;
+      d[o+1] = g + (lum - g) * q;
+      d[o+2] = b + (lum - b) * q;
+      count++;
+      continue;
+    }
     const s = strength[i];
     if(!s) continue;
     const o = i * 4, r = d[o], g = d[o+1], b = d[o+2];
