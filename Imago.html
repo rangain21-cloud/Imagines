@@ -11931,14 +11931,11 @@ document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
 
 /* -----------------------------------------------------------------
    Correctif yeux rouges : pas de détection automatique des visages/yeux
-   (hors de portée raisonnable ici) — l'utilisateur touche lui-même
-   l'endroit à corriger sur l'aperçu, comme il viserait avec le doigt sur
-   une photo papier. Chaque appui neutralise, dans un petit disque autour
-   du point touché, les pixels nettement plus rouges que verts/bleus
-   (signature colorimétrique typique d'un reflet de flash dans la pupille,
-   assez différente d'un ton de peau normal pour éviter les faux positifs
-   grossiers) — ramenés à un gris légèrement assombri et neutre, avec un
-   fondu doux vers le bord du disque pour ne pas laisser de frontière nette.
+   — l'utilisateur touche l'œil sur l'aperçu. Autour du point touché on cherche
+   un reflet coloré (rouge de flash, ou vert/bleu des yeux d'animaux), puis on
+   neutralise uniquement la zone colorée connectée à ce reflet (voir
+   redEyeCorrectWindow) vers un gris sombre. Si rien n'est détecté, l'image
+   n'est pas modifiée.
    ----------------------------------------------------------------- */
 let redEyeModeOn = false;
 let redEyeBrushFactor = 1; // 0.3 à 2.5, piloté par le curseur "Taille du pinceau"
@@ -11955,44 +11952,116 @@ document.getElementById("redEyeBrushSize").addEventListener("input", (e)=>{
   redEyeBrushFactor = e.target.value / 100;
   document.getElementById("redEyeBrushSizeVal").textContent = e.target.value + "%";
 });
+/* Niveau de "reflet coloré" d'un pixel : 2 = reflet net (rouge de flash, ou vert/bleu typique des
+   yeux d'animaux), 1 = teinte résiduelle (halo autour d'un reflet net), 0 = rien.
+   Le rouge est volontairement strict (r nettement dominant ET r > 1,7 × moyenne(g,b)) : une fourrure
+   crème/chaude ou une peau ont r > (g+b)/2 de 30 à 60 sans être rouges (rapport ~1,1–1,5), et se
+   faisaient griser par l'ancien critère ("r - moyenne(g,b) > 35"). */
+function redEyeGlowLevel(r, g, b){
+  const gb = (g + b) / 2;
+  if(r > 60 && r - Math.max(g, b) > 40 && r > gb * 1.7) return 2;   // rouge (yeux rouges classiques)
+  if(g > 50 && g - Math.max(r, b) > 15) return 2;                    // vert (reflet de flash chez chiens/chats…)
+  if(b > 80 && b - Math.max(r, g) > 35) return 2;                    // bleu
+  if(r > 50 && r - Math.max(g, b) > 20 && r > gb * 1.35) return 1;  // halo rougeâtre
+  if(g > 40 && g - Math.max(r, b) > 6) return 1;                     // halo verdâtre
+  if(b > 60 && b - Math.max(r, g) > 12) return 1;                    // halo bleuté
+  return 0;
+}
+/* Corrige, dans une fenêtre RGBA (d, w×h), le reflet situé au point touché (cx, cy), rayon de
+   recherche R. Retourne le nombre de pixels corrigés (0 = aucun reflet trouvé : rien n'est modifié).
+   1) graine = pixel "net" le plus proche du point touché, dans le disque de recherche ;
+   2) remplissage = composante connexe (8 voisins) de pixels "nets", bornée à 1,8×R du point touché
+      → on ne corrige que la zone réellement colorée de la pupille, jamais un disque aveugle ;
+   3) petit halo (1 à 4 px) sur les pixels à teinte résiduelle, avec une force dégressive ;
+   4) neutralisation vers un gris sombre (35 % de la luminance) : une pupille corrigée reste sombre. */
+function redEyeCorrectWindow(d, w, h, cx, cy, R){
+  const n = w * h;
+  const lvl = new Uint8Array(n);
+  for(let i = 0; i < n; i++) lvl[i] = redEyeGlowLevel(d[i*4], d[i*4+1], d[i*4+2]);
+  let seed = -1, best = Infinity;
+  const r2 = R * R;
+  for(let py = 0; py < h; py++){
+    for(let px = 0; px < w; px++){
+      const i = py * w + px;
+      if(lvl[i] !== 2) continue;
+      const dx = px - cx, dy = py - cy, dist = dx*dx + dy*dy;
+      if(dist <= r2 && dist < best){ best = dist; seed = i; }
+    }
+  }
+  if(seed < 0) return 0;
+  const maxD2 = (R * 1.8) * (R * 1.8);
+  const strength = new Float32Array(n); // 0 = non touché ; 1 = reflet ; <1 = halo
+  const stack = [seed];
+  strength[seed] = 1;
+  const region = [seed];
+  while(stack.length){
+    const i = stack.pop();
+    const px = i % w, py = (i - px) / w;
+    for(let oy = -1; oy <= 1; oy++){
+      for(let ox = -1; ox <= 1; ox++){
+        if(!ox && !oy) continue;
+        const qx = px + ox, qy = py + oy;
+        if(qx < 0 || qy < 0 || qx >= w || qy >= h) continue;
+        const j = qy * w + qx;
+        if(strength[j] || lvl[j] !== 2) continue;
+        const dx = qx - cx, dy = qy - cy;
+        if(dx*dx + dy*dy > maxD2) continue;
+        strength[j] = 1; stack.push(j); region.push(j);
+      }
+    }
+  }
+  const haloSteps = Math.max(1, Math.min(4, Math.round(Math.sqrt(region.length) * 0.35)));
+  let frontier = region;
+  for(let k = 1; k <= haloSteps; k++){
+    const next = [];
+    const s = k === 1 ? 0.55 : 0.35;
+    for(const i of frontier){
+      const px = i % w, py = (i - px) / w;
+      for(let t = 0; t < 4; t++){
+        const qx = px + (t === 0 ? 1 : t === 1 ? -1 : 0), qy = py + (t === 2 ? 1 : t === 3 ? -1 : 0);
+        if(qx < 0 || qy < 0 || qx >= w || qy >= h) continue;
+        const j = qy * w + qx;
+        if(strength[j] || lvl[j] < 1) continue;
+        strength[j] = s; next.push(j);
+      }
+    }
+    frontier = next;
+  }
+  let count = 0;
+  for(let i = 0; i < n; i++){
+    const s = strength[i];
+    if(!s) continue;
+    const o = i * 4, r = d[o], g = d[o+1], b = d[o+2];
+    const t = Math.max(6, (0.3*r + 0.59*g + 0.11*b) * 0.35);
+    d[o]   = r + (t - r) * s;
+    d[o+1] = g + (t - g) * s;
+    d[o+2] = b + (t - b) * s;
+    count++;
+  }
+  return count;
+}
 function applyRedEyeFix(cx, cy){
   const img = document.getElementById("edPreviewImg");
-  // Repart de l'aperçu actuellement affiché (déjà recadré/retouché le cas
-  // échéant) : simple et fiable, quitte à redessiner l'image entière à
-  // chaque appui plutôt que de ne toucher que le disque ciblé.
+  // Repart de l'aperçu actuellement affiché (déjà recadré/retouché le cas échéant).
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0);
 
-  // Taille de base (~1,8% du plus petit côté) modulée par le curseur "Taille
-  // du pinceau" (30% à 250%) : permet de resserrer le disque sur une petite
-  // pupille pour ne pas déborder sur la peau, ou de l'élargir pour un œil
-  // plus grand/une photo haute résolution.
-  const radius = Math.max(6, Math.round(Math.min(canvas.width, canvas.height) * 0.018 * redEyeBrushFactor));
-  const x0 = Math.max(0, cx - radius), y0 = Math.max(0, cy - radius);
-  const w = Math.min(canvas.width, cx + radius) - x0;
-  const h = Math.min(canvas.height, cy + radius) - y0;
+  // Rayon de recherche (px réels) : ~4 % du plus petit côté (8 px minimum) × curseur "Taille du
+  // pinceau" (30 % à 250 %). C'est la distance max entre le point touché et le reflet à corriger ;
+  // seule la zone colorée connectée au reflet est modifiée, pas tout le disque.
+  const R = Math.max(3, Math.round(Math.max(8, Math.min(canvas.width, canvas.height) * 0.04) * redEyeBrushFactor));
+  const margin = Math.ceil(R * 1.8) + 6;
+  const x0 = Math.max(0, cx - margin), y0 = Math.max(0, cy - margin);
+  const w = Math.min(canvas.width, cx + margin + 1) - x0;
+  const h = Math.min(canvas.height, cy + margin + 1) - y0;
   if(w <= 0 || h <= 0) return;
   const imgData = ctx.getImageData(x0, y0, w, h);
-  const d = imgData.data;
-  const r2 = radius*radius;
-  for(let py=0; py<h; py++){
-    for(let px=0; px<w; px++){
-      const dx = (x0+px) - cx, dy = (y0+py) - cy;
-      const distSq = dx*dx + dy*dy;
-      if(distSq > r2) continue; // hors du disque ciblé : pixel inchangé
-      const i = (py*w + px) * 4;
-      const r = d[i], g = d[i+1], b = d[i+2];
-      const redness = r - (g+b)/2;
-      if(redness > 35){ // seuil empirique : rouge nettement dominant, typique d'un reflet de flash — une peau normale reste bien en dessous
-        const falloff = 1 - (Math.sqrt(distSq)/radius) * 0.5; // fondu doux vers le bord du disque, pas de frontière nette
-        const target = ((g+b)/2) * 0.72; // légèrement assombri : une pupille corrigée reste sombre, pas gris clair
-        d[i]   = r   + (target - r)   * falloff;
-        d[i+1] = g   + (target*0.97 - g) * falloff;
-        d[i+2] = b   + (target*0.97 - b) * falloff;
-      }
-    }
+  const fixed = redEyeCorrectWindow(imgData.data, w, h, cx - x0, cy - y0, R);
+  if(!fixed){
+    toast("Aucun reflet coloré (rouge, vert ou bleu) détecté ici : touchez directement la pupille, ou augmentez la taille du pinceau.");
+    return; // rien n'est modifié : pas de tache parasite ni de recompression inutile
   }
   ctx.putImageData(imgData, x0, y0);
   const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
@@ -12000,14 +12069,8 @@ function applyRedEyeFix(cx, cy){
   editDraft.width = canvas.width;
   editDraft.height = canvas.height;
   editDraft.cropped = true; // réutilise le même indicateur "pixels déjà modifiés" que le recadrage : "Enregistrer" reprend ce dataUrl sans distinction
-  // On va réassigner .src juste en dessous, ce qui redéclenche l'événement
-  // "load" de l'aperçu — normalement utile pour repartir d'une vue à 100%
-  // (cas du recadrage/de l'ouverture), mais ici contre-productif : l'utilisateur
-  // est précisément en train de viser un œil en zoomant, et se faire ramener
-  // à 100% + recentrer après CHAQUE tape rend le second œil (ou une reprise
-  // sur le même œil) quasi impossible à toucher précisément — d'où
-  // l'impression que "ça ne fait rien". On signale donc à cet écouteur de
-  // sauter une fois son reset, en conservant le zoom et le défilement en cours.
+  // Réassigner .src redéclenche "load" (qui remet normalement la vue à 100 %) : on le fait sauter une
+  // fois pour conserver le zoom et le défilement en cours (voir suppressNextEditZoomReset).
   suppressNextEditZoomReset = true;
   img.src = newDataUrl;
 }
@@ -12029,10 +12092,12 @@ document.getElementById("edPreviewImg").addEventListener("click", (e)=>{
   if(!redEyeModeOn) return;
   const img = e.currentTarget;
   const bounds = img.getBoundingClientRect();
-  const scaleX = img.naturalWidth / img.clientWidth;
-  const scaleY = img.naturalHeight / img.clientHeight;
-  const cx = Math.round((e.clientX - bounds.left) * scaleX);
-  const cy = Math.round((e.clientY - bounds.top) * scaleY);
+  // Échelle calculée sur le rectangle réellement affiché (bounds), pas sur clientWidth : robuste au
+  // zoom, aux arrondis de taille et à toute transformation CSS.
+  const scaleX = img.naturalWidth / bounds.width;
+  const scaleY = img.naturalHeight / bounds.height;
+  const cx = Math.max(0, Math.min(img.naturalWidth - 1, Math.round((e.clientX - bounds.left) * scaleX)));
+  const cy = Math.max(0, Math.min(img.naturalHeight - 1, Math.round((e.clientY - bounds.top) * scaleY)));
   applyRedEyeFix(cx, cy);
 });
 
