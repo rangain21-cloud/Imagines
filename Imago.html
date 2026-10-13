@@ -734,17 +734,21 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   background:rgba(0,0,0,.35);
   touch-action:none; /* laisse le glisser piloter entièrement la sélection (pointer events), sans que le navigateur l'interprète comme un défilement/zoom tactile — condition nécessaire pour un cadre libre fiable jusqu'aux bords sur mobile/tablette */
 }
+/* Intérieur de la sélection = couleurs RÉELLES de l'image (ni voile cuivré, ni assombrissement : sur une photo
+   foncée, l'ancien voile orange à 18 % virait au brun-orangé et faussait l'appréciation du cadrage). Seul
+   l'extérieur est assombri (ombre portée géante) ; cadre blanc + liseré sombre, lisible sur n'importe quel fond. */
+.crop-overlay.has-rect{ background:transparent; }
 .crop-rect{
-  position:absolute; border:2px dashed var(--copper-hi);
-  background:rgba(199,125,59,.18);
-  box-shadow:0 0 0 2000px rgba(0,0,0,.35);
+  position:absolute; border:2px dashed #fff; outline:1px solid rgba(0,0,0,.55);
+  background:transparent;
+  box-shadow:0 0 0 2000px rgba(0,0,0,.55);
 }
 #cloneLiveCanvas{ position:absolute; pointer-events:none; border-radius:2px; } /* aperçu en direct pendant un trait de Baguette magique, calqué exactement sur l'image affichée — voir cloneUpdateLivePreview() */
 .crop-toolbar{
   display:flex; gap:8px; padding:10px 14px; background:var(--bg-panel-2);
   border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap;
 }
-.crop-toolbar .hint{font-size:12px; color:var(--ink-dim); margin-right:auto;}
+.crop-toolbar .hint{font-size:12px; color:var(--ink-dim); margin-right:auto; flex:1 1 200px; min-width:0;}
 .crop-overlay.pan{ cursor:grab; }
 .crop-overlay.pan.dragging{ cursor:grabbing; }
 #cropPanBtn{ white-space:nowrap; }
@@ -1442,8 +1446,8 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       </div>
     </div>
     <div class="crop-toolbar hidden" id="cropToolbar">
-      <span class="hint">Zoomez (molette ou curseur) sur la partie voulue, puis faites glisser pour définir la zone à conserver.</span>
-      <button class="btn" id="cropPanBtn" type="button" title="Déplacer la vue dans l'image zoomée (ou glisser avec le bouton du milieu de la souris)">✋ Déplacer la vue</button>
+      <span class="hint">Zoomez (molette) sur la partie voulue, puis faites glisser pour définir la zone à conserver.</span>
+      <button class="btn" id="cropPanBtn" type="button" title="Déplacer la vue dans l'image zoomée (ou glisser avec le bouton du milieu de la souris)">✋ Déplacer</button>
       <button class="btn reset" id="cropCancelBtn" type="button">Annuler</button>
       <button class="btn copper" id="cropApplyBtn" type="button">Appliquer le recadrage</button>
     </div>
@@ -11994,6 +11998,7 @@ function syncCropOverlay(){
   overlay.style.top = img.offsetTop + "px";
   overlay.style.width = img.clientWidth + "px";
   overlay.style.height = img.clientHeight + "px";
+  overlay.classList.toggle("has-rect", !!cropNorm);
   if(cropNorm){
     rectEl.classList.remove("hidden");
     rectEl.style.left = (cropNorm.l * img.clientWidth) + "px";
