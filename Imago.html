@@ -749,6 +749,11 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .crop-overlay.pan.dragging{ cursor:grabbing; }
 #cropPanBtn{ white-space:nowrap; }
 #modalEdit .modal-foot{ flex-wrap:wrap; }
+.shape-group{ display:flex; gap:5px; }
+.shape-btn{ flex:1; display:flex; align-items:center; justify-content:center; padding:4px 0; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink-dim); cursor:pointer; }
+.shape-btn svg{ width:20px; height:20px; fill:currentColor; display:block; }
+.shape-btn:hover{ color:var(--ink); }
+.shape-btn.active{ border-color:var(--copper, #c8803e); color:var(--copper, #c8803e); background:rgba(200,128,62,.12); }
 .edit-undo-group{ display:flex; gap:6px; margin-right:auto; }
 .edit-undo-group .btn:disabled{ opacity:.4; cursor:not-allowed; }
 .edit-tabs-row{
@@ -1470,6 +1475,16 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <div class="slider-row hidden" id="cloneBrushRow" style="margin-top:8px; margin-bottom:0;">
           <label for="cloneBrushSize">Taille du pinceau (Baguette magique) <span id="cloneBrushSizeVal">100%</span></label>
           <input type="range" id="cloneBrushSize" min="30" max="250" value="100">
+        </div>
+        <div class="slider-row hidden" id="cloneShapeRow" style="margin-top:6px; margin-bottom:0;">
+          <label>Forme du pinceau <span id="cloneShapeName">Rond</span></label>
+          <div class="shape-group" role="group" aria-label="Forme du pinceau">
+            <button type="button" class="shape-btn active" data-shape="round" data-name="Rond" title="Rond"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/></svg></button>
+            <button type="button" class="shape-btn" data-shape="square" data-name="Carré" title="Carré"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14"/></svg></button>
+            <button type="button" class="shape-btn" data-shape="ellipseH" data-name="Ellipse horizontale" title="Ellipse horizontale"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="9" ry="5"/></svg></button>
+            <button type="button" class="shape-btn" data-shape="ellipseV" data-name="Ellipse verticale" title="Ellipse verticale"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="5" ry="9"/></svg></button>
+            <button type="button" class="shape-btn" data-shape="diamond" data-name="Losange" title="Losange"><svg viewBox="0 0 20 20"><polygon points="10,1.5 18.5,10 10,18.5 1.5,10"/></svg></button>
+          </div>
         </div>
         <button class="btn hidden" id="cloneNewSourceBtn" type="button" style="width:100%; margin-top:5px; padding:5px; font-size:6.5px;">🎯 Choisir une nouvelle source</button>
         <p class="drive-note hidden" id="cloneHint" style="margin-top:3px; margin-bottom:0; font-size:6.5px; line-height:1.25;"></p>
@@ -12283,6 +12298,7 @@ function exitCloneMode(){
   cloneDragging = false; cloneLastDab = null;
   document.getElementById("edPreviewImg").style.cursor = "";
   document.getElementById("cloneBrushRow").classList.add("hidden");
+  document.getElementById("cloneShapeRow").classList.add("hidden");
   document.getElementById("cloneHint").classList.add("hidden");
   document.getElementById("cloneNewSourceBtn").classList.add("hidden");
   document.getElementById("cloneLiveCanvas").classList.add("hidden");
@@ -12310,12 +12326,38 @@ function toggleCloneMode(){
     cloneOffset = null;
     document.getElementById("edPreviewImg").style.cursor = "crosshair";
     document.getElementById("cloneBrushRow").classList.remove("hidden");
+    document.getElementById("cloneShapeRow").classList.remove("hidden");
     document.getElementById("cloneHint").classList.remove("hidden");
     document.getElementById("cloneNewSourceBtn").classList.remove("hidden");
   }
   updateCloneHint();
   renderSuggestionList(); // reconstruit la puce avec la bonne classe ".active"
 }
+/* Forme du pinceau : l'« emprise » du tampon est décrite par deux demi-axes (rx, ry, en multiples du rayon
+   réglé par le curseur de taille) et une « distance normalisée » d (0 au centre, 1 au bord) propre à chaque
+   forme. Le fondu doux vers le bord (1 - d × 0,5) est le même pour toutes, comme pour le rond d'origine. */
+let cloneBrushShape = "round";
+const CLONE_SHAPES = {
+  round:    {rx:1,    ry:1},
+  square:   {rx:1,    ry:1},
+  ellipseH: {rx:1.5,  ry:0.65},
+  ellipseV: {rx:0.65, ry:1.5},
+  diamond:  {rx:1,    ry:1}
+};
+function cloneShapeDist(shape, dx, dy, rx, ry){
+  switch(shape){
+    case "square":  return Math.max(Math.abs(dx)/rx, Math.abs(dy)/ry);
+    case "diamond": return Math.abs(dx)/rx + Math.abs(dy)/ry;
+    default:        return Math.hypot(dx/rx, dy/ry); // rond et ellipses
+  }
+}
+document.querySelectorAll("#cloneShapeRow .shape-btn").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    cloneBrushShape = btn.dataset.shape;
+    document.querySelectorAll("#cloneShapeRow .shape-btn").forEach(b=> b.classList.toggle("active", b === btn));
+    document.getElementById("cloneShapeName").textContent = btn.dataset.name;
+  });
+});
 document.getElementById("cloneBrushSize").addEventListener("input", (e)=>{
   cloneBrushFactor = e.target.value / 100;
   document.getElementById("cloneBrushSizeVal").textContent = e.target.value + "%";
@@ -12334,15 +12376,17 @@ function cloneCoordsFromEvent(e){
     y: Math.round((e.clientY - bounds.top) * scaleY)
   };
 }
-// Peint un disque de rayon "radius" autour de (destX,destY), en recopiant le
+// Peint une forme (rond par défaut, voir CLONE_SHAPES) de taille "radius" autour de (destX,destY), en recopiant le
 // contenu situé au même endroit décalé de cloneOffset — avec un fondu doux
 // vers le bord, comme le correctif yeux rouges.
 function cloneDab(destX, destY){
   const canvas = cloneStrokeCanvas, ctx = cloneStrokeCtx;
   const radius = Math.max(6, Math.round(Math.min(canvas.width, canvas.height) * 0.035 * cloneBrushFactor));
-  const x0 = Math.max(0, destX - radius), y0 = Math.max(0, destY - radius);
-  const w = Math.min(canvas.width, destX + radius) - x0;
-  const h = Math.min(canvas.height, destY + radius) - y0;
+  const shape = CLONE_SHAPES[cloneBrushShape] || CLONE_SHAPES.round;
+  const rx = Math.max(3, Math.round(radius * shape.rx)), ry = Math.max(3, Math.round(radius * shape.ry));
+  const x0 = Math.max(0, destX - rx), y0 = Math.max(0, destY - ry);
+  const w = Math.min(canvas.width, destX + rx) - x0;
+  const h = Math.min(canvas.height, destY + ry) - y0;
   if(w <= 0 || h <= 0) return;
   const sx0 = x0 - cloneOffset.dx, sy0 = y0 - cloneOffset.dy;
   // La source correspondante doit elle aussi rester dans l'image : si le
@@ -12352,14 +12396,13 @@ function cloneDab(destX, destY){
   const srcData = ctx.getImageData(sx0, sy0, w, h);
   const destData = ctx.getImageData(x0, y0, w, h);
   const sd = srcData.data, dd = destData.data;
-  const r2 = radius*radius;
   for(let py=0; py<h; py++){
     for(let px=0; px<w; px++){
       const dx = (x0+px) - destX, dy = (y0+py) - destY;
-      const distSq = dx*dx + dy*dy;
-      if(distSq > r2) continue;
+      const d = cloneShapeDist(cloneBrushShape, dx, dy, rx, ry); // 0 au centre, 1 au bord de la forme
+      if(d > 1) continue;
       const i = (py*w+px) * 4;
-      const falloff = 1 - (Math.sqrt(distSq)/radius) * 0.5;
+      const falloff = 1 - d * 0.5;
       dd[i]   += (sd[i]   - dd[i])   * falloff;
       dd[i+1] += (sd[i+1] - dd[i+1]) * falloff;
       dd[i+2] += (sd[i+2] - dd[i+2]) * falloff;
