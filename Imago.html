@@ -753,6 +753,25 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .crop-overlay.pan.dragging{ cursor:grabbing; }
 #cropPanBtn{ white-space:nowrap; }
 #modalEdit .modal-foot{ flex-wrap:wrap; }
+.face-overlay{ position:absolute; pointer-events:none; z-index:4; }
+.face-box{ position:absolute; border:2px solid #7ddc8a; border-radius:3px; box-shadow:0 0 0 1px rgba(0,0,0,.6); }
+.face-box.maybe{ border-color:#f0c24b; }
+.face-box.unknown{ border-color:#d0d0d0; border-style:dashed; }
+.face-tag{ position:absolute; left:-2px; bottom:100%; margin-bottom:2px; background:rgba(0,0,0,.78); color:#fff; font-size:11px; padding:1px 6px; border-radius:3px; white-space:nowrap; }
+.face-results{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.face-item{ display:flex; gap:10px; align-items:flex-start; padding:8px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2); }
+.face-item img{ width:64px; height:64px; object-fit:cover; border-radius:6px; flex:none; background:#000; }
+.face-info{ flex:1; min-width:0; }
+.face-name{ font-size:14px; margin-bottom:2px; }
+.face-badge{ font-size:11px; padding:1px 7px; border-radius:10px; margin-left:6px; }
+.face-badge.sure{ background:rgba(125,220,138,.18); color:#7ddc8a; }
+.face-badge.maybe{ background:rgba(240,194,75,.18); color:#f0c24b; }
+.face-badge.unknown{ background:rgba(200,200,200,.15); color:#c8c8c8; }
+.face-alts{ font-size:11px; color:var(--ink-dim); }
+.face-actions{ display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:6px; }
+.face-actions input{ width:150px; padding:4px 6px; }
+.face-build-box{ margin-top:18px; padding-top:14px; border-top:1px solid var(--line); }
+.face-build-box h3{ margin:0 0 6px; font-size:15px; }
 .shape-group{ display:flex; gap:5px; }
 .shape-btn{ flex:1; display:flex; align-items:center; justify-content:center; padding:4px 0; border-radius:var(--radius); background:var(--bg-panel-2); border:1px solid var(--line); color:var(--ink-dim); cursor:pointer; }
 .shape-btn svg{ width:20px; height:20px; fill:currentColor; display:block; }
@@ -1437,6 +1456,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div class="edit-preview-wrap" id="editPreviewWrap">
       <img id="edPreviewImg" src="" alt="">
       <div class="crop-overlay hidden" id="cropOverlay"><div class="crop-rect hidden" id="cropRect"></div></div>
+      <div class="face-overlay hidden" id="faceOverlay"></div>
       <canvas class="hidden" id="cloneLiveCanvas"></canvas>
       <div class="edit-zoom-controls" id="editZoomControls">
         <button type="button" id="edZoomOut" title="Diminuer">–</button>
@@ -1558,6 +1578,15 @@ details.pave .btn{width:100%; margin-bottom:8px;}
           <div class="field-row"><label for="edDate">Date cliché</label><input type="datetime-local" id="edDate"></div>
           <div class="field-row"><label for="edSupport">Support</label><input type="text" id="edSupport" placeholder="tirage, négatif… (vide = extension du fichier : jpg, mp4…)"></div>
           <div class="field-row"><label for="edPersonnage">Personnage</label><input type="text" id="edPersonnage"></div>
+          <div class="field-row" style="grid-column:1/-1;">
+            <label>Reconnaissance des visages (essai)</label>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <button class="btn" id="edFaceBtn" type="button" title="Détecte les visages de cette image et propose les personnages appris">🧑 Reconnaître les visages</button>
+              <button class="btn hidden" id="edFaceAllBtn" type="button">＋ Ajouter les noms reconnus</button>
+              <span class="drive-note" id="edFaceStatus" style="margin:0;"></span>
+            </div>
+            <div class="face-results" id="edFaceResults"></div>
+          </div>
           <div class="field-row">
             <label for="edLieu">Lieu</label>
             <div style="display:flex; gap:8px;">
@@ -1695,6 +1724,26 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <tbody id="personnageTableBody"></tbody>
       </table>
       <p class="drive-note hidden" id="personnageEmpty">Aucun personnage renseigné pour l'instant.</p>
+      <div class="face-build-box" id="faceBuildBox">
+        <h3>🧠 Reconnaissance des visages (essai, 100 % local)</h3>
+        <p class="drive-note">Apprend à quoi ressemble chaque personnage à partir de vos photos annotées d'<strong>un seul</strong> personnage et montrant <strong>un seul</strong> visage. Ensuite, « 🧑 Reconnaître les visages » (fenêtre Modifier, onglet Détails) propose des noms. Les empreintes de visages restent dans ce navigateur ; aucune photo n'est envoyée. La première utilisation télécharge le moteur et les modèles (≈ 14 Mo, mis en cache).</p>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <label for="faceMaxPerPerson" style="font-size:12px;">Photos de référence max par personnage</label>
+          <input type="number" id="faceMaxPerPerson" min="2" max="40" value="8" style="width:64px;">
+          <label for="faceSensitivity" style="font-size:12px;">Sensibilité</label>
+          <select id="faceSensitivity" title="Prudente = moins de fausses propositions ; Large = plus de propositions, mais plus d'erreurs">
+            <option value="prudent" selected>Prudente (peu d'erreurs)</option>
+            <option value="balanced">Équilibrée</option>
+            <option value="wide">Large (plus de propositions)</option>
+          </select>
+          <button class="btn" id="faceBuildBtn" type="button">Analyser mes photos</button>
+          <button class="btn reset" id="faceCancelBtn" type="button" disabled>Arrêter</button>
+          <button class="btn reset" id="faceClearBtn" type="button">Oublier les visages appris</button>
+        </div>
+        <progress id="faceProgress" value="0" max="1" class="hidden" style="width:100%; margin-top:8px;"></progress>
+        <p class="drive-note" id="faceBuildStatus"></p>
+        <p class="drive-note" id="faceIndexSummary"></p>
+      </div>
     </div>
     <div class="modal-foot"><button class="btn" data-close="modalPersonnages">Fermer</button></div>
   </div>
@@ -10265,6 +10314,345 @@ function personnageKeywordStats(){
   });
   return [...map.entries()].sort((a,b)=> a[0].localeCompare(b[0], "fr"));
 }
+
+/* =====================================================================
+   Reconnaissance des visages (ESSAI) — 100 % locale, dans le navigateur
+   ---------------------------------------------------------------------
+   Moteur : @vladmandic/face-api (détecteur SSD MobileNet + repères + réseau d'empreintes à 128 valeurs),
+   chargé À LA DEMANDE depuis jsDelivr (version figée + empreinte SRI) ; modèles ≈ 14 Mo, mis en cache.
+   Principe :
+   1) « Apprendre » : pour chaque personnage (mot-clé du champ Personnage) on retient quelques photos
+      qui ne portent QUE ce personnage ET où l'on ne détecte QU'UN visage : l'empreinte de ce visage
+      devient une référence. (Photo de groupe = on ne sait pas quel visage est lequel : ignorée.)
+   2) « Reconnaître » (fenêtre Modifier) : on détecte les visages de l'image ouverte et on compare
+      chaque empreinte aux références (distance euclidienne ; seuils selon la sensibilité : par défaut ≤ 0,40 sûr, ≤ 0,50 probable).
+   Rien n'est envoyé nulle part ; seules les empreintes (128 nombres, non réversibles en image)
+   sont mémorisées dans localStorage. Les noms ne sont écrits dans « Personnage » qu'après clic. */
+const FACE_ENGINE = {
+  scriptUrl: "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js",
+  scriptSri: "sha384-M5nePoB6/w/a9JhtegEibSLGiJy/+QMZZMfvcxjWVCQW/HPwrQ7i21V/Px/8AyVA",
+  modelUrl: "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/",
+  ready: false, loading: null, backend: ""
+};
+const FACE_MAX_SIDE = 1000;   // côté max (px) de l'image analysée
+const FACE_MIN_CONF = 0.6;    // confiance minimale du détecteur
+const FACE_REF_MIN_PX = 50;   // taille minimale (px) d'un visage pour servir de référence
+// Seuils de distance selon la « sensibilité » choisie (Personnages → Reconnaissance des visages). Mesures d'essai : une même
+// personne (autre cliché) donnait 0,30–0,42 ; des inconnus 0,47–0,64. Le réglage par défaut est donc prudent.
+const FACE_SENSITIVITY = { prudent:{sure:0.40, maybe:0.50}, balanced:{sure:0.45, maybe:0.55}, wide:{sure:0.50, maybe:0.60} };
+const FACE_AMBIG_MARGIN = 0.04;
+function faceThresholds(){
+  const el = document.getElementById("faceSensitivity");
+  return FACE_SENSITIVITY[(el && el.value) || "prudent"] || FACE_SENSITIVITY.prudent;
+}
+const FACE_LS_KEY = "imago_face_index_v1";
+var faceResultsState = null;  // var : évite toute zone morte temporelle (lu par applyEditZoom)
+var faceBuilding = false, faceBuildAbort = false;
+const FaceIndex = { entries: (function(){
+  try{ const o = JSON.parse(localStorage.getItem(FACE_LS_KEY) || "null"); return (o && o.v === 1 && o.entries) ? o.entries : {}; }
+  catch(e){ return {}; }
+})() };
+function saveFaceIndex(){
+  try{ localStorage.setItem(FACE_LS_KEY, JSON.stringify({v:1, entries:FaceIndex.entries})); return true; }
+  catch(e){ console.warn("Index des visages non sauvegardé (localStorage plein ?)", e); return false; }
+}
+function faceSig(p){ return (p.fileName||"") + "|" + (p.thumbDataUrl ? p.thumbDataUrl.length : 0); }
+function faceSleep(ms){ return new Promise(r=> setTimeout(r, ms||0)); }
+function fmtDist(d){ return d.toFixed(2).replace(".", ","); }
+
+function loadFaceEngine(onStatus){
+  if(FACE_ENGINE.ready) return Promise.resolve();
+  if(FACE_ENGINE.loading) return FACE_ENGINE.loading;
+  FACE_ENGINE.loading = (async ()=>{
+    if(!window.faceapi){
+      if(onStatus) onStatus("Chargement du moteur de reconnaissance…");
+      await new Promise((res, rej)=>{
+        const sc = document.createElement("script");
+        sc.src = FACE_ENGINE.scriptUrl; sc.integrity = FACE_ENGINE.scriptSri; sc.crossOrigin = "anonymous"; sc.async = true;
+        sc.onload = res;
+        sc.onerror = ()=> rej(new Error("Moteur de reconnaissance introuvable (" + FACE_ENGINE.scriptUrl + "). Une connexion Internet est nécessaire la première fois."));
+        document.head.appendChild(sc);
+      });
+    }
+    await faceapi.tf.ready();
+    FACE_ENGINE.backend = faceapi.tf.getBackend();
+    if(onStatus) onStatus("Chargement des modèles (≈ 14 Mo, mis en cache ensuite)…");
+    await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_ENGINE.modelUrl);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_ENGINE.modelUrl);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_ENGINE.modelUrl);
+    FACE_ENGINE.ready = true;
+  })().catch(e=>{ FACE_ENGINE.loading = null; throw e; });
+  return FACE_ENGINE.loading;
+}
+function faceLoadImage(dataUrl){
+  return new Promise((res, rej)=>{ const im = new Image(); im.onload = ()=>res(im); im.onerror = ()=>rej(new Error("image illisible")); im.src = dataUrl; });
+}
+// Image réduite (≤ FACE_MAX_SIDE) et remise « à l'endroit » (rotation par quarts de tour enregistrée sur la photo).
+async function faceCanvasFromDataUrl(dataUrl, rotationDeg){
+  const img = await faceLoadImage(dataUrl);
+  const k = Math.min(1, FACE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+  const q = (((Math.round((rotationDeg||0) / 90) % 4) + 4) % 4);
+  const c = document.createElement("canvas");
+  c.width = (q % 2) ? h : w; c.height = (q % 2) ? w : h;
+  const x = c.getContext("2d");
+  x.translate(c.width/2, c.height/2); x.rotate(q * Math.PI/2);
+  x.drawImage(img, -w/2, -h/2, w, h);
+  return c;
+}
+async function detectFacesInCanvas(canvas){
+  const dets = await faceapi.detectAllFaces(canvas, new faceapi.SsdMobilenetv1Options({minConfidence: FACE_MIN_CONF})).withFaceLandmarks().withFaceDescriptors();
+  return dets.map(d=>{
+    const b = d.detection.box;
+    return { score: d.detection.score, px: {w:b.width, h:b.height},
+             box: {x:b.x/canvas.width, y:b.y/canvas.height, w:b.width/canvas.width, h:b.height/canvas.height},
+             descriptor: Array.from(d.descriptor) };
+  });
+}
+function faceDistance(a, b){ let s = 0; for(let i = 0; i < a.length; i++){ const d = a[i]-b[i]; s += d*d; } return Math.sqrt(s); }
+// Références actuelles : personnage -> liste d'empreintes (photos non supprimées, annotées d'UN seul personnage).
+function faceReferencePersons(){
+  const map = new Map();
+  for(const p of State.photos){
+    if(p.corbeille) continue;
+    const e = FaceIndex.entries[p.id]; if(!e || !e.d) continue;
+    const toks = personnageTokens(p.personnage); if(toks.length !== 1) continue;
+    if(!map.has(toks[0])) map.set(toks[0], []);
+    map.get(toks[0]).push(e.d);
+  }
+  return map;
+}
+function matchFaceDescriptor(desc, persons){
+  const scored = [];
+  for(const [name, arr] of persons){
+    let best = Infinity;
+    for(const r of arr){ const d = faceDistance(desc, r); if(d < best) best = d; }
+    scored.push({name, dist: best, refs: arr.length});
+  }
+  scored.sort((a,b)=> a.dist - b.dist);
+  const top = scored.slice(0, 3);
+  let verdict = "unknown";
+  const th = faceThresholds();
+  if(top.length && top[0].dist <= th.maybe){
+    verdict = top[0].dist <= th.sure ? "sure" : "maybe";
+    if(top.length > 1 && (top[1].dist - top[0].dist) < FACE_AMBIG_MARGIN) verdict = "maybe"; // deux candidats trop proches : jamais « sûr »
+  }
+  return { matches: top, verdict };
+}
+// Ordre « étalé » (suite à faible discrépance) pour varier les époques/prises de vue parmi les candidates.
+function faceSpreadOrder(arr){
+  const n = arr.length, seen = new Set(), out = [];
+  for(let k = 0; k < n*3 && out.length < n; k++){
+    const i = Math.floor((((k + 0.5) * 0.6180339887) % 1) * n);
+    if(!seen.has(i)){ seen.add(i); out.push(arr[i]); }
+  }
+  for(let i = 0; i < n; i++) if(!seen.has(i)) out.push(arr[i]);
+  return out;
+}
+function updateFaceIndexSummary(){
+  const el = document.getElementById("faceIndexSummary"); if(!el) return;
+  const persons = faceReferencePersons();
+  if(!persons.size){ el.textContent = "Aucun visage appris pour l'instant."; return; }
+  const parts = [...persons.entries()].sort((a,b)=> b[1].length - a[1].length).map(([n, a])=> n + " (" + a.length + ")");
+  const weak = [...persons.entries()].filter(([n,a])=> a.length < 2).length;
+  el.textContent = persons.size + " personnage(s) avec visages de référence : " + parts.slice(0, 25).join(", ") + (parts.length > 25 ? "…" : "") +
+    (weak ? " — " + weak + " avec une seule référence (fiabilité réduite)." : "");
+}
+function setFaceBuildUi(running){
+  document.getElementById("faceBuildBtn").disabled = running;
+  document.getElementById("faceClearBtn").disabled = running;
+  document.getElementById("faceCancelBtn").disabled = !running;
+  document.getElementById("faceProgress").classList.toggle("hidden", !running);
+}
+async function buildFaceIndex(){
+  if(faceBuilding) return;
+  faceBuilding = true; faceBuildAbort = false;
+  const statusEl = document.getElementById("faceBuildStatus"), prog = document.getElementById("faceProgress");
+  try{
+    setFaceBuildUi(true);
+    await loadFaceEngine(msg=>{ statusEl.textContent = msg; });
+    const maxPer = Math.max(2, Math.min(40, parseInt(document.getElementById("faceMaxPerPerson").value, 10) || 8));
+    const byName = new Map();
+    for(const p of State.photos){
+      if(p.corbeille || p.isVideo || (!p.hasFullImage && !p.dataUrl)) continue;
+      const t = personnageTokens(p.personnage); if(t.length !== 1) continue;
+      if(!byName.has(t[0])) byName.set(t[0], []);
+      byName.get(t[0]).push(p);
+    }
+    const jobs = [];
+    for(const [name, arr] of byName){
+      arr.sort((a,b)=> String(a.dateAchat||"9999").localeCompare(String(b.dateAchat||"9999")));
+      jobs.push({name, cands: faceSpreadOrder(arr)});
+    }
+    const valid = new Set(State.photos.map(p=>p.id));
+    for(const id of Object.keys(FaceIndex.entries)) if(!valid.has(id)) delete FaceIndex.entries[id]; // photos supprimées
+    let total = 0; for(const j of jobs) total += Math.min(j.cands.length, maxPer * 2);
+    prog.max = Math.max(1, total); prog.value = 0;
+    let done = 0, analysed = 0, refsTotal = 0;
+    for(const job of jobs){
+      let refs = 0;
+      for(const p of job.cands){
+        if(faceBuildAbort || refs >= maxPer) break;
+        done++; prog.value = Math.min(done, total);
+        statusEl.textContent = "Analyse : " + job.name + " — " + refs + "/" + maxPer + " références (" + done + "/" + total + ")" +
+          (FACE_ENGINE.backend === "cpu" ? " — moteur lent (CPU)" : "");
+        const sig = faceSig(p), old = FaceIndex.entries[p.id];
+        if(old && old.sig === sig){ if(old.d) refs++; continue; }
+        const url = await getFullDataUrl(p);
+        if(!url){ FaceIndex.entries[p.id] = {sig, n:-1, d:null}; continue; }
+        try{
+          const canvas = await faceCanvasFromDataUrl(url, p.rotation);
+          const faces = await detectFacesInCanvas(canvas);
+          analysed++;
+          let d = null;
+          if(faces.length === 1 && faces[0].px.h >= FACE_REF_MIN_PX) d = faces[0].descriptor.map(v=> Math.round(v*1000)/1000);
+          FaceIndex.entries[p.id] = {sig, n: faces.length, d};
+          if(d) refs++;
+        }catch(e){ console.warn("Visages : échec sur " + p.fileName, e); FaceIndex.entries[p.id] = {sig, n:-1, d:null}; }
+        if(analysed % 5 === 0) saveFaceIndex();
+        await faceSleep(0);
+      }
+      refsTotal += refs;
+      if(faceBuildAbort) break;
+    }
+    const ok = saveFaceIndex();
+    statusEl.textContent = (faceBuildAbort ? "Arrêté. " : "Terminé. ") + analysed + " photo(s) analysée(s), " + refsTotal + " visage(s) de référence retenu(s)." +
+      (ok ? "" : " ⚠ Mémorisation impossible (stockage du navigateur plein) : les références ne survivront pas au rechargement.");
+  }catch(err){
+    statusEl.textContent = "Erreur : " + (err && err.message ? err.message : err);
+  }finally{
+    faceBuilding = false; setFaceBuildUi(false); updateFaceIndexSummary();
+  }
+}
+document.getElementById("faceBuildBtn").addEventListener("click", buildFaceIndex);
+document.getElementById("faceCancelBtn").addEventListener("click", ()=>{ faceBuildAbort = true; });
+document.getElementById("faceClearBtn").addEventListener("click", ()=>{
+  if(!confirm("Oublier tous les visages appris ? (Vos photos et leurs personnages ne sont pas modifiés.)")) return;
+  FaceIndex.entries = {}; saveFaceIndex(); updateFaceIndexSummary();
+  document.getElementById("faceBuildStatus").textContent = "Visages appris effacés.";
+});
+(function(){ const sel = document.getElementById("faceSensitivity"); let v = null; try{ v = localStorage.getItem("imago_face_sens"); }catch(e){}
+  if(v && FACE_SENSITIVITY[v]) sel.value = v;
+  sel.addEventListener("change", ()=>{ try{ localStorage.setItem("imago_face_sens", sel.value); }catch(e){} });
+})();
+document.getElementById("btnPersonnages").addEventListener("click", updateFaceIndexSummary);
+updateFaceIndexSummary();
+
+/* ---- Reconnaissance dans la fenêtre Modifier ---- */
+function addPersonnageToEditField(name){
+  const inp = document.getElementById("edPersonnage");
+  const toks = personnageTokens(inp.value);
+  if(!toks.includes(name)) toks.push(name);
+  inp.value = toks.join(", ");
+  inp.dispatchEvent(new Event("input", {bubbles:true}));
+}
+function clearFaceResults(){
+  faceResultsState = null;
+  const list = document.getElementById("edFaceResults"); if(list) list.textContent = "";
+  const ov = document.getElementById("faceOverlay"); if(ov){ ov.textContent = ""; ov.classList.add("hidden"); }
+  const st = document.getElementById("edFaceStatus"); if(st) st.textContent = "";
+  const all = document.getElementById("edFaceAllBtn"); if(all) all.classList.add("hidden");
+}
+// Cale le calque des cadres sur l'image affichée (suit le zoom). Les cadres n'ont de sens que si les pixels analysés
+// sont ceux affichés : on masque si la rotation n'est pas nulle, et on efface si l'image a changé (rognage, correction…).
+function syncFaceOverlay(){
+  const ov = document.getElementById("faceOverlay"); if(!ov || !faceResultsState) return;
+  const img = document.getElementById("edPreviewImg");
+  if(editDraft && editDraft.dataUrl !== faceResultsState.dataUrl){ clearFaceResults(); return; }
+  const upright = (typeof totalEditRotation === "function") ? (totalEditRotation() % 360 === 0) : true;
+  ov.classList.toggle("hidden", !upright);
+  ov.style.left = img.offsetLeft + "px"; ov.style.top = img.offsetTop + "px";
+  ov.style.width = img.clientWidth + "px"; ov.style.height = img.clientHeight + "px";
+}
+function faceCropThumb(canvas, box){
+  const m = 0.25, bw = box.w * canvas.width, bh = box.h * canvas.height;
+  const side = Math.max(bw, bh) * (1 + 2*m);
+  const cx = (box.x + box.w/2) * canvas.width, cy = (box.y + box.h/2) * canvas.height;
+  const t = document.createElement("canvas"); t.width = t.height = 72;
+  t.getContext("2d").drawImage(canvas, cx - side/2, cy - side/2, side, side, 0, 0, 72, 72);
+  return t.toDataURL("image/jpeg", 0.8);
+}
+function renderFaceResults(){
+  const st = faceResultsState; const list = document.getElementById("edFaceResults"), ov = document.getElementById("faceOverlay");
+  list.textContent = ""; ov.textContent = "";
+  const field = personnageTokens(document.getElementById("edPersonnage").value);
+  st.faces.forEach((f, i)=>{
+    const top = f.matches[0];
+    const label = (f.verdict === "unknown") ? "?" : top.name;
+    const box = document.createElement("div"); box.className = "face-box " + f.verdict;
+    box.style.left = Math.max(0, f.box.x*100) + "%"; box.style.top = Math.max(0, f.box.y*100) + "%";
+    box.style.width = Math.min(100, f.box.w*100) + "%"; box.style.height = Math.min(100, f.box.h*100) + "%";
+    const tag = document.createElement("div"); tag.className = "face-tag"; tag.textContent = (i+1) + " · " + label; box.appendChild(tag);
+    ov.appendChild(box);
+
+    const item = document.createElement("div"); item.className = "face-item";
+    const im = document.createElement("img"); im.src = f.thumb; im.alt = "Visage " + (i+1); item.appendChild(im);
+    const info = document.createElement("div"); info.className = "face-info";
+    const nm = document.createElement("div"); nm.className = "face-name";
+    nm.appendChild(document.createTextNode("Visage " + (i+1) + " — " + (f.verdict === "unknown" ? "non reconnu" : top.name)));
+    const badge = document.createElement("span"); badge.className = "face-badge " + f.verdict;
+    badge.textContent = f.verdict === "sure" ? "sûr · " + fmtDist(top.dist) : f.verdict === "maybe" ? "probable · " + fmtDist(top.dist) : (top ? "meilleure distance " + fmtDist(top.dist) : "aucune référence");
+    nm.appendChild(badge); info.appendChild(nm);
+    const alts = f.matches.slice(f.verdict === "unknown" ? 0 : 1);
+    if(alts.length){
+      const a = document.createElement("div"); a.className = "face-alts";
+      a.textContent = "Autres candidats : " + alts.map(m=> m.name + " (" + fmtDist(m.dist) + ")").join(", ");
+      info.appendChild(a);
+    }
+    const act = document.createElement("div"); act.className = "face-actions";
+    const addBtn = (name, primary)=>{
+      const b = document.createElement("button"); b.type = "button"; b.className = "btn";
+      const already = field.includes(name) || personnageTokens(document.getElementById("edPersonnage").value).includes(name);
+      b.textContent = already ? "✓ " + name : "＋ " + name; b.disabled = already;
+      b.addEventListener("click", ()=>{ addPersonnageToEditField(name); renderFaceResults(); });
+      act.appendChild(b);
+    };
+    if(f.verdict !== "unknown") addBtn(top.name, true);
+    alts.slice(0, 2).forEach(m=> addBtn(m.name, false));
+    const inp = document.createElement("input"); inp.type = "text"; inp.placeholder = "Autre nom…"; inp.setAttribute("list", "personnageList");
+    const go = document.createElement("button"); go.type = "button"; go.className = "btn"; go.textContent = "Ajouter";
+    go.addEventListener("click", ()=>{ const v = inp.value.trim(); if(!v) return; addPersonnageToEditField(v); renderFaceResults(); });
+    act.appendChild(inp); act.appendChild(go);
+    info.appendChild(act); item.appendChild(info); list.appendChild(item);
+  });
+  const anySure = st.faces.some(f=> f.verdict !== "unknown");
+  document.getElementById("edFaceAllBtn").classList.toggle("hidden", !anySure);
+  syncFaceOverlay();
+}
+async function recognizeFacesInEdit(){
+  const btn = document.getElementById("edFaceBtn"), status = document.getElementById("edFaceStatus");
+  if(!editDraft || !editDraft.dataUrl){ status.textContent = "Image pas encore chargée : réessayez dans un instant."; return; }
+  const persons = faceReferencePersons();
+  if(!persons.size){ status.textContent = "Aucun visage appris : ouvrez « 🧑 Personnages » puis « Analyser mes photos »."; return; }
+  btn.disabled = true; clearFaceResults();
+  try{
+    await loadFaceEngine(msg=>{ status.textContent = msg; });
+    status.textContent = "Analyse de l'image…" + (FACE_ENGINE.backend === "cpu" ? " (moteur lent : CPU)" : "");
+    await faceSleep(30);
+    const dataUrl = editDraft.dataUrl;
+    const canvas = await faceCanvasFromDataUrl(dataUrl, (typeof totalEditRotation === "function") ? totalEditRotation() : 0);
+    const faces = await detectFacesInCanvas(canvas);
+    if(!faces.length){ status.textContent = "Aucun visage détecté dans cette image."; return; }
+    faces.sort((a,b)=> a.box.x - b.box.x); // de gauche à droite
+    faces.forEach(f=>{ const r = matchFaceDescriptor(f.descriptor, persons); f.matches = r.matches; f.verdict = r.verdict; f.thumb = faceCropThumb(canvas, f.box); });
+    faceResultsState = { dataUrl, faces };
+    const nOk = faces.filter(f=> f.verdict !== "unknown").length;
+    status.textContent = faces.length + " visage(s) détecté(s), " + nOk + " reconnu(s)." +
+      ((typeof totalEditRotation === "function" && totalEditRotation() % 360 !== 0) ? " (cadres masqués : image pivotée)" : "");
+    renderFaceResults();
+  }catch(err){
+    status.textContent = "Erreur : " + (err && err.message ? err.message : err);
+  }finally{
+    btn.disabled = false;
+  }
+}
+document.getElementById("edFaceBtn").addEventListener("click", recognizeFacesInEdit);
+document.getElementById("edFaceAllBtn").addEventListener("click", ()=>{
+  if(!faceResultsState) return;
+  faceResultsState.faces.forEach(f=>{ if(f.verdict !== "unknown") addPersonnageToEditField(f.matches[0].name); });
+  renderFaceResults();
+});
+document.getElementById("edPersonnage").addEventListener("input", ()=>{ if(faceResultsState) renderFaceResults(); });
 let personnageSelection = new Set();
 function updatePersonnageBulkBar(){
   const bar = document.getElementById("ptBulkBar");
@@ -12545,6 +12933,7 @@ function applyEditZoom(){
   const range = document.getElementById("edZoomRange");
   if(range) range.value = Math.round(editViewScale*100);
   syncCropOverlay(); // pendant le rognage, le calque (et le rectangle) suit l'image zoomée
+  syncFaceOverlay(); // idem pour les cadres de la reconnaissance des visages
 }
 function setEditZoom(scale, anchor){
   const newScale = Math.min(3, Math.max(1, scale)); // pas de dézoom sous 100% : le calage "fit" initial est déjà le minimum utile
@@ -12669,6 +13058,7 @@ document.getElementById("btnEdit").addEventListener("click", async ()=>{
   editDraft.cropped = false;
   resetFreeRotate();
   clearEditHistory(); // nouvelle session d'édition : historique vierge
+  clearFaceResults();
   document.getElementById("edFreeRotatePanel").classList.add("hidden");
   document.getElementById("edFreeRotateBtn").classList.remove("copper");
   exitCropMode();
