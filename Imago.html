@@ -1527,7 +1527,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <div class="edit-panel hidden" data-panel="reglages">
         <div class="slider-row">
           <label>Luminosité <span id="valLum">100%</span></label>
-          <input type="range" id="rgLum" min="50" max="150" value="100">
+          <input type="range" id="rgLum" min="50" max="250" value="100">
         </div>
         <div class="slider-row">
           <label>Contraste <span id="valCon">100%</span></label>
@@ -11634,6 +11634,16 @@ const FILTER_PRESETS = [
   {key:"radiant",      icon:"☀",  label:"Radiant",      css:"brightness(1.1) saturate(1.25) contrast(1.05)"},
   {key:"ember",        icon:"☀",  label:"Ember",        css:"sepia(0.25) saturate(1.3) hue-rotate(-8deg) brightness(1.02)"},
   {key:"airy",         icon:"☀",  label:"Airy",         css:"brightness(1.12) saturate(0.85) contrast(0.95)"},
+  /* -- Gamme « images sombres » : du léger au très fort. La luminosité (brightness) est multiplicative ; le
+        contraste abaissé et la saturation relevée compensent l'aspect délavé qu'un fort éclaircissement donne. -- */
+  {key:"clair1",    icon:"🔅", label:"Clair +",    css:"brightness(1.25) contrast(0.97)",                  title:"Éclaircit légèrement (≈ +25 %)"},
+  {key:"clair2",    icon:"🔆", label:"Clair ++",   css:"brightness(1.5) contrast(0.94)",                   title:"Éclaircit nettement (≈ +50 %)"},
+  {key:"clair3",    icon:"💡", label:"Clair +++",  css:"brightness(1.8) contrast(0.9) saturate(1.05)",     title:"Éclaircit fortement (≈ +80 %)"},
+  {key:"clair4",    icon:"🌞", label:"Clair max",  css:"brightness(2.2) contrast(0.86) saturate(1.1)",     title:"Éclaircit au maximum (≈ ×2,2) — pour les images très sous-exposées"},
+  {key:"ombres",    icon:"🌗", label:"Ombres",     css:"brightness(1.35) contrast(0.8) saturate(1.1)",     title:"Déboucher les ombres : relève surtout les zones sombres, en compressant le contraste"},
+  {key:"interieur", icon:"🏠", label:"Intérieur",  css:"brightness(1.55) contrast(0.88) saturate(1.15)",   title:"Pièce ou scène d'intérieur sombre : éclaircit et redonne de la couleur"},
+  {key:"nuit",      icon:"🌙", label:"Nuit",       css:"brightness(2) contrast(0.82) saturate(1.2)",       title:"Scène de nuit ou très sombre : éclaircit fort, contraste doux"},
+  {key:"auto",      icon:"⚡", label:"Auto clair", auto:true, css:"",                                        title:"Mesure la luminosité de CETTE image et règle automatiquement luminosité, contraste et saturation (ajustables ensuite dans « Régl. »)"},
   {key:"noirblanc",    icon:"◑",  label:"Noir et Blanc", css:"grayscale(1) contrast(1.08)"}
 ];
 let editDraft = null; // copie de travail de la photo en cours d'édition
@@ -11770,7 +11780,9 @@ function renderSuggestionList(){
     const item = document.createElement("div");
     item.className = "suggestion-item" + (editDraft.filterKey===preset.key ? " active":"");
     item.innerHTML = `<span class="s-ic">${preset.icon}</span><span>${preset.label}</span>`;
+    if(preset.title) item.title = preset.title;
     item.addEventListener("click", ()=>{
+      if(preset.auto){ autoBrightenFromImage(); return; }
       pushEditHistory();
       if(editDraft.filterKey===preset.key){
         editDraft.filterKey = null; editDraft.filterCss = "";
@@ -11803,6 +11815,42 @@ function syncSlidersFromDraft(){
   document.getElementById("valCon").textContent = "100%";
   document.getElementById("valSat").textContent = "100%";
   editSliders = {lum:"100", con:"100", sat:"100"};
+}
+/* Éclairage automatique : mesure la luminosité de l'image (réduite à ~96 px, luminance perceptuelle) puis
+   calcule un facteur pour amener la luminosité moyenne vers ~0,42, borné pour ne pas brûler les hautes
+   lumières (percentile 98) ni dépasser ×2,5. Le résultat est écrit dans les curseurs « Régl. » (donc
+   ajustable ensuite) et passe par applySlidersToDraft : annulable avec « Défaire ». */
+function autoBrightenFromImage(){
+  const img = document.getElementById("edPreviewImg");
+  if(!img.naturalWidth) return;
+  const k = 96 / Math.max(img.naturalWidth, img.naturalHeight);
+  const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const cx = c.getContext("2d"); cx.drawImage(img, 0, 0, w, h);
+  const d = cx.getImageData(0, 0, w, h).data;
+  const hist = new Uint32Array(256); let sum = 0;
+  for(let i = 0; i < d.length; i += 4){
+    const y = Math.round(0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2]);
+    hist[y]++; sum += y;
+  }
+  const n = w * h, mean = sum / n / 255;
+  let acc = 0, p98 = 255; for(let v = 0; v < 256; v++){ acc += hist[v]; if(acc >= n * 0.98){ p98 = v; break; } }
+  p98 /= 255;
+  const wanted = 0.42 / Math.max(mean, 0.02);
+  const ceiling = Math.max(1.15, 0.97 / Math.max(p98, 0.05)); // ne pas écraser les hautes lumières
+  const f = Math.min(wanted, ceiling, 2.5);
+  if(f < 1.05){
+    toast("Cette image est déjà suffisamment lumineuse : aucun éclaircissement automatique appliqué.");
+    return;
+  }
+  const lum = Math.round(f * 100);
+  const con = Math.round(100 - Math.min(15, (f - 1) * 14));
+  const sat = Math.round(100 + Math.min(20, (f - 1) * 12));
+  document.getElementById("rgLum").value = lum;
+  document.getElementById("rgCon").value = con;
+  document.getElementById("rgSat").value = sat;
+  applySlidersToDraft();
+  toast(`Éclairage automatique : luminosité ${lum} %, contraste ${con} %, saturation ${sat} % (ajustable dans « Régl. »).`);
 }
 function applySlidersToDraft(){
   pushEditHistory("sliders");
