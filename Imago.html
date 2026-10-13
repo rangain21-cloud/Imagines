@@ -748,6 +748,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .crop-overlay.pan{ cursor:grab; }
 .crop-overlay.pan.dragging{ cursor:grabbing; }
 #cropPanBtn{ white-space:nowrap; }
+#modalEdit .modal-foot{ flex-wrap:wrap; }
+.edit-undo-group{ display:flex; gap:6px; margin-right:auto; }
+.edit-undo-group .btn:disabled{ opacity:.4; cursor:not-allowed; }
 .edit-tabs-row{
   display:flex; flex-direction:row; align-items:flex-start; /* la colonne d'onglets ne s'étire plus jusqu'en bas de la modale : elle s'arrête juste après le 4e onglet, au lieu de laisser du vide en dessous */
 }
@@ -1570,7 +1573,11 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     </div>
     </div>
     <div class="modal-foot">
-      <button class="btn reset" data-close="modalEdit">Annuler</button>
+      <div class="edit-undo-group">
+        <button class="btn" id="btnEditUndo" type="button" disabled title="Défaire la dernière retouche (Ctrl+Z) — les précédentes sont conservées">↶ Défaire</button>
+        <button class="btn" id="btnEditRedo" type="button" disabled title="Refaire la retouche défaite (Ctrl+Y)">↷ Refaire</button>
+      </div>
+      <button class="btn reset" data-close="modalEdit" title="Ferme la fenêtre en abandonnant TOUTES les modifications non enregistrées (pour n'annuler que la dernière retouche : « Défaire »)">Annuler</button>
       <button class="btn" id="btnSaveEditDownload">💾 Enregistrer + télécharger</button>
       <button class="btn copper" id="btnSaveEdit">Enregistrer</button>
     </div>
@@ -11616,6 +11623,108 @@ const FILTER_PRESETS = [
 ];
 let editDraft = null; // copie de travail de la photo en cours d'édition
 
+/* -----------------------------------------------------------------
+   Historique « Défaire / Refaire » de la modale Modifier : chaque retouche (recadrage, correctif yeux
+   rouges, trait de Baguette magique, pivot, filtre, réglage…) est précédée d'un instantané de l'état de
+   travail (pushEditHistory). « Défaire » revient d'UNE retouche, sans abandonner les précédentes — à la
+   différence du bouton « Annuler » du pied de modale, qui ferme tout sans enregistrer.
+   Les gestes continus (curseurs) sont regroupés en une seule étape grâce à une clé (voir pushEditHistory).
+   ----------------------------------------------------------------- */
+const EDIT_HISTORY_MAX = 15; // chaque instantané référence un dataURL plein format : on borne la mémoire
+let editUndoStack = [], editRedoStack = [];
+let editLastPushKey = null, editLastPushAt = 0;
+// Valeurs des curseurs Luminosité/Contraste/Saturation tenues à part : à la réception de l'événement "input" le DOM contient
+// déjà la NOUVELLE valeur, il ne peut donc pas servir à photographier l'état d'AVANT.
+let editSliders = {lum:"100", con:"100", sat:"100"};
+function readEditSlidersFromDom(){
+  editSliders = {lum: document.getElementById("rgLum").value, con: document.getElementById("rgCon").value, sat: document.getElementById("rgSat").value};
+}
+function snapshotEditDraft(){
+  return {
+    dataUrl: editDraft.dataUrl, width: editDraft.width, height: editDraft.height, cropped: editDraft.cropped,
+    rotation: editDraft.rotation, fineRotation: editDraft.fineRotation,
+    filterKey: editDraft.filterKey, filterCss: editDraft.filterCss,
+    lum: editSliders.lum, con: editSliders.con, sat: editSliders.sat
+  };
+}
+function updateEditUndoButtons(){
+  const u = document.getElementById("btnEditUndo"), r = document.getElementById("btnEditRedo");
+  if(!u || !r) return;
+  u.disabled = editUndoStack.length === 0;
+  r.disabled = editRedoStack.length === 0;
+}
+function clearEditHistory(){
+  editUndoStack = []; editRedoStack = [];
+  editLastPushKey = null; editLastPushAt = 0;
+  readEditSlidersFromDom();
+  updateEditUndoButtons();
+}
+// À appeler AVANT de modifier editDraft. Avec une clé, les appels répétés pendant un même geste
+// (glisser d'un curseur, saisie…) ne créent qu'une seule étape.
+function pushEditHistory(key){
+  if(!editDraft) return;
+  const now = Date.now();
+  if(key && key === editLastPushKey && now - editLastPushAt < 1200){ editLastPushAt = now; return; }
+  editLastPushKey = key || null; editLastPushAt = now;
+  editUndoStack.push(snapshotEditDraft());
+  if(editUndoStack.length > EDIT_HISTORY_MAX) editUndoStack.shift();
+  editRedoStack = [];
+  updateEditUndoButtons();
+}
+function restoreEditSnapshot(snap){
+  exitCropMode(); // un rognage en cours n'a plus de sens une fois l'état changé
+  const img = document.getElementById("edPreviewImg");
+  const dataChanged = snap.dataUrl !== editDraft.dataUrl;
+  editDraft.dataUrl = snap.dataUrl; editDraft.width = snap.width; editDraft.height = snap.height; editDraft.cropped = snap.cropped;
+  editDraft.rotation = snap.rotation; editDraft.fineRotation = snap.fineRotation;
+  editDraft.filterKey = snap.filterKey; editDraft.filterCss = snap.filterCss;
+  document.getElementById("rgLum").value = snap.lum; document.getElementById("valLum").textContent = snap.lum + "%";
+  document.getElementById("rgCon").value = snap.con; document.getElementById("valCon").textContent = snap.con + "%";
+  document.getElementById("rgSat").value = snap.sat; document.getElementById("valSat").textContent = snap.sat + "%";
+  editSliders = {lum: snap.lum, con: snap.con, sat: snap.sat};
+  document.getElementById("edFreeRotateRange").value = snap.fineRotation || 0;
+  document.getElementById("edFreeRotateNum").value = snap.fineRotation || 0;
+  highlightFreeRotateTicks(snap.fineRotation || 0);
+  if(totalEditRotation() % 360 !== 0){ exitRedEyeMode(); exitCloneMode(); } // ces retouches exigent une rotation nulle
+  refreshEditPreview();
+  renderSuggestionList();
+  if(dataChanged){
+    suppressNextEditZoomReset = true; // garde le zoom/défilement en cours (voir applyRedEyeFix)
+    img.src = snap.dataUrl;
+  }
+}
+function undoEdit(){
+  if(!editUndoStack.length || (typeof cloneDragging !== "undefined" && cloneDragging)) return;
+  editRedoStack.push(snapshotEditDraft());
+  restoreEditSnapshot(editUndoStack.pop());
+  editLastPushKey = null;
+  updateEditUndoButtons();
+  toast("Dernière retouche annulée.");
+}
+function redoEdit(){
+  if(!editRedoStack.length || (typeof cloneDragging !== "undefined" && cloneDragging)) return;
+  editUndoStack.push(snapshotEditDraft());
+  restoreEditSnapshot(editRedoStack.pop());
+  editLastPushKey = null;
+  updateEditUndoButtons();
+  toast("Retouche rétablie.");
+}
+document.getElementById("btnEditUndo").addEventListener("click", undoEdit);
+document.getElementById("btnEditRedo").addEventListener("click", redoEdit);
+document.querySelectorAll('[data-close="modalEdit"]').forEach(b=> b.addEventListener("click", clearEditHistory)); // libère la mémoire à la fermeture
+document.addEventListener("keydown", (e)=>{
+  if(!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  if(!document.getElementById("modalEdit").classList.contains("show")) return;
+  const k = e.key.toLowerCase();
+  if(k !== "z" && k !== "y") return;
+  const t = e.target;
+  // Dans un champ de saisie, Ctrl+Z reste l'annulation de frappe native du champ.
+  if(t && (t.isContentEditable || t.tagName === "TEXTAREA" || t.tagName === "SELECT" ||
+     (t.tagName === "INPUT" && !["range","checkbox","radio","button"].includes(t.type)))) return;
+  e.preventDefault();
+  if(k === "y" || e.shiftKey) redoEdit(); else undoEdit();
+});
+
 function totalEditRotation(){
   // Rotation totale = pivots à 90° (Pivoter à gauche/droite) + réglage fin (curseur "Libre")
   return (editDraft.rotation||0) + (editDraft.fineRotation||0);
@@ -11647,6 +11756,7 @@ function renderSuggestionList(){
     item.className = "suggestion-item" + (editDraft.filterKey===preset.key ? " active":"");
     item.innerHTML = `<span class="s-ic">${preset.icon}</span><span>${preset.label}</span>`;
     item.addEventListener("click", ()=>{
+      pushEditHistory();
       if(editDraft.filterKey===preset.key){
         editDraft.filterKey = null; editDraft.filterCss = "";
       }else{
@@ -11677,11 +11787,14 @@ function syncSlidersFromDraft(){
   document.getElementById("valLum").textContent = "100%";
   document.getElementById("valCon").textContent = "100%";
   document.getElementById("valSat").textContent = "100%";
+  editSliders = {lum:"100", con:"100", sat:"100"};
 }
 function applySlidersToDraft(){
+  pushEditHistory("sliders");
   const lum = document.getElementById("rgLum").value;
   const con = document.getElementById("rgCon").value;
   const sat = document.getElementById("rgSat").value;
+  editSliders = {lum, con, sat}; // après le pushEditHistory ci-dessus (qui a photographié l'état d'avant)
   document.getElementById("valLum").textContent = lum + "%";
   document.getElementById("valCon").textContent = con + "%";
   document.getElementById("valSat").textContent = sat + "%";
@@ -11692,6 +11805,7 @@ function applySlidersToDraft(){
 }
 ["rgLum","rgCon","rgSat"].forEach(id=> document.getElementById(id).addEventListener("input", applySlidersToDraft));
 document.getElementById("edResetFilter").addEventListener("click", ()=>{
+  if(editDraft.filterCss) pushEditHistory();
   editDraft.filterKey = null; editDraft.filterCss = "";
   syncSlidersFromDraft(); refreshEditPreview(); renderSuggestionList();
 });
@@ -11707,12 +11821,15 @@ document.querySelectorAll(".edit-tab").forEach(tab=>{
 });
 
 document.getElementById("edRotateLeftBtn").addEventListener("click", ()=>{
+  pushEditHistory();
   editDraft.rotation = ((editDraft.rotation||0) - 90) % 360; refreshEditPreview();
 });
 document.getElementById("edRotateRightBtn").addEventListener("click", ()=>{
+  pushEditHistory();
   editDraft.rotation = ((editDraft.rotation||0) + 90) % 360; refreshEditPreview();
 });
 document.getElementById("edRotateResetBtn").addEventListener("click", ()=>{
+  if(editDraft.rotation || editDraft.fineRotation) pushEditHistory();
   editDraft.rotation = 0; resetFreeRotate(); refreshEditPreview();
 });
 
@@ -11724,6 +11841,7 @@ document.getElementById("edFreeRotateBtn").addEventListener("click", ()=>{
   document.getElementById("edFreeRotateBtn").classList.toggle("copper", show);
 });
 document.getElementById("edFreeRotateRange").addEventListener("input", (e)=>{
+  if(Number(e.target.value) !== editDraft.fineRotation) pushEditHistory("fine");
   editDraft.fineRotation = Number(e.target.value);
   document.getElementById("edFreeRotateNum").value = editDraft.fineRotation;
   highlightFreeRotateTicks(editDraft.fineRotation);
@@ -11740,6 +11858,7 @@ function applyFreeRotateFromNumber(commit){
   }
   const clamped = Math.max(-60, Math.min(60, v));
   v = Math.round(clamped * 10) / 10;
+  if(v !== editDraft.fineRotation) pushEditHistory("fine");
   editDraft.fineRotation = v;
   document.getElementById("edFreeRotateRange").value = v;
   highlightFreeRotateTicks(v);
@@ -11920,6 +12039,7 @@ document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
 
+  pushEditHistory();
   editDraft.dataUrl = newDataUrl;
   editDraft.width = canvas.width;
   editDraft.height = canvas.height;
@@ -12095,6 +12215,7 @@ function applyRedEyeFix(cx, cy){
   }
   ctx.putImageData(imgData, x0, y0);
   const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  pushEditHistory();
   editDraft.dataUrl = newDataUrl;
   editDraft.width = canvas.width;
   editDraft.height = canvas.height;
@@ -12172,8 +12293,8 @@ function updateCloneHint(){
   const hint = document.getElementById("cloneHint");
   if(!cloneModeOn) return;
   hint.textContent = cloneSourcePoint
-    ? "Source choisie : glissez sur la zone à recouvrir — elle se remplit avec le contenu de la source, qui suit votre geste. Touchez « Nouvelle source » pour en viser une autre."
-    : "Touchez d'abord la zone à dupliquer (la source), puis glissez sur la zone à recouvrir. Ajustez la taille du pinceau ci-dessus si besoin.";
+    ? "Source choisie : glissez sur la zone à recouvrir — elle se remplit avec le contenu de la source, qui suit votre geste. Touchez « Nouvelle source » pour en viser une autre. Trait raté ? « ↶ Défaire » (Ctrl+Z) l'annule seul."
+    : "Touchez d'abord la zone à dupliquer (la source), puis glissez sur la zone à recouvrir. Ajustez la taille du pinceau ci-dessus si besoin. Trait raté ? « ↶ Défaire » (Ctrl+Z) l'annule seul.";
 }
 function toggleCloneMode(){
   if(totalEditRotation() % 360 !== 0){
@@ -12294,6 +12415,7 @@ window.addEventListener("mouseup", ()=>{
   // Validation du trait : un seul ré-encodage en dataURL, ici, pour tout le
   // trait qui vient de se terminer (voir note en tête de section).
   const newDataUrl = cloneStrokeCanvas.toDataURL("image/jpeg", 0.92);
+  pushEditHistory(); // un trait de Baguette magique = une étape de l'historique (« Défaire » l'annule seul)
   editDraft.dataUrl = newDataUrl;
   editDraft.width = cloneStrokeCanvas.width;
   editDraft.height = cloneStrokeCanvas.height;
@@ -12450,6 +12572,7 @@ document.getElementById("btnEdit").addEventListener("click", async ()=>{
   editDraft = Object.assign({}, p); // copie de travail — rien n'est écrit tant que "Enregistrer" n'est pas cliqué
   editDraft.cropped = false;
   resetFreeRotate();
+  clearEditHistory(); // nouvelle session d'édition : historique vierge
   document.getElementById("edFreeRotatePanel").classList.add("hidden");
   document.getElementById("edFreeRotateBtn").classList.remove("copper");
   exitCropMode();
