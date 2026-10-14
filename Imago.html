@@ -5879,23 +5879,59 @@ document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
       b.onclick = async ()=>{
         body.textContent = "Lecture du dossier « " + f.name + " »…";
         try{
-          let list = [], tok = "";
+          // 1) Contenu du dossier en une passe : médias ET éventuel(s) catalogue(s) .csv.
+          //    (Avant : seuls image/* et video/* étaient listés, donc le .csv n'arrivait jamais
+          //    à handleFilesSelected → aucun catalogue proposé → nouveau CSV généré à chaque import.)
+          let all = [], tok = "";
           do{
-            const mq = encodeURIComponent(`'${f.id}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')`);
-            const j = await (await driveApiFetch(api + `q=${mq}&pageSize=200&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
-            list = list.concat(j.files||[]); tok = j.nextPageToken || "";
+            const mq = encodeURIComponent(`'${f.id}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`);
+            const j = await (await driveApiFetch(api + `q=${mq}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
+            all = all.concat(j.files||[]); tok = j.nextPageToken || "";
           }while(tok);
+          const list = all.filter(x=> /^(image|video)\//.test(x.mimeType || ""));
+          const csvList = all.filter(x=> /\.csv$/i.test(x.name || ""));
+          const download = async x => new File([await (await driveApiFetch(api.replace("?","/") + x.id + "?alt=media")).blob()], x.name, {type:x.mimeType, lastModified:Date.parse(x.modifiedTime)||Date.now()});
+
+          // 2) Catalogue(s) : fichiers minuscules, téléchargés d'abord → même modale de choix que pour un
+          //    dossier local (catalogue + tri + critère + personnages), AVANT de télécharger les médias.
+          let pick = null, toGet = list, notKept = [];
+          if(csvList.length){
+            const csvFiles = [];
+            for(let i=0;i<csvList.length;i++){
+              body.textContent = `Lecture du catalogue « ${csvList[i].name} »…`;
+              csvFiles.push(await download(csvList[i]));
+            }
+            ov.style.display = "none"; // laisse la place à la modale de choix du catalogue
+            pick = await pickCatalogFromCandidates(csvFiles);
+            ov.style.display = "";
+            // 3) Filtres actifs : on ne télécharge que les médias dont la ligne du catalogue correspond
+            //    (même règle que dans handleFilesSelected, qui refiltrera de toute façon ensuite).
+            if(pick.file && (pick.critere || pick.personnages)){
+              const rows = new CatalogRowMap();
+              for(const r of await readCatalogCsvRows(pick.file)) rows.set(r.fileName, r);
+              toGet = []; notKept = [];
+              list.forEach(x=>{
+                const row = rows.get(x.name);
+                (row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode) ? toGet : notKept).push(x);
+              });
+            }
+          }
+
+          // 4) Téléchargement des seuls médias retenus.
           const files = [];
-          for(let i=0;i<list.length;i++){
-            body.textContent = `Téléchargement ${i+1} / ${list.length}…`;
-            const blob = await (await driveApiFetch(api.replace("?","/") + list[i].id + "?alt=media")).blob();
-            files.push(new File([blob], list[i].name, {type:list[i].mimeType, lastModified:Date.parse(list[i].modifiedTime)||Date.now()}));
+          for(let i=0;i<toGet.length;i++){
+            body.textContent = `Téléchargement ${i+1} / ${toGet.length}…`;
+            files.push(await download(toGet[i]));
           }
           close();
-          if(!files.length) return toast("Aucune image ni vidéo dans ce dossier.");
+          if(!files.length) return toast(notKept.length ? "Aucune photo/vidéo du dossier ne correspond aux filtres choisis — rien à charger." : "Aucune image ni vidéo dans ce dossier.");
+          // Les médias NON téléchargés restent présents sur Drive : on les déclare par de simples « coquilles »
+          // vides (même nom, 0 octet, jamais lues car écartées par le filtre) pour que handleFilesSelected ne
+          // prenne pas leurs lignes de catalogue pour des fichiers disparus (règle « corbeille » des orphelins).
+          const placeholders = notKept.map(x=> new File([], x.name, {type:x.mimeType, lastModified:Date.parse(x.modifiedTime)||Date.now()}));
           toggleBurger(false);
-          handleFilesSelected(files, f.name, true, "btnImpDrive");
-        }catch(e){ close(); toast("Import Drive impossible : " + e.message); }
+          handleFilesSelected([...files, ...placeholders], f.name, pick || true, "btnImpDrive");
+        }catch(e){ ov.style.display = ""; close(); toast("Import Drive impossible : " + e.message); }
       };
       body.appendChild(b);
     });
@@ -8773,7 +8809,10 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // des images…" puisque son propre sélecteur filtre les .csv.
   const csvFiles = [...pendingCatalogFiles, ...allFiles.filter(f=>/\.csv$/i.test(f.name))];
   pendingCatalogFiles = []; // usage unique : ne pas les réappliquer silencieusement à un import ultérieur
-  const pick = await pickCatalogFromCandidates(csvFiles);
+  // Import Google Drive : le catalogue a déjà été choisi (modale + filtres) AVANT le téléchargement des médias,
+  // pour ne télécharger que les fichiers retenus — on réutilise ce choix au lieu de reposer la question.
+  const presetPick = (skipCatalogPrompt && typeof skipCatalogPrompt === "object") ? skipCatalogPrompt : null;
+  const pick = presetPick || await pickCatalogFromCandidates(csvFiles);
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
   applyCatalogPickTri(pick.tri); // "Tri" de la modale : appliqué tout de suite, avant le tri prioritaire ci-dessous qui en dépend
   const chosen = pick.file;
