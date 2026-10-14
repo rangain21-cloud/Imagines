@@ -272,13 +272,7 @@ button{font-family:inherit;}
   .app-body{flex-direction:column;}
   .main{width:100%;}
   .topbar-tools .tool-btn span:last-child{display:none;}
-  .topbar-tools .tool-btn{padding:0 9px; flex:0 0 auto;}
-  /* mobile : la barre (56 px) ne peut pas afficher 12 boutons sur 2 lignes — les boutons du bas (Modifier, Information…) étaient rognés.
-     Une seule ligne, défilable horizontalement. */
-  .topbar{gap:6px; padding:0 8px;}
-  .topbar-tools{flex:1 1 0; min-width:0; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; margin-left:2px; scrollbar-width:none; -webkit-overflow-scrolling:touch;}
-  .topbar-tools::-webkit-scrollbar{display:none;}
-  .brand{display:none;}
+  .topbar-tools .tool-btn{padding:0 9px;}
   .selection-hint{display:none;}
   .brand{font-size:18px;}
   .sidebar-toggle-btn{display:flex;}
@@ -293,6 +287,17 @@ button{font-family:inherit;}
 }
 
 
+
+/* Smartphone (portrait ET paysage) : la barre du haut grandit avec son contenu — les boutons passent à la ligne au lieu d'être rognés
+   (plus de défilement horizontal à deviner). La hauteur réelle est recopiée dans --topbar-h par le script « topbarSync » (fin du fichier). */
+@media (max-width: 760px), (pointer: coarse){
+  .topbar{ height:auto; min-height:56px; flex-wrap:nowrap; align-items:flex-start; padding:6px 8px; gap:6px; }
+  .brand{ display:none; }
+  .topbar-tools{ flex:1 1 0; min-width:0; flex-wrap:wrap; margin-left:2px; gap:5px; }
+  .topbar-spacer{ display:none; }
+  .topbar-tools .tool-btn span:last-child{ display:none; }
+  .topbar-tools .tool-btn{ padding:0 9px; }
+}
 /* ---------- sidebar (Recherches) ---------- */
 .sidebar h3{
   font-family:var(--font-display); font-weight:400; font-size:16px;
@@ -16309,6 +16314,16 @@ pushExitGuard();
    --------------------------------------------------------------- */
 syncFilterControls();
 loadAll();
+</script>
+<script>
+/* topbarSync : recopie la hauteur réelle de la barre du haut dans --topbar-h (elle peut occuper plusieurs lignes sur smartphone). */
+(function(){
+  const tb = document.querySelector(".topbar"); if(!tb) return;
+  const sync = ()=>{ const h = Math.ceil(tb.getBoundingClientRect().height); if(h > 0) document.documentElement.style.setProperty("--topbar-h", h + "px"); };
+  sync();
+  if(typeof ResizeObserver === "function") new ResizeObserver(sync).observe(tb);
+  window.addEventListener("resize", sync); window.addEventListener("orientationchange", sync);
+})();
 </script>
 </body>
 </html>
