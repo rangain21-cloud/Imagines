@@ -761,6 +761,11 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .face-sens{ display:inline-flex; gap:12px; align-items:center; flex-wrap:wrap; font-size:12px; color:var(--ink-dim); }
 .field-row .face-sens label{ display:inline-flex; align-items:center; gap:4px; margin:0; cursor:pointer; text-transform:none; letter-spacing:0; font-size:12px; color:var(--ink-dim); }
 .field-row .face-sens input{ margin:0; cursor:pointer; }
+.info-face-chip{ display:inline-flex; align-items:center; gap:6px; margin:2px 6px 2px 0; padding:2px 9px; border-radius:12px; border:1px solid var(--line); background:var(--bg-panel-2); font-size:12px; color:var(--ink-dim); }
+.info-face-chip.auto{ border-color:#7ddc8a; color:#7ddc8a; }
+.info-face-chip.suggest{ border-style:dashed; color:var(--ink); cursor:pointer; }
+.info-face-chip.suggest:hover{ border-color:var(--copper, #c8803e); }
+.info-face-chip button{ background:none; border:0; color:inherit; cursor:pointer; padding:0 2px; font-size:13px; line-height:1; }
 .face-results{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
 .face-item{ display:flex; gap:10px; align-items:flex-start; padding:8px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2); }
 .face-item img{ width:64px; height:64px; object-fit:cover; border-radius:6px; flex:none; background:#000; }
@@ -1760,6 +1765,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
             <select id="faceAutoWrite"><option value="sure" selected>les reconnaissances « sûres » seulement</option><option value="maybe">« sûres » et « probables »</option></select>
             <label for="faceAutoSize">Précision :</label>
             <select id="faceAutoSize"><option value="800">Rapide (800 px)</option><option value="1200" selected>Normale (1200 px)</option><option value="1800">Fine (1800 px, plus lente)</option></select>
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <label style="font-size:13px; cursor:pointer;"><input type="checkbox" id="faceInfoChk" checked> Dans « Infos » : ajouter automatiquement les personnages reconnus</label>
+          <div style="margin-top:6px; font-size:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span>« sûr » : toujours ajouté. « probable » : ajouté jusqu'à la distance</span>
+            <input type="number" id="faceProbMax" min="0.30" max="0.70" step="0.01" value="0.51" style="width:70px;">
+            <span>(plus petit = plus sévère ; au-delà, le nom est seulement proposé en un clic)</span>
           </div>
         </div>
         <progress id="faceProgress" value="0" max="1" class="hidden" style="width:100%; margin-top:8px;"></progress>
@@ -10373,7 +10386,7 @@ var faceSensitivityKey = (function(){ try{ const v = localStorage.getItem("imago
 function faceThresholds(){ return FACE_SENSITIVITY[faceSensitivityKey] || FACE_SENSITIVITY.prudent; }
 const FACE_LS_KEY = "imago_face_index_v1";
 var faceResultsState = null;  // var : évite toute zone morte temporelle (lu par applyEditZoom)
-var faceBuilding = false, faceBuildAbort = false;
+var faceBuilding = false, faceBuildAbort = false, faceRefVersion = 0;
 const FaceIndex = { entries: (function(){
   try{ const o = JSON.parse(localStorage.getItem(FACE_LS_KEY) || "null"); return (o && o.v === 1 && o.entries) ? o.entries : {}; }
   catch(e){ return {}; }
@@ -10518,13 +10531,13 @@ function matchFaceDescriptor(desc, persons){
   }
   scored.sort((a,b)=> a.dist - b.dist);
   const top = scored.slice(0, 3);
-  let verdict = "unknown";
+  let verdict = "unknown", ambiguous = false;
   const th = faceThresholds();
   if(top.length && top[0].dist <= th.maybe){
     verdict = top[0].dist <= th.sure ? "sure" : "maybe";
-    if(top.length > 1 && (top[1].dist - top[0].dist) < FACE_AMBIG_MARGIN) verdict = "maybe"; // deux candidats trop proches : jamais « sûr »
+    if(top.length > 1 && (top[1].dist - top[0].dist) < FACE_AMBIG_MARGIN){ verdict = "maybe"; ambiguous = true; } // deux candidats trop proches : jamais « sûr », jamais ajouté automatiquement
   }
-  return { matches: top, verdict };
+  return { matches: top, verdict, ambiguous };
 }
 // Ordre « étalé » (suite à faible discrépance) pour varier les époques/prises de vue parmi les candidates.
 function faceSpreadOrder(arr){
@@ -10610,14 +10623,14 @@ async function buildFaceIndex(){
   }catch(err){
     statusEl.textContent = "Erreur : " + (err && err.message ? err.message : err);
   }finally{
-    faceBuilding = false; setFaceBuildUi(false); updateFaceIndexSummary();
+    faceBuilding = false; faceRefVersion++; setFaceBuildUi(false); updateFaceIndexSummary();
   }
 }
 document.getElementById("faceBuildBtn").addEventListener("click", buildFaceIndex);
 document.getElementById("faceCancelBtn").addEventListener("click", ()=>{ faceBuildAbort = true; faceAutoAbort = true; });
 document.getElementById("faceClearBtn").addEventListener("click", ()=>{
   if(!confirm("Oublier tous les visages appris ? (Vos photos et leurs personnages ne sont pas modifiés.)")) return;
-  FaceIndex.entries = {}; saveFaceIndex(); updateFaceIndexSummary();
+  FaceIndex.entries = {}; FaceAlbum.refs = {}; saveFaceIndex(); saveFaceAlbum(); faceRefVersion++; updateFaceIndexSummary();
   document.getElementById("faceBuildStatus").textContent = "Visages appris effacés.";
 });
 // Une seule source de vérité (faceSensitivityKey), affichée à deux endroits : liste « Personnages » et radios « Modifier > Détails ».
@@ -10738,7 +10751,7 @@ async function learnFromAlbum(files){
   }catch(err){
     statusEl.textContent = "Erreur : " + (err && err.message ? err.message : err);
   }finally{
-    faceBuilding = false; setFaceBuildUi(false); updateFaceIndexSummary();
+    faceBuilding = false; faceRefVersion++; setFaceBuildUi(false); updateFaceIndexSummary();
   }
 }
 
@@ -10750,7 +10763,7 @@ async function learnFromAlbum(files){
    --------------------------------------------------------------------- */
 const FACE_OPTS_KEY = "imago_face_opts_v1";
 var faceOpts = (function(){
-  const d = {auto:true, write:"sure", size:1200};
+  const d = {auto:true, write:"sure", size:1200, info:true, probMax:0.51};
   try{ const o = JSON.parse(localStorage.getItem(FACE_OPTS_KEY) || "null"); if(o) return Object.assign(d, o); }catch(e){}
   return d;
 })();
@@ -10758,6 +10771,10 @@ function saveFaceOpts(){ try{ localStorage.setItem(FACE_OPTS_KEY, JSON.stringify
 (function(){
   const chk = document.getElementById("faceAutoChk"), wr = document.getElementById("faceAutoWrite"), sz = document.getElementById("faceAutoSize");
   chk.checked = !!faceOpts.auto; wr.value = faceOpts.write; sz.value = String(faceOpts.size);
+  const ic = document.getElementById("faceInfoChk"), pm = document.getElementById("faceProbMax");
+  ic.checked = !!faceOpts.info; pm.value = String(faceOpts.probMax);
+  ic.addEventListener("change", ()=>{ faceOpts.info = ic.checked; saveFaceOpts(); });
+  pm.addEventListener("change", ()=>{ const v = parseFloat(String(pm.value).replace(",", ".")); faceOpts.probMax = isFinite(v) ? Math.max(0.30, Math.min(0.70, v)) : 0.51; pm.value = String(faceOpts.probMax); saveFaceOpts(); });
   chk.addEventListener("change", ()=>{ faceOpts.auto = chk.checked; saveFaceOpts(); });
   wr.addEventListener("change", ()=>{ faceOpts.write = wr.value; saveFaceOpts(); });
   sz.addEventListener("change", ()=>{ faceOpts.size = parseInt(sz.value, 10) || 1200; saveFaceOpts(); });
@@ -13724,6 +13741,11 @@ function renderInfoModal(p){
       <button class="info-pencil" data-edit="personnage" title="Modifier le(s) personnage(s)">✎</button>
     </div>
 
+    <div class="info-row hidden" id="infoFaceRow">
+      <div class="info-ic">🧑</div>
+      <div class="info-content" id="infoFaceBox"></div>
+    </div>
+
     <div class="info-row">
       <div class="info-ic">★</div>
       <div class="info-content">
@@ -13774,6 +13796,7 @@ function renderInfoModal(p){
 
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
   rows.querySelector('[data-edit="personnage"]').addEventListener("click", ()=> startInlineEdit("infoPersonnageText", "personnage", p));
+  infoFacesStart(p); // reconnaissance des visages en arrière-plan (ajout automatique des personnages sûrs/probables)
   rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p));
   document.getElementById("infoFavBtn").addEventListener("click", async ()=>{
     // Bouton poussoir "Favori : Oui/Non" — bascule directement la rubrique
@@ -13863,6 +13886,119 @@ async function maybeFetchGpsLieuCandidate(p){
   } finally {
     gpsLieuFetchInFlight.delete(p.id);
   }
+}
+
+
+/* ---------------------------------------------------------------------
+   Fenêtre « Infos » : reconnaissance automatique des visages de la photo affichée
+   À l'ouverture (en arrière-plan, comme la proposition de lieu par GPS) : les personnages reconnus « sûrs » — ou « probables »
+   jusqu'à la distance réglée (0,51 par défaut) — sont ajoutés tout de suite au champ Personnage, SANS clic. Les autres candidats
+   sont proposés sous forme de pastille à cliquer (un clic). Chaque ajout automatique est annulable en un clic (✕), et un nom
+   retiré n'est plus rajouté automatiquement pour cette photo. Jamais d'ajout si deux candidats sont trop proches (« ambigu »),
+   ni, pour un personnage n'ayant qu'UNE référence, sans une certitude renforcée. Résultat gardé en mémoire (pas d'analyse répétée).
+   --------------------------------------------------------------------- */
+var faceInfoCache = new Map();     // id photo -> {key, nFaces, nUnknown, auto:[{name,dist,verdict}], present:[name], suggest:[{name,dist}]}
+var faceInfoRejected = new Map();  // id photo -> Set(clés de prénoms retirés par l'utilisateur)
+var faceInfoPending = new Set();   // analyses en cours
+function faceInfoKey(){ return faceRefVersion + "|" + faceSensitivityKey + "|" + faceOpts.probMax; }
+async function infoSetPersonnageTokens(p, toks){
+  p.personnage = toks.join(", ");
+  await idbPut("photos", p);
+  populateFilterOptions(); renderGrid(); autoBuildCsv();
+}
+function infoFaceModalShowing(p){
+  const m = document.getElementById("modalInfo"); const sel = (typeof getSelected === "function") ? getSelected() : null;
+  return m && m.classList.contains("show") && sel && sel.id === p.id;
+}
+function renderInfoFaces(p){
+  const row = document.getElementById("infoFaceRow"), box = document.getElementById("infoFaceBox"); if(!row || !box) return;
+  const c = faceInfoCache.get(p.id);
+  box.textContent = ""; row.classList.remove("hidden");
+  const line = document.createElement("div"); line.className = "sub-line"; box.appendChild(line);
+  if(!c){ line.textContent = "Visages : analyse en cours…" + (FACE_ENGINE.ready ? "" : " (chargement du moteur à la première utilisation)"); return; }
+  if(c.error){ line.textContent = "Visages : " + c.error; return; }
+  if(!c.nFaces){ line.textContent = "Visages : aucun visage détecté"; return; }
+  line.textContent = "Visages : " + c.nFaces + " détecté(s)" + (c.nUnknown ? ", " + c.nUnknown + " non reconnu(s) — « ✎ » pour les nommer" : "");
+  const chips = document.createElement("div"); box.appendChild(chips);
+  c.auto.forEach(a=>{
+    const ch = document.createElement("span"); ch.className = "info-face-chip auto";
+    ch.title = "Ajouté automatiquement (" + (a.verdict === "sure" ? "sûr" : "probable") + ", distance " + fmtDist(a.dist) + ")";
+    ch.appendChild(document.createTextNode("✓ " + a.name + " · " + (a.verdict === "sure" ? "sûr" : "probable") + " " + fmtDist(a.dist) + " "));
+    const x = document.createElement("button"); x.type = "button"; x.textContent = "✕"; x.title = "Retirer ce personnage";
+    x.addEventListener("click", async ()=>{
+      const k = faceNameKey(a.name);
+      if(!faceInfoRejected.has(p.id)) faceInfoRejected.set(p.id, new Set());
+      faceInfoRejected.get(p.id).add(k);
+      c.auto = c.auto.filter(z=> faceNameKey(z.name) !== k);
+      await infoSetPersonnageTokens(p, personnageTokens(p.personnage).filter(t=> faceNameKey(t) !== k));
+      renderInfoModal(p);
+    });
+    ch.appendChild(x); chips.appendChild(ch);
+  });
+  c.present.forEach(n=>{ const ch = document.createElement("span"); ch.className = "info-face-chip"; ch.textContent = "✓ " + n + " (déjà indiqué)"; chips.appendChild(ch); });
+  c.suggest.forEach(sg=>{
+    const ch = document.createElement("span"); ch.className = "info-face-chip suggest"; ch.title = "Ajouter « " + sg.name + " » (distance " + fmtDist(sg.dist) + ", au-dessus du seuil automatique)";
+    ch.textContent = "＋ " + sg.name + " (" + fmtDist(sg.dist) + ")";
+    ch.addEventListener("click", async ()=>{
+      const toks = personnageTokens(p.personnage);
+      if(!toks.some(t=> faceNameKey(t) === faceNameKey(sg.name))) toks.push(sg.name);
+      c.suggest = c.suggest.filter(z=> z !== sg);
+      await infoSetPersonnageTokens(p, toks);
+      renderInfoModal(p);
+    });
+    chips.appendChild(ch);
+  });
+}
+function infoFacesStart(p){
+  const row = document.getElementById("infoFaceRow"); if(!row) return;
+  row.classList.add("hidden");
+  if(!faceOpts.info || p.isVideo || !p.hasFullImage) return;
+  if(!faceReferencePersons().size) return; // rien appris : pas de ligne « Visages » (aucun encombrement)
+  const cached = faceInfoCache.get(p.id);
+  if(cached && cached.key === faceInfoKey()){ renderInfoFaces(p); return; }
+  faceInfoCache.delete(p.id);
+  renderInfoFaces(p);
+  if(faceInfoPending.has(p.id)) return;
+  faceInfoPending.add(p.id);
+  (async ()=>{
+    const key = faceInfoKey();
+    let entry = {key, nFaces:0, nUnknown:0, auto:[], present:[], suggest:[]};
+    try{
+      await loadFaceEngine();
+      const url = await getFullDataUrl(p);
+      if(!url) throw new Error("image indisponible");
+      const canvas = await faceCanvasFromDataUrl(url, p.rotation, FACE_EDIT_SIDE); // image stockée à sa taille entière (aucune réduction)
+      const faces = await detectFacesInCanvas(canvas);
+      const persons = faceReferencePersons(), th = faceThresholds();
+      const toks = personnageTokens(p.personnage), have = new Set(toks.map(faceNameKey));
+      const rejected = faceInfoRejected.get(p.id) || new Set();
+      entry.nFaces = faces.length;
+      let added = false;
+      for(const f of faces){
+        if(f.px.h < FACE_AUTO_MIN_PX){ entry.nUnknown++; continue; }
+        const r = matchFaceDescriptor(f.descriptor, persons), top = r.matches[0];
+        if(!top || r.verdict === "unknown"){ entry.nUnknown++; continue; }
+        const k = faceNameKey(top.name);
+        if(have.has(k) && !entry.auto.some(a=> faceNameKey(a.name) === k)){ if(!entry.present.includes(top.name)) entry.present.push(top.name); continue; }
+        const solid = !r.ambiguous && (
+          (r.verdict === "sure" && (top.refs >= 2 || top.dist <= th.sure - 0.05)) ||
+          (r.verdict === "maybe" && top.dist <= faceOpts.probMax && top.refs >= 2));
+        if(solid && !rejected.has(k)){
+          if(!have.has(k)){ toks.push(top.name); have.add(k); added = true; entry.auto.push({name: top.name, dist: top.dist, verdict: r.verdict}); }
+        }else if(!entry.suggest.some(z=> faceNameKey(z.name) === k)){
+          entry.suggest.push({name: top.name, dist: top.dist});
+          if(r.ambiguous && r.matches[1] && !entry.suggest.some(z=> faceNameKey(z.name) === faceNameKey(r.matches[1].name))) entry.suggest.push({name: r.matches[1].name, dist: r.matches[1].dist});
+        }
+      }
+      if(added) await infoSetPersonnageTokens(p, toks);
+    }catch(err){
+      entry = {key, error: (err && err.message ? err.message : String(err)), nFaces:0, nUnknown:0, auto:[], present:[], suggest:[]};
+    }finally{
+      faceInfoPending.delete(p.id);
+      faceInfoCache.set(p.id, entry);
+      if(infoFaceModalShowing(p)) renderInfoModal(p); // met à jour le champ Personnage ET la ligne « Visages »
+    }
+  })();
 }
 
 function startInlineEdit(containerId, field, p){
