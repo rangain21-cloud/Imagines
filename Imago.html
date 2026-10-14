@@ -272,7 +272,13 @@ button{font-family:inherit;}
   .app-body{flex-direction:column;}
   .main{width:100%;}
   .topbar-tools .tool-btn span:last-child{display:none;}
-  .topbar-tools .tool-btn{padding:0 9px;}
+  .topbar-tools .tool-btn{padding:0 9px; flex:0 0 auto;}
+  /* mobile : la barre (56 px) ne peut pas afficher 12 boutons sur 2 lignes — les boutons du bas (Modifier, Information…) étaient rognés.
+     Une seule ligne, défilable horizontalement. */
+  .topbar{gap:6px; padding:0 8px;}
+  .topbar-tools{flex:1 1 0; min-width:0; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; margin-left:2px; scrollbar-width:none; -webkit-overflow-scrolling:touch;}
+  .topbar-tools::-webkit-scrollbar{display:none;}
+  .brand{display:none;}
   .selection-hint{display:none;}
   .brand{font-size:18px;}
   .sidebar-toggle-btn{display:flex;}
@@ -13978,8 +13984,17 @@ function renderInfoFaces(p){
 function infoFacesStart(p){
   const row = document.getElementById("infoFaceRow"); if(!row) return;
   row.classList.add("hidden");
-  if(!faceOpts.info || p.isVideo || !p.hasFullImage) return;
-  if(!faceReferencePersons().size) return; // rien appris : pas de ligne « Visages » (aucun encombrement)
+  if(p.isVideo || !p.hasFullImage) return;
+  if(!faceOpts.info || !faceReferencePersons().size){
+    // Pas de silence : les références de visages sont stockées par appareil (localStorage) — sur un smartphone où rien n'a été appris, la ligne manquait sans explication.
+    const box = document.getElementById("infoFaceBox"); if(!box) return;
+    row.classList.remove("hidden", "face-collapsed"); box.textContent = "";
+    const line = document.createElement("div"); line.className = "sub-line"; box.appendChild(line);
+    line.textContent = !faceOpts.info
+      ? "Visages : reconnaissance désactivée (Personnages → Reconnaissance des visages → « Dans Infos »)"
+      : "Visages : aucune référence apprise sur cet appareil (Personnages → Reconnaissance des visages → apprentissage depuis le catalogue ou Album-Favori.csv)";
+    return;
+  }
   const cached = faceInfoCache.get(p.id);
   if(cached && cached.key === faceInfoKey()){ renderInfoFaces(p); return; }
   faceInfoCache.delete(p.id);
