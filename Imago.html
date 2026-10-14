@@ -758,6 +758,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .face-box.maybe{ border-color:#f0c24b; }
 .face-box.unknown{ border-color:#d0d0d0; border-style:dashed; }
 .face-tag{ position:absolute; left:-2px; bottom:100%; margin-bottom:2px; background:rgba(0,0,0,.78); color:#fff; font-size:11px; padding:1px 6px; border-radius:3px; white-space:nowrap; }
+.face-sens{ display:inline-flex; gap:12px; align-items:center; flex-wrap:wrap; font-size:12px; color:var(--ink-dim); }
+.field-row .face-sens label{ display:inline-flex; align-items:center; gap:4px; margin:0; cursor:pointer; text-transform:none; letter-spacing:0; font-size:12px; color:var(--ink-dim); }
+.field-row .face-sens input{ margin:0; cursor:pointer; }
 .face-results{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
 .face-item{ display:flex; gap:10px; align-items:flex-start; padding:8px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2); }
 .face-item img{ width:64px; height:64px; object-fit:cover; border-radius:6px; flex:none; background:#000; }
@@ -1582,6 +1585,12 @@ details.pave .btn{width:100%; margin-bottom:8px;}
             <label>Reconnaissance des visages (essai)</label>
             <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
               <button class="btn" id="edFaceBtn" type="button" title="Détecte les visages de cette image et propose les personnages appris">🧑 Reconnaître les visages</button>
+              <span class="face-sens" role="radiogroup" aria-label="Sensibilité de la reconnaissance">
+                <span>Sensibilité :</span>
+                <label title="Moins de fausses propositions (recommandé)"><input type="radio" name="edFaceSens" value="prudent" checked> Prudente</label>
+                <label title="Compromis entre propositions et erreurs"><input type="radio" name="edFaceSens" value="balanced"> Équilibrée</label>
+                <label title="Plus de propositions, mais plus d'erreurs possibles"><input type="radio" name="edFaceSens" value="wide"> Large</label>
+              </span>
               <button class="btn hidden" id="edFaceAllBtn" type="button">＋ Ajouter les noms reconnus</button>
               <span class="drive-note" id="edFaceStatus" style="margin:0;"></span>
             </div>
@@ -1736,9 +1745,22 @@ details.pave .btn{width:100%; margin-bottom:8px;}
             <option value="balanced">Équilibrée</option>
             <option value="wide">Large (plus de propositions)</option>
           </select>
-          <button class="btn" id="faceBuildBtn" type="button">Analyser mes photos</button>
+          <button class="btn" id="faceBuildBtn" type="button" title="Apprend à partir des photos du catalogue actuellement chargé (annotées d'un seul personnage)">Analyser le catalogue chargé</button>
           <button class="btn reset" id="faceCancelBtn" type="button" disabled>Arrêter</button>
           <button class="btn reset" id="faceClearBtn" type="button">Oublier les visages appris</button>
+        </div>
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button class="btn copper" id="faceAlbumBtn" type="button" title="Constitue la référence de chaque personnage à partir des photos listées dans Album-Favori.csv (lecture des fichiers ORIGINAUX, haute résolution)">📂 Apprendre depuis Album-Favori.csv…</button>
+          <span class="drive-note" style="margin:0;">Choisissez le dossier racine de vos photos (celui qui contient « Album-Favori.csv » et les sous-dossiers par année).</span>
+        </div>
+        <div style="margin-top:12px;">
+          <label style="font-size:13px; cursor:pointer;"><input type="checkbox" id="faceAutoChk" checked> Reconnaître automatiquement les visages au référencement d'un dossier (en arrière-plan, après le chargement)</label>
+          <div style="margin-top:6px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12px;">
+            <label for="faceAutoWrite">Écrire dans « Personnage » :</label>
+            <select id="faceAutoWrite"><option value="sure" selected>les reconnaissances « sûres » seulement</option><option value="maybe">« sûres » et « probables »</option></select>
+            <label for="faceAutoSize">Précision :</label>
+            <select id="faceAutoSize"><option value="800">Rapide (800 px)</option><option value="1200" selected>Normale (1200 px)</option><option value="1800">Fine (1800 px, plus lente)</option></select>
+          </div>
         </div>
         <progress id="faceProgress" value="0" max="1" class="hidden" style="width:100%; margin-top:8px;"></progress>
         <p class="drive-note" id="faceBuildStatus"></p>
@@ -8584,6 +8606,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
         stats.failedFiles.length ? 12000 : undefined
       );
       autoBuildCsv();
+    scheduleFaceAutoPass();
     }
    } catch(err) {
     console.error("Import (arrière-plan) — échec inattendu :", err);
@@ -8868,6 +8891,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     noPathWarning: folderNameOverride === "Sélection manuelle" };
   const preImportMs = Math.round(performance.now() - preImportStart);
   console.log(`[Imago] Préparation avant la 1ère image (sélection du dossier, catalogue, tri) : ${preImportMs} ms pour ${files.length} fichier(s).`);
+  faceAutoAbort = true; faceAutoStartIdx = State.photos.length; // reconnaissance des visages : seules les photos importées à partir d'ici seront analysées (une passe en cours est interrompue)
   const priorityStart = performance.now();
   await runWithConcurrency(priorityFiles, async (file)=>{
     if(myImportToken !== importToken) return;
@@ -8896,6 +8920,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
       (stats.failedFiles.length || slowStorageNote) ? 16000 : undefined
     );
     autoBuildCsv();
+    scheduleFaceAutoPass();
   } else {
     // L'avertissement de lenteur (s'il y en a un) est ajouté à CE message-ci
     // plutôt que déclenché séparément : `toast()` n'affiche qu'un message à
@@ -10334,17 +10359,18 @@ const FACE_ENGINE = {
   modelUrl: "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/",
   ready: false, loading: null, backend: ""
 };
-const FACE_MAX_SIDE = 1000;   // côté max (px) de l'image analysée
+const FACE_MAX_SIDE = 1400;   // côté max (px) de l'image analysée pour l'apprentissage depuis le catalogue chargé
+const FACE_EDIT_SIDE = 2600;  // fenêtre Modifier : aucune réduction supplémentaire (l'image stockée fait déjà 1600-2400 px, voir IMPORT_MAX_DIM)
+const FACE_ALBUM_SIDE = 1600; // apprentissage depuis Album-Favori.csv (fichiers originaux, réduits à ce côté)
+const FACE_AUTO_MIN_PX = 36;  // passe automatique : visages plus petits ignorés (trop peu fiables)
 const FACE_MIN_CONF = 0.6;    // confiance minimale du détecteur
 const FACE_REF_MIN_PX = 50;   // taille minimale (px) d'un visage pour servir de référence
 // Seuils de distance selon la « sensibilité » choisie (Personnages → Reconnaissance des visages). Mesures d'essai : une même
 // personne (autre cliché) donnait 0,30–0,42 ; des inconnus 0,47–0,64. Le réglage par défaut est donc prudent.
 const FACE_SENSITIVITY = { prudent:{sure:0.40, maybe:0.50}, balanced:{sure:0.45, maybe:0.55}, wide:{sure:0.50, maybe:0.60} };
 const FACE_AMBIG_MARGIN = 0.04;
-function faceThresholds(){
-  const el = document.getElementById("faceSensitivity");
-  return FACE_SENSITIVITY[(el && el.value) || "prudent"] || FACE_SENSITIVITY.prudent;
-}
+var faceSensitivityKey = (function(){ try{ const v = localStorage.getItem("imago_face_sens"); if(v && FACE_SENSITIVITY[v]) return v; }catch(e){} return "prudent"; })();
+function faceThresholds(){ return FACE_SENSITIVITY[faceSensitivityKey] || FACE_SENSITIVITY.prudent; }
 const FACE_LS_KEY = "imago_face_index_v1";
 var faceResultsState = null;  // var : évite toute zone morte temporelle (lu par applyEditZoom)
 var faceBuilding = false, faceBuildAbort = false;
@@ -10388,17 +10414,33 @@ function faceLoadImage(dataUrl){
   return new Promise((res, rej)=>{ const im = new Image(); im.onload = ()=>res(im); im.onerror = ()=>rej(new Error("image illisible")); im.src = dataUrl; });
 }
 // Image réduite (≤ FACE_MAX_SIDE) et remise « à l'endroit » (rotation par quarts de tour enregistrée sur la photo).
-async function faceCanvasFromDataUrl(dataUrl, rotationDeg){
-  const img = await faceLoadImage(dataUrl);
-  const k = Math.min(1, FACE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-  const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+function faceDrawToCanvas(src, sw, sh, rotationDeg, maxSide){
+  const k = Math.min(1, (maxSide || FACE_MAX_SIDE) / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
   const q = (((Math.round((rotationDeg||0) / 90) % 4) + 4) % 4);
   const c = document.createElement("canvas");
   c.width = (q % 2) ? h : w; c.height = (q % 2) ? w : h;
   const x = c.getContext("2d");
+  x.imageSmoothingQuality = "high";
   x.translate(c.width/2, c.height/2); x.rotate(q * Math.PI/2);
-  x.drawImage(img, -w/2, -h/2, w, h);
+  x.drawImage(src, -w/2, -h/2, w, h);
   return c;
+}
+async function faceCanvasFromDataUrl(dataUrl, rotationDeg, maxSide){
+  const img = await faceLoadImage(dataUrl);
+  return faceDrawToCanvas(img, img.naturalWidth, img.naturalHeight, rotationDeg, maxSide);
+}
+// Depuis un fichier ORIGINAL (haute résolution) : createImageBitmap applique l'orientation EXIF et évite l'aller-retour dataURL.
+async function faceCanvasFromFile(file, rotationDeg, maxSide){
+  let bmp = null;
+  try{ bmp = await createImageBitmap(file); }catch(e){ bmp = null; }
+  if(bmp){
+    try{ return faceDrawToCanvas(bmp, bmp.width, bmp.height, rotationDeg, maxSide); }
+    finally{ if(bmp.close) bmp.close(); }
+  }
+  const url = URL.createObjectURL(file);
+  try{ const img = await faceLoadImage(url); return faceDrawToCanvas(img, img.naturalWidth, img.naturalHeight, rotationDeg, maxSide); }
+  finally{ URL.revokeObjectURL(url); }
 }
 async function detectFacesInCanvas(canvas){
   const dets = await faceapi.detectAllFaces(canvas, new faceapi.SsdMobilenetv1Options({minConfidence: FACE_MIN_CONF})).withFaceLandmarks().withFaceDescriptors();
@@ -10410,16 +10452,61 @@ async function detectFacesInCanvas(canvas){
   });
 }
 function faceDistance(a, b){ let s = 0; for(let i = 0; i < a.length; i++){ const d = a[i]-b[i]; s += d*d; } return Math.sqrt(s); }
-// Références actuelles : personnage -> liste d'empreintes (photos non supprimées, annotées d'UN seul personnage).
+// Clé de comparaison d'un prénom : sans accents, minuscules, tirets/apostrophes/espaces unifiés (« Hélène », « helene »,
+// « Anne-Marie », « Anne Marie » = même clé). Seules les graphies identiques à cette normalisation sont FUSIONNÉES ;
+// les prénoms simplement proches (Jean/Jeanne, Marie/Maria) restent distincts et sont signalés (voir faceNearNames).
+function faceNameKey(n){
+  return String(n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[\s_\-'’.]+/g, " ").trim();
+}
+function faceLev(a, b){
+  const m = a.length, n = b.length; if(!m) return n; if(!n) return m;
+  let prev = Array.from({length: n+1}, (_, j)=> j);
+  for(let i = 1; i <= m; i++){
+    const cur = [i];
+    for(let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[n];
+}
+function faceNearNames(names){
+  const ks = names.map(n=> [n, faceNameKey(n)]), out = [];
+  for(let i = 0; i < ks.length; i++) for(let j = i+1; j < ks.length; j++){
+    const a = ks[i][1], b = ks[j][1];
+    if(a === b || Math.min(a.length, b.length) < 3) continue;
+    const d = faceLev(a, b);
+    if(d <= 1 || (d <= 2 && (a.startsWith(b) || b.startsWith(a)))) out.push([ks[i][0], ks[j][0]]);
+  }
+  return out;
+}
+const FACE_ALBUM_LS_KEY = "imago_face_album_v1";
+const FaceAlbum = { refs: (function(){
+  try{ const o = JSON.parse(localStorage.getItem(FACE_ALBUM_LS_KEY) || "null"); return (o && o.v === 1 && o.refs) ? o.refs : {}; }
+  catch(e){ return {}; }
+})() };
+function saveFaceAlbum(){
+  try{ localStorage.setItem(FACE_ALBUM_LS_KEY, JSON.stringify({v:1, refs:FaceAlbum.refs})); return true; }
+  catch(e){ console.warn("Références Album non sauvegardées (localStorage plein ?)", e); return false; }
+}
+// Références actuelles : personnage -> liste d'empreintes. Deux sources : (1) Album-Favori.csv (orthographe de l'Album prioritaire),
+// (2) photos du catalogue chargé annotées d'UN seul personnage. Les graphies équivalentes (faceNameKey) sont regroupées.
 function faceReferencePersons(){
-  const map = new Map();
+  const byKey = new Map();
+  const add = (name, d, fromAlbum)=>{
+    const k = faceNameKey(name); if(!k || !d) return;
+    let e = byKey.get(k);
+    if(!e){ e = {name, descs:[], album:false}; byKey.set(k, e); }
+    if(fromAlbum && !e.album){ e.name = name; e.album = true; }
+    e.descs.push(d);
+  };
+  for(const path in FaceAlbum.refs){ const r = FaceAlbum.refs[path]; if(r && r.d && r.name) add(r.name, r.d, true); }
   for(const p of State.photos){
     if(p.corbeille) continue;
     const e = FaceIndex.entries[p.id]; if(!e || !e.d) continue;
     const toks = personnageTokens(p.personnage); if(toks.length !== 1) continue;
-    if(!map.has(toks[0])) map.set(toks[0], []);
-    map.get(toks[0]).push(e.d);
+    add(toks[0], e.d, false);
   }
+  const map = new Map();
+  for(const e of byKey.values()) map.set(e.name, e.descs);
   return map;
 }
 function matchFaceDescriptor(desc, persons){
@@ -10455,8 +10542,10 @@ function updateFaceIndexSummary(){
   if(!persons.size){ el.textContent = "Aucun visage appris pour l'instant."; return; }
   const parts = [...persons.entries()].sort((a,b)=> b[1].length - a[1].length).map(([n, a])=> n + " (" + a.length + ")");
   const weak = [...persons.entries()].filter(([n,a])=> a.length < 2).length;
-  el.textContent = persons.size + " personnage(s) avec visages de référence : " + parts.slice(0, 25).join(", ") + (parts.length > 25 ? "…" : "") +
-    (weak ? " — " + weak + " avec une seule référence (fiabilité réduite)." : "");
+  const near = faceNearNames([...persons.keys()]);
+  el.textContent = persons.size + " personnage(s) avec visages de référence : " + parts.slice(0, 30).join(", ") + (parts.length > 30 ? "…" : "") +
+    (weak ? " — " + weak + " avec une seule référence (fiabilité réduite)." : "") +
+    (near.length ? " ⚠ Prénoms proches, risque de confusion (non fusionnés) : " + near.slice(0, 12).map(x=> x[0] + " ~ " + x[1]).join(" ; ") + "." : "");
 }
 function setFaceBuildUi(running){
   document.getElementById("faceBuildBtn").disabled = running;
@@ -10525,18 +10614,208 @@ async function buildFaceIndex(){
   }
 }
 document.getElementById("faceBuildBtn").addEventListener("click", buildFaceIndex);
-document.getElementById("faceCancelBtn").addEventListener("click", ()=>{ faceBuildAbort = true; });
+document.getElementById("faceCancelBtn").addEventListener("click", ()=>{ faceBuildAbort = true; faceAutoAbort = true; });
 document.getElementById("faceClearBtn").addEventListener("click", ()=>{
   if(!confirm("Oublier tous les visages appris ? (Vos photos et leurs personnages ne sont pas modifiés.)")) return;
   FaceIndex.entries = {}; saveFaceIndex(); updateFaceIndexSummary();
   document.getElementById("faceBuildStatus").textContent = "Visages appris effacés.";
 });
-(function(){ const sel = document.getElementById("faceSensitivity"); let v = null; try{ v = localStorage.getItem("imago_face_sens"); }catch(e){}
-  if(v && FACE_SENSITIVITY[v]) sel.value = v;
-  sel.addEventListener("change", ()=>{ try{ localStorage.setItem("imago_face_sens", sel.value); }catch(e){} });
-})();
+// Une seule source de vérité (faceSensitivityKey), affichée à deux endroits : liste « Personnages » et radios « Modifier > Détails ».
+function setFaceSensitivity(key){
+  if(!FACE_SENSITIVITY[key]) return;
+  faceSensitivityKey = key;
+  try{ localStorage.setItem("imago_face_sens", key); }catch(e){}
+  document.getElementById("faceSensitivity").value = key;
+  document.querySelectorAll('input[name="edFaceSens"]').forEach(r=>{ r.checked = (r.value === key); });
+  if(faceResultsState){ // réévalue les visages déjà détectés (leurs empreintes sont conservées) : pas besoin de relancer l'analyse
+    const persons = faceReferencePersons();
+    faceResultsState.faces.forEach(f=>{ const r = matchFaceDescriptor(f.descriptor, persons); f.matches = r.matches; f.verdict = r.verdict; });
+    renderFaceResults();
+    const nOk = faceResultsState.faces.filter(f=> f.verdict !== "unknown").length;
+    document.getElementById("edFaceStatus").textContent = faceResultsState.faces.length + " visage(s) détecté(s), " + nOk + " reconnu(s) — sensibilité « " + document.querySelector('input[name="edFaceSens"][value="' + key + '"]').parentNode.textContent.trim() + " ».";
+  }
+}
+document.getElementById("faceSensitivity").addEventListener("change", (e)=> setFaceSensitivity(e.target.value));
+document.querySelectorAll('input[name="edFaceSens"]').forEach(r=> r.addEventListener("change", ()=>{ if(r.checked) setFaceSensitivity(r.value); }));
+setFaceSensitivity(faceSensitivityKey);
 document.getElementById("btnPersonnages").addEventListener("click", updateFaceIndexSummary);
 updateFaceIndexSummary();
+
+/* ---------------------------------------------------------------------
+   Apprentissage depuis Album-Favori.csv
+   L'utilisateur désigne le dossier racine de ses photos (sous-dossiers par année). On lit Album-Favori.csv (colonnes fileName,
+   sousDossier, personnage, dateAchat, rotation…), on ne retient que les lignes à UN seul personnage, on retrouve chaque fichier
+   ORIGINAL dans le dossier, et pour chaque personnage on garde les empreintes de quelques visages (photos étalées dans le temps).
+   Résultat mémorisé (localStorage) : à ne refaire que si l'Album change. Rien n'est lu en dehors des fichiers retenus.
+   --------------------------------------------------------------------- */
+const faceAlbumFolderInput = document.createElement("input");
+faceAlbumFolderInput.type = "file"; faceAlbumFolderInput.multiple = true; faceAlbumFolderInput.webkitdirectory = true; faceAlbumFolderInput.className = "hidden";
+document.body.appendChild(faceAlbumFolderInput);
+document.getElementById("faceAlbumBtn").addEventListener("click", ()=>{ if(!faceBuilding) faceAlbumFolderInput.click(); });
+faceAlbumFolderInput.addEventListener("change", ()=>{ const fl = Array.from(faceAlbumFolderInput.files || []); faceAlbumFolderInput.value = ""; if(fl.length) learnFromAlbum(fl); });
+async function learnFromAlbum(files){
+  if(faceBuilding) return;
+  faceBuilding = true; faceBuildAbort = false;
+  const statusEl = document.getElementById("faceBuildStatus"), prog = document.getElementById("faceProgress");
+  try{
+    setFaceBuildUi(true);
+    const csvs = files.filter(f=> /^Album-Favori.*\.csv$/i.test(f.name)).sort((a,b)=> b.lastModified - a.lastModified);
+    if(!csvs.length) throw new Error("Aucun fichier « Album-Favori.csv » dans ce dossier : choisissez le dossier racine de vos photos (celui qui contient aussi les sous-dossiers par année).");
+    statusEl.textContent = "Lecture de « " + csvs[0].name + " »…";
+    const text = (await csvs[0].text()).replace(/^\uFEFF/, "");
+    const rowsText = text.split(/\r?\n/).filter(l=> l.trim());
+    const delim = (rowsText[0].split(";").length >= rowsText[0].split(",").length) ? ";" : ",";
+    const header = parseCsvLine(rowsText[0], delim).map(h=> h.trim());
+    const ix = n=> header.indexOf(n);
+    const iName = ix("fileName"), iSub = ix("sousDossier"), iPers = ix("personnage"), iDate = ix("dateAchat"), iRot = ix("rotation"), iTrash = ix("corbeille");
+    if(iName < 0 || iPers < 0) throw new Error("Colonnes « fileName » et « personnage » introuvables dans « " + csvs[0].name + " ».");
+    // Fichiers images du dossier, indexés par nom (insensible à la casse)
+    const byName = new Map();
+    for(const f of files){
+      if(!/\.(jpe?g|png|webp|bmp)$/i.test(f.name)) continue;
+      const k = f.name.toLowerCase(); if(!byName.has(k)) byName.set(k, []);
+      byName.get(k).push(f);
+    }
+    const findFile = (name, sub)=>{
+      const arr = byName.get(String(name||"").toLowerCase()); if(!arr) return null;
+      if(arr.length === 1) return arr[0];
+      const want = ("/" + (sub ? String(sub).replace(/\\/g, "/") + "/" : "") + name).toLowerCase();
+      return arr.find(f=> ("/" + (f.webkitRelativePath || f.name)).toLowerCase().endsWith(want)) || null;
+    };
+    // Lignes à UN seul personnage, regroupées par prénom normalisé
+    const groups = new Map(); let single = 0, total = 0;
+    for(let i = 1; i < rowsText.length; i++){
+      const c = parseCsvLine(rowsText[i], delim); total++;
+      if(iTrash >= 0 && String(c[iTrash]||"").trim() === "true") continue;
+      const toks = personnageTokens(c[iPers] || ""); if(toks.length !== 1) continue;
+      const key = faceNameKey(toks[0]); if(!key) continue; single++;
+      let g = groups.get(key); if(!g){ g = {spell:new Map(), rows:[]}; groups.set(key, g); }
+      g.spell.set(toks[0], (g.spell.get(toks[0]) || 0) + 1);
+      g.rows.push({fileName:c[iName], sub: iSub >= 0 ? (c[iSub]||"") : "", date: iDate >= 0 ? (c[iDate]||"") : "", rot: iRot >= 0 ? (Number(c[iRot]) || 0) : 0});
+    }
+    if(!groups.size) throw new Error("Aucune ligne de « " + csvs[0].name + " » n'a exactement un personnage : rien à apprendre.");
+    await loadFaceEngine(msg=>{ statusEl.textContent = msg; });
+    const maxPer = Math.max(2, Math.min(40, parseInt(document.getElementById("faceMaxPerPerson").value, 10) || 8));
+    const jobs = [];
+    for(const g of groups.values()){
+      const display = [...g.spell.entries()].sort((a,b)=> b[1] - a[1])[0][0]; // graphie la plus fréquente dans l'Album
+      g.rows.sort((a,b)=> String(a.date||"9999").localeCompare(String(b.date||"9999")));
+      jobs.push({name: display, cands: faceSpreadOrder(g.rows)});
+    }
+    jobs.sort((a,b)=> b.cands.length - a.cands.length);
+    let totalPlan = 0; for(const j of jobs) totalPlan += Math.min(j.cands.length, maxPer * 2);
+    prog.max = Math.max(1, totalPlan); prog.value = 0;
+    const albumPaths = new Set(); let done = 0, analysed = 0, refsTotal = 0, missing = 0;
+    for(const job of jobs){
+      let refs = 0;
+      for(const row of job.cands){
+        const path = (row.sub ? row.sub + "/" : "") + row.fileName; albumPaths.add(path.toLowerCase());
+        if(faceBuildAbort || refs >= maxPer) continue; // on continue la boucle seulement pour recenser les chemins de l'Album
+        done++; prog.value = Math.min(done, totalPlan);
+        statusEl.textContent = "Album : " + job.name + " — " + refs + "/" + maxPer + " références (" + done + "/" + totalPlan + ")" + (FACE_ENGINE.backend === "cpu" ? " — moteur lent (CPU)" : "");
+        const f = findFile(row.fileName, row.sub);
+        if(!f){ missing++; continue; }
+        const sig = f.size + "|" + f.lastModified, key = path.toLowerCase(), old = FaceAlbum.refs[key];
+        if(old && old.sig === sig){ old.name = job.name; if(old.d) refs++; continue; }
+        try{
+          const canvas = await faceCanvasFromFile(f, row.rot, FACE_ALBUM_SIDE);
+          const faces = await detectFacesInCanvas(canvas); analysed++;
+          let d = null;
+          if(faces.length === 1 && faces[0].px.h >= FACE_REF_MIN_PX) d = faces[0].descriptor.map(v=> Math.round(v*1000)/1000);
+          FaceAlbum.refs[key] = {sig, name: job.name, d, n: faces.length};
+          if(d) refs++;
+        }catch(e){ console.warn("Album : échec sur " + path, e); FaceAlbum.refs[key] = {sig, name: job.name, d:null, n:-1}; }
+        if(analysed % 5 === 0) saveFaceAlbum();
+        await faceSleep(0);
+      }
+      refsTotal += refs;
+    }
+    if(!faceBuildAbort) for(const k of Object.keys(FaceAlbum.refs)) if(!albumPaths.has(k)) delete FaceAlbum.refs[k]; // lignes retirées de l'Album
+    const ok = saveFaceAlbum();
+    statusEl.textContent = (faceBuildAbort ? "Arrêté. " : "Terminé. ") + total + " ligne(s) dans l'Album, " + single + " à un seul personnage ; " + analysed + " photo(s) analysée(s), " +
+      refsTotal + " visage(s) de référence pour " + jobs.length + " personnage(s)." + (missing ? " " + missing + " fichier(s) introuvable(s) dans ce dossier." : "") +
+      (ok ? "" : " ⚠ Mémorisation impossible (stockage du navigateur plein).");
+  }catch(err){
+    statusEl.textContent = "Erreur : " + (err && err.message ? err.message : err);
+  }finally{
+    faceBuilding = false; setFaceBuildUi(false); updateFaceIndexSummary();
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Passe automatique APRÈS le référencement d'un dossier : les photos qui viennent d'être importées SANS personnage sont analysées
+   en arrière-plan (une à la fois, l'interface reste libre) ; les visages reconnus avec assez de certitude sont écrits dans
+   « Personnage » (jamais d'écrasement d'une valeur existante), puis le catalogue CSV est reconstruit. Ne ralentit pas l'import
+   lui-même : elle ne démarre qu'une fois celui-ci terminé, et seulement si des références existent.
+   --------------------------------------------------------------------- */
+const FACE_OPTS_KEY = "imago_face_opts_v1";
+var faceOpts = (function(){
+  const d = {auto:true, write:"sure", size:1200};
+  try{ const o = JSON.parse(localStorage.getItem(FACE_OPTS_KEY) || "null"); if(o) return Object.assign(d, o); }catch(e){}
+  return d;
+})();
+function saveFaceOpts(){ try{ localStorage.setItem(FACE_OPTS_KEY, JSON.stringify(faceOpts)); }catch(e){} }
+(function(){
+  const chk = document.getElementById("faceAutoChk"), wr = document.getElementById("faceAutoWrite"), sz = document.getElementById("faceAutoSize");
+  chk.checked = !!faceOpts.auto; wr.value = faceOpts.write; sz.value = String(faceOpts.size);
+  chk.addEventListener("change", ()=>{ faceOpts.auto = chk.checked; saveFaceOpts(); });
+  wr.addEventListener("change", ()=>{ faceOpts.write = wr.value; saveFaceOpts(); });
+  sz.addEventListener("change", ()=>{ faceOpts.size = parseInt(sz.value, 10) || 1200; saveFaceOpts(); });
+})();
+var faceAutoRunning = false, faceAutoAbort = false, faceAutoStartIdx = 0, faceAutoRun = 0;
+function scheduleFaceAutoPass(){
+  if(!faceOpts.auto || faceAutoRunning) return;
+  setTimeout(()=>{ faceAutoPass().catch(e=> console.warn("Reconnaissance automatique :", e)); }, 1500);
+}
+async function faceAutoPass(){
+  if(faceAutoRunning || faceBuilding) return;
+  const persons = faceReferencePersons(); if(!persons.size) return;
+  const cands = State.photos.slice(faceAutoStartIdx).filter(p=> !p.corbeille && !p.isVideo && p.hasFullImage && !String(p.personnage || "").trim());
+  if(!cands.length) return;
+  faceAutoRunning = true; faceAutoAbort = false; const run = ++faceAutoRun;
+  const st = document.getElementById("folderStatus"), cancel = document.getElementById("faceCancelBtn");
+  cancel.disabled = false;
+  let done = 0, annotated = 0, names = 0, failed = null;
+  const th = faceThresholds();
+  try{
+    toast("🧑 Reconnaissance des visages en arrière-plan (" + cands.length + " photo(s) sans personnage)…", 6000);
+    await loadFaceEngine();
+    for(const p of cands){
+      if(faceAutoAbort || run !== faceAutoRun) break;
+      done++;
+      if(st && (done % 3 === 1)) st.textContent = "🧑 Visages : " + done + "/" + cands.length + " — " + annotated + " photo(s) annotée(s)";
+      let url = null; try{ url = await getFullDataUrl(p); }catch(e){}
+      if(!url) continue;
+      try{
+        const canvas = await faceCanvasFromDataUrl(url, p.rotation, faceOpts.size);
+        const faces = await detectFacesInCanvas(canvas);
+        const found = [];
+        for(const f of faces){
+          if(f.px.h < FACE_AUTO_MIN_PX) continue;
+          const r = matchFaceDescriptor(f.descriptor, persons), top = r.matches[0];
+          const strong = r.verdict === "sure" && (top.refs >= 2 || top.dist <= th.sure - 0.05); // une seule référence : exiger plus de certitude
+          if((strong || (faceOpts.write === "maybe" && r.verdict === "maybe")) && !found.includes(top.name)) found.push(top.name);
+        }
+        if(found.length && !String(p.personnage || "").trim()){ // jamais d'écrasement
+          p.personnage = found.join(", ");
+          if(!p.titre) p.titre = buildTitre(p.lieu, p.personnage);
+          try{ await idbPut("photos", p); }catch(e){ console.warn("Sauvegarde du personnage impossible", e); }
+          annotated++; names += found.length;
+        }
+      }catch(e){ failed = failed || e; console.warn("Visages : échec sur " + p.fileName, e); }
+      await faceSleep(20);
+    }
+  }catch(err){
+    failed = err;
+  }finally{
+    faceAutoRunning = false; cancel.disabled = true;
+    if(annotated){ try{ autoBuildCsv(); populateInfoModalDatalists(); renderGrid(); if(typeof renderPersonnagesTable === "function") renderPersonnagesTable(); }catch(e){ console.warn(e); } }
+    if(st) st.textContent = "";
+    const msg = (faceAutoAbort ? "Reconnaissance des visages arrêtée : " : "🧑 Reconnaissance des visages terminée : ") + annotated + " photo(s) annotée(s) automatiquement (" + names + " personnage(s)) sur " + done + " analysée(s)." +
+      (annotated ? " Pensez à enregistrer le catalogue." : "") + (failed ? " ⚠ " + (failed.message || failed) : "");
+    toast(msg, 12000);
+  }
+}
 
 /* ---- Reconnaissance dans la fenêtre Modifier ---- */
 function addPersonnageToEditField(name){
@@ -10630,7 +10909,7 @@ async function recognizeFacesInEdit(){
     status.textContent = "Analyse de l'image…" + (FACE_ENGINE.backend === "cpu" ? " (moteur lent : CPU)" : "");
     await faceSleep(30);
     const dataUrl = editDraft.dataUrl;
-    const canvas = await faceCanvasFromDataUrl(dataUrl, (typeof totalEditRotation === "function") ? totalEditRotation() : 0);
+    const canvas = await faceCanvasFromDataUrl(dataUrl, (typeof totalEditRotation === "function") ? totalEditRotation() : 0, FACE_EDIT_SIDE);
     const faces = await detectFacesInCanvas(canvas);
     if(!faces.length){ status.textContent = "Aucun visage détecté dans cette image."; return; }
     faces.sort((a,b)=> a.box.x - b.box.x); // de gauche à droite
