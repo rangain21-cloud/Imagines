@@ -15828,6 +15828,7 @@ async function mergeCsvIntoCatalog(text){
       State.photos.push(rec); created++;
     } else updated++;
     rec.dateAchat = row.dateAchat || rec.dateAchat;
+    rec.sousDossier = row.sousDossier || rec.sousDossier || ""; // conserve la colonne du CSV (sinon vidée au prochain « Sauver »)
     rec.personnage = row.personnage || "";
     rec.lieu = row.lieu || "";
     rec.support = normalizeSupport(row.support, row.fileName);
@@ -16181,39 +16182,68 @@ async function shareDriveFileWithEmail(fileId, email){
 
 document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
+  /* Avant : recherche limitée à la RACINE d'IMAGINES, avec un nom imposé « Catalogue-<chiffres>.csv » et choix
+     automatique du plus récent → impossible de cibler un catalogue rangé dans un sous-dossier.
+     Maintenant : on parcourt IMAGINES ET tous ses sous-dossiers, on liste TOUS les .csv trouvés (avec leur
+     dossier et leur date) et c'est l'utilisateur qui choisit. Ce chargement est en LECTURE SEULE côté Drive :
+     le CSV n'est jamais modifié ni supprimé ; ses informations sont fusionnées dans le catalogue de l'appli. */
+  const ov = document.createElement("div"); ov.className = "modal-overlay show";
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Charger un catalogue depuis Drive</h2><button class="modal-close">×</button></div><div class="modal-body">Recherche des catalogues (.csv) dans IMAGINES et ses sous-dossiers…</div></div>';
+  document.body.appendChild(ov);
+  const body = ov.querySelector(".modal-body"), close = ()=> ov.remove();
+  ov.querySelector(".modal-close").onclick = close;
+  const api = "https://www.googleapis.com/drive/v3/files?";
   try{
-    // On interroge TOUJOURS Drive (on ne se fie pas à un fileId mis en cache,
-    // qui pourrait pointer vers une version obsolète) et on trie par date de
-    // modification décroissante pour être certain de charger la DERNIÈRE
-    // instance du fichier. Si un dossier local est déjà ouvert cette session,
-    // on cherche PRÉCISÉMENT son catalogue (Catalogue-xxxx.csv) ; sinon on
-    // prend le plus récent catalogue trouvé dans IMAGINES, quel qu'il soit.
-    const folderId = await ensureImaginesFolder();
-    const nameClause = State.catalogFileName ? `name='${State.catalogFileName}'` : `name contains 'Catalogue-'`;
-    const q = encodeURIComponent(`${nameClause} and '${folderId}' in parents and trashed=false`);
-    const listRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=${encodeURIComponent("modifiedTime desc")}`);
-    const listData = await listRes.json();
-    let files = listData.files || [];
-    if(!State.catalogFileName) files = files.filter(f=>/^Catalogue-\d+\.csv$/i.test(f.name));
-    if(files.length===0){ toast("Aucun catalogue Catalogue-xxxx.csv trouvé dans le dossier IMAGINES. Utilisez d'abord « Sauver sur Drive »."); return; }
-    const latest = files[0]; // le plus récent, grâce au tri par modifiedTime décroissant
-    if(files.length > 1){
-      console.warn(`${files.length} catalogues candidats trouvés dans IMAGINES — le plus récent est utilisé.`, files);
+    const rootId = await ensureImaginesFolder();
+    const FOLDER = "application/vnd.google-apps.folder";
+    const found = [], queue = [{id: rootId, path: "IMAGINES"}];
+    const MAX_FOLDERS = 300; let scanned = 0;
+    while(queue.length && scanned < MAX_FOLDERS){
+      const cur = queue.shift(); scanned++;
+      body.textContent = "Recherche des catalogues… (" + cur.path + ")";
+      let tok = "";
+      do{
+        // on ne liste que sous-dossiers + fichiers de type tableur/texte : les photos/vidéos ne sont jamais énumérées
+        const q = encodeURIComponent(`'${cur.id}' in parents and trashed=false and (mimeType='${FOLDER}' or mimeType='text/csv' or mimeType='application/vnd.ms-excel' or mimeType='text/comma-separated-values' or mimeType='application/octet-stream')`);
+        const j = await (await driveApiFetch(api + `q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
+        (j.files||[]).forEach(x=>{
+          if(x.mimeType === FOLDER) queue.push({id: x.id, path: cur.path + " / " + x.name});
+          else if(/\.csv$/i.test(x.name || "")) found.push({id: x.id, name: x.name, modifiedTime: x.modifiedTime, path: cur.path});
+        });
+        tok = j.nextPageToken || "";
+      }while(tok);
     }
-    const fileRes = await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${latest.id}?alt=media`);
-    const text = await fileRes.text();
-    await mergeCsvIntoCatalog(text);
-    State.drive.fileId = latest.id;
-    State.catalogFileName = latest.name;
-    localStorage.setItem("imago_drive_file_id", latest.id);
-    setDriveBtnState("btnDriveLoad","lblDriveLoad", true, "Chargé");
-    markCsvClean();
-    const dateStr = latest.modifiedTime ? new Date(latest.modifiedTime).toLocaleString("fr-FR") : "date inconnue";
-    toast(
-      `« ${latest.name} » chargé depuis IMAGINES (modifié le ${dateStr}).` +
-      (files.length > 1 ? ` ${files.length} catalogues candidats — le plus récent a été retenu.` : "")
-    );
-  }catch(err){ toast(err.message); }
+    if(!found.length){ close(); toast("Aucun fichier .csv trouvé dans IMAGINES ni dans ses sous-dossiers. Rien n'a été modifié."); return; }
+    // le catalogue du dossier ouvert (s'il y en a un) en tête, puis du plus récent au plus ancien
+    found.sort((a,b)=> ((b.name===State.catalogFileName)-(a.name===State.catalogFileName)) || String(b.modifiedTime||"").localeCompare(String(a.modifiedTime||"")));
+    body.innerHTML = "";
+    const intro = document.createElement("p"); intro.style.cssText = "margin:0 0 10px; font-size:.9em;";
+    intro.textContent = "Choisissez le catalogue de référence à charger (" + found.length + " trouvé" + (found.length>1?"s":"") + "). Il n'est ni modifié ni supprimé sur Drive par ce chargement."
+      + (queue.length ? " ⚠️ Recherche limitée aux " + MAX_FOLDERS + " premiers dossiers." : "");
+    body.appendChild(intro);
+    found.forEach(x=>{
+      const b = document.createElement("button"); b.className = "btn";
+      b.style.cssText = "width:100%; margin-bottom:6px; text-align:left; white-space:pre-line;";
+      const d = x.modifiedTime ? new Date(x.modifiedTime).toLocaleString("fr-FR") : "date inconnue";
+      b.textContent = "📄 " + x.name + "\n📁 " + x.path + " · " + d;
+      b.onclick = async ()=>{
+        body.textContent = "Chargement de « " + x.name + " »…";
+        try{
+          const text = await (await driveApiFetch(api.replace("?","/") + x.id + "?alt=media")).text();
+          if(text.split(/\r?\n/).filter(l=>l.trim().length).length < 2){ close(); toast("« " + x.name + " » est vide : rien n'a été chargé."); return; }
+          await mergeCsvIntoCatalog(text);
+          State.drive.fileId = x.id;
+          State.catalogFileName = x.name;
+          localStorage.setItem("imago_drive_file_id", x.id);
+          setDriveBtnState("btnDriveLoad","lblDriveLoad", true, "Chargé");
+          markCsvClean();
+          close();
+          toast("« " + x.name + " » (" + x.path + ") chargé depuis Drive. Le fichier sur Drive n'a pas été modifié.");
+        }catch(err){ close(); toast(err.message); }
+      };
+      body.appendChild(b);
+    });
+  }catch(err){ close(); toast(err.message); }
 });
 
 /* Sauvegarde le catalogue CSV courant dans IMAGINES (création ou mise à jour
@@ -16223,6 +16253,9 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
    est à jour sur Drive avant de partager le dossier). */
 async function saveCsvToDrive(){
   if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
+  // Garde-fou : un catalogue vide produirait un CSV réduit à son en-tête et écraserait (PATCH via l'identifiant mémorisé)
+  // votre catalogue réel sur Drive. On refuse : rien n'est envoyé.
+  if(!State.photos.length) throw new Error("Catalogue vide : rien n'a été envoyé, votre CSV sur Drive reste intact. Chargez d'abord un catalogue (Charger depuis Drive) ou des images.");
   if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
   const folderId = await ensureImaginesFolder();
   const csv = autoBuildCsv();
