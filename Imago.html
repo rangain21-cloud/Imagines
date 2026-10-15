@@ -1197,8 +1197,8 @@ details.pave .btn{width:100%; margin-bottom:8px;}
             <div class="sub" id="pendingVideoNote">Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.</div>
           </div>
           <div class="viewer-missing hidden" id="viewerMissing">
-            📷 Image non disponible sur cet appareil
-            <div class="sub">Ce catalogue a été chargé depuis Drive (métadonnées uniquement) ; le fichier image lui-même n'a jamais été importé ici. Utilisez « Choisir un dossier d'images… » pour l'ajouter, ou consultez-le sur l'appareil où il a été importé.</div>
+            <span id="viewerMissingTitle">📷 Image non disponible sur cet appareil</span>
+            <div class="sub" id="viewerMissingSub">Ce catalogue a été chargé depuis Drive (métadonnées uniquement) ; le fichier image lui-même n'a jamais été importé ici. Utilisez « Choisir un dossier d'images… » pour l'ajouter, ou consultez-le sur l'appareil où il a été importé.</div>
           </div>
         </div>
       </div>
@@ -4908,6 +4908,128 @@ function activePhotos(){
   });
 }
 
+/* ---------------------------------------------------------------
+   Images récupérées À LA DEMANDE depuis Google Drive.
+   Quand un catalogue (.csv) est chargé depuis Drive, seules ses métadonnées
+   arrivent : les photos n'existent pas encore sur l'appareil. On mémorise le
+   dossier Drive qui contient ce CSV (et donc, d'ordinaire, les images qu'il
+   référence) ; une photo sans image locale est alors téléchargée :
+     • au moment où on l'ouvre dans le visualiseur (requestDriveImage) ;
+     • en arrière-plan pour les GALLERY_INITIAL_BATCH premières images du
+       catalogue réellement présentes dans ce dossier (prefetchDriveImages).
+   Les métadonnées du CSV (personnage, lieu, favori…) ne sont jamais modifiées :
+   seuls l'image, sa miniature, ses dimensions et l'EXIF sont ajoutés.
+   --------------------------------------------------------------- */
+const driveHydrating = new Map();   // id photo -> Promise (évite les téléchargements en double)
+const driveMissInfo = new Map();    // id photo -> message (introuvable / erreur) : pas de nouvel essai en boucle
+let driveMediaIndexPromise = null, driveMediaIndexFolder = "";
+const VIEWER_MISSING_DEFAULTS = {title: null, sub: null};
+function driveMediaFolderId(){ return State.drive.mediaFolderId || localStorage.getItem("imago_drive_media_folder") || ""; }
+function driveMediaFolderLabel(){ return localStorage.getItem("imago_drive_media_folder_name") || "dossier Drive"; }
+function setDriveMediaFolder(id, label){
+  State.drive.mediaFolderId = id;
+  localStorage.setItem("imago_drive_media_folder", id);
+  localStorage.setItem("imago_drive_media_folder_name", label || "");
+  driveMediaIndexPromise = null; driveMediaIndexFolder = ""; driveMissInfo.clear();
+}
+/* Index nom de fichier -> fichier Drive, pour UN seul listing du dossier (pas une requête par photo). */
+function getDriveMediaIndex(){
+  const fid = driveMediaFolderId();
+  if(!fid) return Promise.resolve(new Map());
+  if(driveMediaIndexPromise && driveMediaIndexFolder === fid) return driveMediaIndexPromise;
+  driveMediaIndexFolder = fid;
+  driveMediaIndexPromise = (async ()=>{
+    const idx = new Map(); let tok = "";
+    do{
+      const q = encodeURIComponent(`'${fid}' in parents and trashed=false and mimeType contains 'image/'`);
+      const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
+      (j.files||[]).forEach(x=> idx.set(catalogLooseKey(x.name), x));
+      tok = j.nextPageToken || "";
+    }while(tok);
+    return idx;
+  })().catch(e=>{ driveMediaIndexPromise = null; throw e; });
+  return driveMediaIndexPromise;
+}
+function isDriveHydratable(p){
+  return !!p && !p.isVideo && !p.hasFullImage && !p.thumbDataUrl && !p.dataUrl && !/\.(mp4|mov|avi|mpe?g)$/i.test(p.fileName || "");
+}
+/* Télécharge l'image de p depuis Drive et l'ajoute à la photo (mémoire + IndexedDB). true = ok, false = absente du dossier. */
+function hydratePhotoFromDrive(p){
+  if(driveHydrating.has(p.id)) return driveHydrating.get(p.id);
+  const job = (async ()=>{
+    const hit = (await getDriveMediaIndex()).get(catalogLooseKey(p.fileName));
+    if(!hit) return false;
+    const blob = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
+    const file = new File([blob], p.fileName, {type: hit.mimeType, lastModified: Date.parse(hit.modifiedTime) || Date.now()});
+    const stats = {};
+    const dataUrl = await readFileAsDataURLWithHeicSupport(file, stats);
+    if(stats.heicFailed) throw new Error("format HEIC non convertible pour l'instant");
+    const exif = await readBasicExif(file);
+    const resized = await loadAndMaybeDownscaleImage(dataUrl);
+    if(!resized.width || !resized.height) throw new Error("image illisible");
+    const finalDataUrl = resized.dataUrl;
+    const thumbDataUrl = resized.thumbDataUrl || await makeThumbnail(finalDataUrl);
+    const encodedSize = Math.round(finalDataUrl.length * 0.75);
+    const full = {...p,
+      dataUrl: finalDataUrl, thumbDataUrl, hasFullImage: true,
+      width: resized.width, height: resized.height, exif, sizeBytes: encodedSize,
+      gpsLat: exif && exif.gpsLat != null ? exif.gpsLat : (p.gpsLat != null ? p.gpsLat : null),
+      gpsLon: exif && exif.gpsLon != null ? exif.gpsLon : (p.gpsLon != null ? p.gpsLon : null),
+      optique: p.optique || exifCameraName(exif),
+      poids: p.poids || Math.round(encodedSize / 1024)
+    };
+    let savedToIdb = false;
+    try{ await idbPut("photos", full); savedToIdb = true; }
+    catch(e){ console.warn(`Sauvegarde persistante impossible pour "${p.fileName}" (affichée pour cette session uniquement).`, e); }
+    cacheFullImage(p.id, finalDataUrl);
+    Object.assign(p, full, {dataUrl: savedToIdb ? null : finalDataUrl}); // version allégée en mémoire, comme après un import normal
+    return true;
+  })().finally(()=> driveHydrating.delete(p.id));
+  driveHydrating.set(p.id, job);
+  return job;
+}
+/* Appelé par renderGrid() quand la photo affichée n'a aucune image locale. */
+function requestDriveImage(p){
+  const titleEl = document.getElementById("viewerMissingTitle"), subEl = document.getElementById("viewerMissingSub");
+  if(VIEWER_MISSING_DEFAULTS.title === null){ VIEWER_MISSING_DEFAULTS.title = titleEl.textContent; VIEWER_MISSING_DEFAULTS.sub = subEl.textContent; }
+  const setText = (t, s)=>{ titleEl.textContent = t; subEl.textContent = s; };
+  const folder = driveMediaFolderId();
+  if(!folder || !isDriveHydratable(p)){ setText(VIEWER_MISSING_DEFAULTS.title, VIEWER_MISSING_DEFAULTS.sub); return; }
+  if(!State.drive.token){ setText("📷 Image à récupérer depuis Drive", "Connectez-vous à Drive (menu ☰ › Connexion) : « " + p.fileName + " » sera alors téléchargée automatiquement depuis « " + driveMediaFolderLabel() + " »."); return; }
+  if(driveMissInfo.has(p.id)){ setText("📷 Image non récupérée depuis Drive", driveMissInfo.get(p.id)); return; }
+  setText("⏳ Récupération depuis Drive…", "« " + p.fileName + " » est téléchargée à la demande depuis « " + driveMediaFolderLabel() + " ».");
+  hydratePhotoFromDrive(p).then(ok=>{
+    if(!ok) driveMissInfo.set(p.id, "« " + p.fileName + " » n'a pas été trouvée dans « " + driveMediaFolderLabel() + " » sur Drive. Vous pouvez l'ajouter avec « Choisir un dossier d'images… » ou « Importer depuis Drive ».");
+  }).catch(err=>{
+    driveMissInfo.set(p.id, "Téléchargement impossible : " + ((err && err.message) || err) + ". Rouvrez la photo pour réessayer.");
+    setTimeout(()=> driveMissInfo.delete(p.id), 15000); // nouvel essai possible plus tard (réseau, jeton expiré…)
+  }).finally(()=>{
+    if(State.selectedId === p.id) renderGrid(); // affiche l'image (ou le message d'échec) si on est toujours sur cette photo
+  });
+}
+/* Récupération en arrière-plan des premières images du catalogue réellement présentes dans le dossier Drive. */
+let drivePrefetchRunning = false;
+async function prefetchDriveImages(max){
+  if(drivePrefetchRunning || !State.drive.token || !driveMediaFolderId()) return;
+  drivePrefetchRunning = true;
+  try{
+    const idx = await getDriveMediaIndex();
+    const todo = galleryPhotos().filter(p=> isDriveHydratable(p) && idx.has(catalogLooseKey(p.fileName))).slice(0, max);
+    if(!todo.length) return;
+    let ok = 0;
+    for(const p of todo){
+      try{ if(await hydratePhotoFromDrive(p)) ok++; }
+      catch(e){ console.warn(`Récupération Drive impossible pour "${p.fileName}".`, e); }
+    }
+    if(ok){
+      toast(`${ok} image(s) récupérée(s) depuis Drive. Les autres s'ouvrent à la demande.`);
+      const g = document.getElementById("galleryGrid");
+      if(g && g.offsetParent !== null) renderGallery();
+    }
+  }catch(e){ console.warn("Récupération en arrière-plan depuis Drive interrompue.", e); }
+  finally{ drivePrefetchRunning = false; }
+}
+
 /* Affiche p.thumbDataUrl immédiatement (perception de vitesse) puis
    remplace par l'image complète dès qu'elle arrive de getFullDataUrl() —
    le jeton dans img.dataset évite qu'une réponse arrivée en retard (photo
@@ -5009,6 +5131,7 @@ function renderGrid(){
     img.classList.add("hidden");
     missing.classList.remove("hidden");
     img.removeAttribute("src");
+    requestDriveImage(p); // catalogue chargé depuis Drive : récupère l'image à la demande (voir plus bas)
   }
   img.alt = p.fileName || "";
   img.dataset.rotation = p.rotation || 0;
@@ -16208,7 +16331,7 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
         const j = await (await driveApiFetch(api + `q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
         (j.files||[]).forEach(x=>{
           if(x.mimeType === FOLDER) queue.push({id: x.id, path: cur.path + " / " + x.name});
-          else if(/\.csv$/i.test(x.name || "")) found.push({id: x.id, name: x.name, modifiedTime: x.modifiedTime, path: cur.path});
+          else if(/\.csv$/i.test(x.name || "")) found.push({id: x.id, name: x.name, modifiedTime: x.modifiedTime, path: cur.path, parentId: cur.id});
         });
         tok = j.nextPageToken || "";
       }while(tok);
@@ -16238,7 +16361,11 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
           setDriveBtnState("btnDriveLoad","lblDriveLoad", true, "Chargé");
           markCsvClean();
           close();
-          toast("« " + x.name + " » (" + x.path + ") chargé depuis Drive. Le fichier sur Drive n'a pas été modifié.");
+          // Les images référencées sont cherchées dans le dossier de ce CSV : récupérées à la demande, et les
+          // GALLERY_INITIAL_BATCH premières présentes sur Drive sont téléchargées en arrière-plan.
+          setDriveMediaFolder(x.parentId, x.path);
+          toast("« " + x.name + " » (" + x.path + ") chargé depuis Drive. Le fichier sur Drive n'a pas été modifié. Les images se téléchargent à la demande.");
+          prefetchDriveImages(GALLERY_INITIAL_BATCH);
         }catch(err){ close(); toast(err.message); }
       };
       body.appendChild(b);
