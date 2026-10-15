@@ -4933,8 +4933,8 @@ function setDriveMediaFolder(id, label){
   driveMediaIndexPromise = null; driveMediaIndexFolder = ""; driveMissInfo.clear();
 }
 /* Index nom de fichier -> fichier Drive, pour UN seul listing du dossier (pas une requête par photo). */
-function getDriveMediaIndex(){
-  const fid = driveMediaFolderId();
+function getDriveMediaIndex(folderIdOverride){
+  const fid = folderIdOverride || driveMediaFolderId();
   if(!fid) return Promise.resolve(new Map());
   if(driveMediaIndexPromise && driveMediaIndexFolder === fid) return driveMediaIndexPromise;
   driveMediaIndexFolder = fid;
@@ -4972,6 +4972,7 @@ function hydratePhotoFromDrive(p){
     const encodedSize = Math.round(finalDataUrl.length * 0.75);
     const full = {...p,
       dataUrl: finalDataUrl, thumbDataUrl, hasFullImage: true,
+      driveFileId: hit.id, driveDirty: false,
       width: resized.width, height: resized.height, exif, sizeBytes: encodedSize,
       gpsLat: exif && exif.gpsLat != null ? exif.gpsLat : (p.gpsLat != null ? p.gpsLat : null),
       gpsLon: exif && exif.gpsLon != null ? exif.gpsLon : (p.gpsLon != null ? p.gpsLon : null),
@@ -13737,6 +13738,7 @@ async function applyEditFormToSelectedPhoto(){
    (l'objet en mémoire dans State.photos) n'en garde jamais de copie. */
 async function saveEditedPhoto(p, fullDataUrl){
   if(fullDataUrl){
+    p.driveDirty = true; // image réécrite (recadrage, retouche, EXIF…) : « Sauver sur Drive » mettra à jour le fichier sur Drive
     const rec = (await idbGet("photos", p.id)) || {...p};
     Object.assign(rec, p, {dataUrl: fullDataUrl});
     await idbPut("photos", rec);
@@ -16378,13 +16380,13 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
    factorisé pour être appelé aussi bien par le bouton "Sauver sur Drive" que
    par l'octroi d'accès à un partenaire (qui doit s'assurer que le catalogue
    est à jour sur Drive avant de partager le dossier). */
-async function saveCsvToDrive(){
+async function saveCsvToDrive(targetFolderId){
   if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
   // Garde-fou : un catalogue vide produirait un CSV réduit à son en-tête et écraserait (PATCH via l'identifiant mémorisé)
   // votre catalogue réel sur Drive. On refuse : rien n'est envoyé.
   if(!State.photos.length) throw new Error("Catalogue vide : rien n'a été envoyé, votre CSV sur Drive reste intact. Chargez d'abord un catalogue (Charger depuis Drive) ou des images.");
   if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
-  const folderId = await ensureImaginesFolder();
+  const folderId = targetFolderId || await ensureImaginesFolder();
   const csv = autoBuildCsv();
   // 'parents' n'est accepté qu'à la création : sur une mise à jour (PATCH), Drive
   // rejetterait ce champ, le fichier reste de toute façon déjà dans IMAGINES.
@@ -16398,6 +16400,17 @@ async function saveCsvToDrive(){
       `--${boundary}\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--`;
     return {boundary, body};
   };
+  // Garde-fou : l'identifiant mémorisé doit désigner CE catalogue. S'il désigne un AUTRE fichier (autre CSV chargé ou
+  // sauvé auparavant) ou un fichier à la corbeille, on ne l'écrase ni ne le renomme jamais : un nouveau fichier est créé.
+  if(State.drive.fileId){
+    const forgetStaleId = ()=>{ State.drive.fileId = ""; localStorage.removeItem("imago_drive_file_id"); };
+    try{
+      const meta = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${State.drive.fileId}?fields=id,name,trashed`)).json();
+      if(meta.trashed || meta.name !== State.catalogFileName) forgetStaleId();
+    }catch(err){
+      if(/404/.test(err.message)) forgetStaleId(); else throw err;
+    }
+  }
   let isUpdate = !!State.drive.fileId;
   let data;
   try{
@@ -16437,11 +16450,126 @@ async function saveCsvToDrive(){
   markCsvClean();
   return data;
 }
+/* ---------------------------------------------------------------
+   « Sauver sur Drive » = TOUT enregistrer dans le dossier Drive du catalogue :
+     1) les images nouvelles (absentes du dossier Drive) ;
+     2) les images modifiées dans l'éditeur (fichier Drive mis À JOUR, jamais dupliqué) ;
+     3) le catalogue .csv (mis à jour sur place s'il vient de Drive).
+   Dossier cible = dossier du CSV chargé depuis Drive (sinon IMAGINES, comme avant).
+   Rien n'est jamais supprimé sur Drive. Un envoi interrompu (bouton Arrêter, session
+   expirée, réseau) se reprend en relançant « Sauver » : les images déjà envoyées sont
+   reconnues par leur nom dans le dossier et ne sont pas renvoyées.
+   --------------------------------------------------------------- */
+function driveNameCandidates(p){
+  const n = p.fileName || "";
+  const c = [catalogLooseKey(n)];
+  if(/\.hei[cf]$/i.test(n)) c.push(catalogLooseKey(n.replace(/\.hei[cf]$/i, ".jpg"))); // HEIC envoyé converti en JPEG (voir driveUploadFileName)
+  return c;
+}
+/* Remplace le CONTENU du fichier Drive existant de p (même fichier, même identifiant). */
+async function updateDriveImageContent(p){
+  const full = await getFullDataUrl(p);
+  const m = full && full.match(/^data:([^;]+);base64,([\s\S]*)$/);
+  if(!m) throw new Error("Image introuvable (ni en mémoire, ni dans IndexedDB).");
+  const bin = atob(m[2]), bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  await driveApiFetch(`https://www.googleapis.com/upload/drive/v3/files/${p.driveFileId}?uploadType=media&fields=id`, {
+    method: "PATCH", headers: {"Content-Type": m[1] || "image/jpeg"}, body: new Blob([bytes], {type: m[1] || "image/jpeg"})
+  });
+}
+function driveSaveWindow(titleText){
+  const ov = document.createElement("div"); ov.className = "modal-overlay show";
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h2></h2></div><div class="modal-body"></div></div>';
+  ov.querySelector("h2").textContent = titleText;
+  document.body.appendChild(ov);
+  return {body: ov.querySelector(".modal-body"), close: ()=> ov.remove()};
+}
+function driveSaveButton(label, primary){
+  const b = document.createElement("button"); b.className = "btn" + (primary ? " copper" : "");
+  b.style.cssText = "width:100%; margin-bottom:6px;"; b.textContent = label; return b;
+}
+async function saveEverythingToDrive(){
+  if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
+  if(!State.photos.length) throw new Error("Catalogue vide : rien n'a été envoyé, votre CSV sur Drive reste intact. Chargez d'abord un catalogue (Charger depuis Drive) ou des images.");
+  const mediaFolder = driveMediaFolderId();
+  const folderId = mediaFolder || await ensureImaginesFolder();
+  const folderLabel = mediaFolder ? driveMediaFolderLabel() : "IMAGINES";
+  const win = driveSaveWindow("Sauver sur Drive");
+  try{
+    // 1) Plan : listing FRAIS du dossier, pour ne jamais créer de doublon.
+    win.body.textContent = "Comparaison avec le dossier « " + folderLabel + " »…";
+    driveMediaIndexPromise = null; driveMediaIndexFolder = "";
+    const idx = await getDriveMediaIndex(folderId);
+    const toCreate = [], toUpdate = [];
+    State.photos.forEach(p=>{
+      if(p.corbeille || p.isVideo || !(p.hasFullImage || p.dataUrl)) return; // pas d'image locale (ligne du CSV seule), corbeille, vidéo : rien à envoyer
+      const hit = driveNameCandidates(p).map(k=>idx.get(k)).find(Boolean);
+      if(hit){ p.driveFileId = hit.id; if(p.driveDirty) toUpdate.push(p); } // déjà sur Drive (reconnue par son nom)
+      else toCreate.push(p);
+    });
+    // 2) Choix de l'utilisateur
+    let sendImages = false;
+    if(toCreate.length || toUpdate.length){
+      const mb = Math.round([...toCreate, ...toUpdate].reduce((s,p)=> s + (p.sizeBytes || (p.poids||0)*1024), 0) / 1048576);
+      const choice = await new Promise(resolve=>{
+        win.body.innerHTML = "";
+        const t = document.createElement("p"); t.style.cssText = "margin:0 0 12px; line-height:1.5;";
+        t.textContent = `Dossier Drive : « ${folderLabel} ». ${toCreate.length} image(s) nouvelle(s) et ${toUpdate.length} modifiée(s) à envoyer (≈ ${mb} Mo). Le catalogue .csv sera aussi mis à jour. Rien n'est supprimé sur Drive.`;
+        win.body.appendChild(t);
+        const bAll = driveSaveButton("Envoyer images + catalogue", true), bCsv = driveSaveButton("Catalogue seulement"), bNo = driveSaveButton("Annuler");
+        bAll.onclick = ()=> resolve("all"); bCsv.onclick = ()=> resolve("csv"); bNo.onclick = ()=> resolve(null);
+        [bAll, bCsv, bNo].forEach(b=> win.body.appendChild(b));
+      });
+      if(!choice){ win.close(); return null; }
+      sendImages = choice === "all";
+    }
+    // 3) Envoi des images (séquentiel, un échec n'arrête pas les autres ; Arrêter = on passe au catalogue)
+    let created = 0, updated = 0, stopped = false, sessionLost = false;
+    const failed = [];
+    if(sendImages){
+      const createSet = new Set(toCreate), work = [...toCreate, ...toUpdate];
+      win.body.innerHTML = "";
+      const status = document.createElement("p"); status.style.cssText = "margin:0 0 12px;"; win.body.appendChild(status);
+      const bStop = driveSaveButton("Arrêter (le catalogue sera quand même sauvegardé)"); bStop.onclick = ()=>{ stopped = true; bStop.disabled = true; };
+      win.body.appendChild(bStop);
+      for(let i=0;i<work.length && !stopped;i++){
+        const p = work[i];
+        status.textContent = `Envoi des images… ${i+1} / ${work.length} — ${p.fileName}`;
+        try{
+          if(createSet.has(p)){
+            const existedBefore = !!p.driveFileId; // image déjà envoyée ailleurs (partage) : simplement rattachée au dossier
+            const up = await ensurePhotoUploadedToDrive(p, folderId);
+            p.driveFileId = up.id; p.driveWebViewLink = up.webViewLink || "";
+            if(existedBefore && p.driveDirty) await updateDriveImageContent(p);
+            created++;
+          } else { await updateDriveImageContent(p); updated++; }
+          p.driveDirty = false;
+          try{ await idbPut("photos", p); }catch(e){ console.warn("Référence Drive non mémorisée pour " + p.fileName, e); }
+        }catch(err){
+          console.warn(`Envoi Drive impossible pour "${p.fileName}" :`, err);
+          failed.push(p.fileName + " (" + ((err && err.message) || err) + ")");
+          if(!State.drive.token){ sessionLost = true; break; } // session expirée : inutile d'insister
+        }
+      }
+    }
+    // 4) Catalogue (toujours en dernier : il décrit l'état final)
+    if(sessionLost){ win.close(); throw new Error(`Votre session Drive a expiré après ${created+updated} image(s) envoyée(s). Reconnectez-vous puis relancez « Sauver sur Drive » : l'envoi reprendra là où il s'est arrêté. Catalogue non modifié sur Drive.`); }
+    win.body.textContent = "Sauvegarde du catalogue…";
+    await saveCsvToDrive(folderId);
+    win.close();
+    const parts = [];
+    if(sendImages) parts.push(`${created} image(s) envoyée(s), ${updated} mise(s) à jour`);
+    if(stopped) parts.push("envoi interrompu : relancez Sauver pour la suite");
+    if(failed.length) parts.push(`${failed.length} échec(s) (voir la console)`);
+    return {message: `« ${State.catalogFileName} » sauvegardé dans « ${folderLabel} »` + (parts.length ? " — " + parts.join(" ; ") : "") + ".", ok: !failed.length && !stopped};
+  }catch(err){ win.close(); throw err; }
+}
 document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
   try{
-    await saveCsvToDrive();
-    setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
-    toast(`« ${State.catalogFileName} » sauvegardé dans le dossier IMAGINES.`);
+    const r = await saveEverythingToDrive();
+    if(!r) return; // annulé : rien n'a été envoyé
+    if(r.ok) setDriveBtnState("btnDriveSave","lblDriveSave", true, "Sauvé");
+    toast(r.message);
   }catch(err){ toast(err.message); }
 });
 
