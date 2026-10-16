@@ -4950,6 +4950,52 @@ function getDriveMediaIndex(folderIdOverride){
   })().catch(e=>{ driveMediaIndexPromise = null; throw e; });
   return driveMediaIndexPromise;
 }
+const VIDEO_NAME_RE = /\.(mp4|m4v|mov|avi|mpe?g)$/i;
+/* Un enregistrement créé depuis un CSV (« Charger depuis Drive », anciennes sessions comprises) n'a ni isVideo ni
+   videoPending : une vidéo y passait pour une IMAGE sans fichier (« Image non disponible sur cet appareil »).
+   On le répare ici : marquée vidéo différée, elle affiche alors le bouton « Charger la vidéo » du visualiseur. */
+function repairVideoFlags(p, persist = true){
+  if(p.isVideo || !VIDEO_NAME_RE.test(p.fileName || "")) return false;
+  if(p.hasFullImage || p.dataUrl || p.thumbDataUrl) return false; // un vrai contenu local : on n'y touche pas
+  p.isVideo = true; p.videoPending = true;
+  p.videoSizeBytes = p.videoSizeBytes || 0; p.posterDataUrl = p.posterDataUrl || null; p.durationSec = p.durationSec || 0;
+  if(persist) idbPut("photos", p).catch(e=> console.warn("Réparation du type vidéo non mémorisée pour " + p.fileName, e));
+  return true;
+}
+/* Vidéo stockée sur Drive (catalogue chargé depuis Drive) : téléchargée À LA DEMANDE à l'ouverture, lue depuis une URL
+   objet (jamais en base64), gardée pour la session dans pendingVideoFiles, et sa vignette est mémorisée pour la galerie.
+   Renvoie true si la demande est traitée ici, false pour laisser l'ancien parcours (resélection du fichier local). */
+async function loadVideoFromDrive(p){
+  if(!driveMediaFolderId()) return false;
+  if(!State.drive.token){ toast("Connectez-vous à Drive (menu ☰ › Connexion) pour télécharger cette vidéo.", 6000); return true; }
+  let hit;
+  try{ hit = (await getDriveMediaIndex()).get(catalogLooseKey(p.fileName)); }
+  catch(err){ toast("Dossier Drive illisible : " + ((err && err.message) || err), 6000); return true; }
+  if(!hit) return false; // absente du dossier Drive : on propose de resélectionner le fichier local
+  try{
+    p.videoSizeBytes = +hit.size || p.videoSizeBytes || 0;
+    toast(`Téléchargement de « ${p.fileName} » depuis Drive (${fmtSize(p.videoSizeBytes) || "taille inconnue"})…`, 5000);
+    const blob = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
+    const file = new File([blob], p.fileName, {type: hit.mimeType || videoMimeFor(p.fileName)});
+    pendingVideoFiles.set(p.id, file);
+    p.driveFileId = hit.id;
+    if(State.selectedId === p.id) openOrPlayVideoFile(p, file);
+    // vignette + durée (une seule fois) pour la galerie ; AVI/MPG : illisibles par le navigateur, on s'en tient là
+    if(!p.posterDataUrl && !isUnplayableVideoName(p.fileName)){
+      const url = URL.createObjectURL(file);
+      try{
+        const vm = await getVideoMeta(url);
+        if(vm && vm.poster){ p.posterDataUrl = vm.poster; p.durationSec = vm.duration || 0; p.width = vm.width || 0; p.height = vm.height || 0; }
+      } finally { URL.revokeObjectURL(url); }
+    }
+    idbPut("photos", p).catch(e=> console.warn("Vignette vidéo non mémorisée pour " + p.fileName, e));
+    return true;
+  }catch(err){
+    console.warn(`Vidéo "${p.fileName}" : téléchargement depuis Drive impossible.`, err);
+    toast("Téléchargement impossible : " + ((err && err.message) || err), 6000);
+    return true;
+  }
+}
 function isDriveHydratable(p){
   return !!p && !p.isVideo && !p.hasFullImage && !p.thumbDataUrl && !p.dataUrl && !/\.(mp4|mov|avi|mpe?g)$/i.test(p.fileName || "");
 }
@@ -5015,6 +5061,11 @@ async function prefetchDriveImages(max){
   drivePrefetchRunning = true;
   try{
     const idx = await getDriveMediaIndex();
+    State.photos.forEach(p=>{
+      if(!repairVideoFlags(p) && !p.isVideo) return;
+      const h = idx.get(catalogLooseKey(p.fileName));
+      if(h && +h.size && !p.videoSizeBytes) p.videoSizeBytes = +h.size;
+    });
     const todo = galleryPhotos().filter(p=> isDriveHydratable(p) && idx.has(catalogLooseKey(p.fileName))).slice(0, max);
     if(!todo.length) return;
     let ok = 0;
@@ -5079,6 +5130,7 @@ function renderGrid(){
   State.viewIndex = idx;
   const p = list[idx];
   State.selectedId = p.id;
+  repairVideoFlags(p); // vidéo issue d'un CSV : à traiter comme une vidéo différée, pas comme une image absente
   document.getElementById("resultCount").textContent = `Image ${idx+1} sur ${list.length}`;
 
   const img = document.getElementById("viewerImg");
@@ -5106,7 +5158,9 @@ function renderGrid(){
       : '▶ Charger la vidéo (<span id="pendingVideoSize"></span>)';
     document.getElementById("pendingVideoNote").textContent = pendingIsAvi
       ? `Format ${pendingFmt} : les navigateurs ne savent pas le lire. Enregistrez une copie du fichier pour l'ouvrir dans le lecteur de votre ordinateur (VLC, Lecteur Windows…).`
-      : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.";
+      : (!pendingVideoFiles.has(p.id) && driveMediaFolderId()
+          ? "Vidéo stockée sur Drive (« " + driveMediaFolderLabel() + " ») : son contenu est téléchargé à la demande."
+          : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.");
     document.getElementById("pendingVideoSize").textContent = fmtSize(p.videoSizeBytes) || "?";
     videoPending.classList.remove("hidden");
   } else if(p.isVideo){
@@ -11822,6 +11876,7 @@ async function loadPendingVideoFile(p){
     openOrPlayVideoFile(p, cachedFile);
     return;
   }
+  if(await loadVideoFromDrive(p)) return; // catalogue chargé depuis Drive : téléchargement à la demande
   // Session précédente terminée (page rechargée) : le File d'origine n'est
   // plus disponible en mémoire — on demande à l'utilisateur de le
   // resélectionner uniquement lui (pas tout le dossier).
@@ -15952,8 +16007,9 @@ async function mergeCsvIntoCatalog(text){
     let rec = State.photos.find(p=>p.fileName===row.fileName);
     if(!rec){
       rec = {id: uid("ph"), fileName:row.fileName, dataUrl:"", favori:false, art:false, corbeille:false, rotation:0, albums:[]};
+      repairVideoFlags(rec, false); // .mp4/.mov… : vidéo différée (le fichier sera téléchargé à la demande), pas une image
       State.photos.push(rec); created++;
-    } else updated++;
+    } else { repairVideoFlags(rec, false); updated++; }
     rec.dateAchat = row.dateAchat || rec.dateAchat;
     rec.sousDossier = row.sousDossier || rec.sousDossier || ""; // conserve la colonne du CSV (sinon vidée au prochain « Sauver »)
     rec.personnage = row.personnage || "";
