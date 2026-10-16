@@ -4941,8 +4941,8 @@ function getDriveMediaIndex(folderIdOverride){
   driveMediaIndexPromise = (async ()=>{
     const idx = new Map(); let tok = "";
     do{
-      const q = encodeURIComponent(`'${fid}' in parents and trashed=false and mimeType contains 'image/'`);
-      const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
+      const q = encodeURIComponent(`'${fid}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')`);
+      const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime,size)` + (tok ? "&pageToken=" + tok : ""))).json();
       (j.files||[]).forEach(x=> idx.set(catalogLooseKey(x.name), x));
       tok = j.nextPageToken || "";
     }while(tok);
@@ -10214,7 +10214,9 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     if(cameraModel) zeroth[piexif.ImageIFD.Model] = cameraModel;
     // "Titre" (Windows) provient d'ImageDescription — et non de XPTitle, qui
     // est ignoré par l'Explorateur Windows dès qu'ImageDescription existe.
-    if(personnage) zeroth[piexif.ImageIFD.ImageDescription] = personnage;
+    // Repli : sans personnage, le titre de la photo (rubrique « titre ») alimente « Titre » plutôt que de le laisser vide.
+    const windowsTitle = personnage || motsCles;
+    if(windowsTitle) zeroth[piexif.ImageIFD.ImageDescription] = windowsTitle;
     // "Droits d'auteur"/Copyright (Windows) — tag EXIF standard, ASCII simple.
     if(auteur) zeroth[piexif.ImageIFD.Copyright] = auteur;
     // "Objet"/Subject (Windows) n'a pas d'équivalent EXIF standard : c'est
@@ -15767,9 +15769,9 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
    sans répit peut solliciter la mémoire de la même façon qu'un import,
    sur un appareil à ressources limitées. */
 document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=>{
-  const targets = State.photos.filter(p=> !p.isVideo && (p.optique || p.lieu || p.map || p.dateAchat || p.auteur || p.personnage));
+  const targets = State.photos.filter(p=> !p.isVideo && (p.optique || p.lieu || p.map || p.dateAchat || p.auteur || p.personnage || p.titre || p.favori || p.art || p.concert));
   if(!targets.length){
-    toast("Aucune photo avec Caméra, Lieu, Map, Date cliché, Auteur ou Personnage renseigné(e) — rien à écrire.");
+    toast("Aucune photo avec Caméra, Lieu, Map, Date cliché, Auteur, Personnage, Titre ou Notation renseigné(e) — rien à écrire.");
     return;
   }
   const btn = document.getElementById("btnWriteExifBatch");
@@ -16451,10 +16453,264 @@ async function saveCsvToDrive(targetFolderId){
   return data;
 }
 /* ---------------------------------------------------------------
+   Vidéos : métadonnées écrites DANS le fichier MP4 / M4V / MOV, sans ré-encodage
+   (l'image et le son ne sont jamais touchés : seul le bloc « moov » est réécrit).
+   - MP4/M4V : étiquettes iTunes (moov/udta/meta/ilst) lues par l'Explorateur Windows.
+   - MOV     : mêmes étiquettes + atomes texte QuickTime (moov/udta/©nam…).
+   Correspondance (même logique que pour les photos) :
+     Titre            ← personnage, à défaut titre    (©nam)
+     Commentaires     ← lieu — map (coordonnées ou nom) (©cmt)
+     Artiste / Auteur ← auteur                        (©ART)
+     Copyright        ← auteur                        (cprt)
+     Année            ← date de la photo (AAAA-MM-JJ) (©day)
+   Non pris en charge (la vidéo est alors envoyée telle quelle, sans erreur) :
+   AVI, MPG, WMV, MP4 fragmenté (fMP4), structure inattendue.
+   --------------------------------------------------------------- */
+const MP4_META_EXT_RE = /\.(mp4|m4v|mov)$/i;
+const VIDEO_MIME_BY_EXT = {mp4:"video/mp4", m4v:"video/x-m4v", mov:"video/quicktime", avi:"video/x-msvideo", mpg:"video/mpeg", mpeg:"video/mpeg"};
+function videoMimeFor(fileName, fallback){
+  const m = String(fileName||"").match(/\.([a-z0-9]+)$/i);
+  return (m && VIDEO_MIME_BY_EXT[m[1].toLowerCase()]) || fallback || "video/mp4";
+}
+function mp4U32(b, o){ return ((b[o]<<24) | (b[o+1]<<16) | (b[o+2]<<8) | b[o+3]) >>> 0; }
+function mp4W32(b, o, v){ b[o] = (v>>>24)&255; b[o+1] = (v>>>16)&255; b[o+2] = (v>>>8)&255; b[o+3] = v&255; }
+function mp4Fourcc(b, o){ return String.fromCharCode(b[o], b[o+1], b[o+2], b[o+3]); }
+function mp4Concat(arrs){
+  let n = 0; arrs.forEach(a=> n += a.length);
+  const out = new Uint8Array(n); let o = 0;
+  arrs.forEach(a=>{ out.set(a, o); o += a.length; });
+  return out;
+}
+function mp4Box(type, payloadParts){
+  const payload = mp4Concat(payloadParts);
+  const out = new Uint8Array(8 + payload.length);
+  mp4W32(out, 0, out.length);
+  for(let i=0;i<4;i++) out[4+i] = type.charCodeAt(i);
+  out.set(payload, 8);
+  return out;
+}
+/* Découpe en blocs [début, fin[ d'une zone de buf ; les positions sont relatives à buf. */
+function mp4ParseBoxes(buf, start, end){
+  const out = []; let o = start;
+  while(o + 8 <= end){
+    let size = mp4U32(buf, o), hdr = 8;
+    const type = mp4Fourcc(buf, o+4);
+    if(size === 1){
+      if(o + 16 > end) break;
+      size = mp4U32(buf, o+8) * 4294967296 + mp4U32(buf, o+12); hdr = 16;
+    } else if(size === 0) size = end - o;
+    if(size < hdr || o + size > end) break;
+    out.push({type, start:o, size, hdr, end:o+size});
+    o += size;
+  }
+  return out;
+}
+function mp4RequireFullCoverage(boxes, start, end, what){
+  const covered = boxes.length ? boxes[boxes.length-1].end : start;
+  if(covered !== end) throw new Error("structure inattendue dans " + what);
+}
+/* Blocs de premier niveau d'un fichier (lecture des seuls en-têtes, jamais du contenu). */
+async function mp4ScanTopLevel(file){
+  const boxes = []; let o = 0;
+  while(o + 8 <= file.size){
+    const h = new Uint8Array(await file.slice(o, Math.min(o+16, file.size)).arrayBuffer());
+    let size = mp4U32(h, 0), hdr = 8;
+    const type = mp4Fourcc(h, 4);
+    if(size === 1){
+      if(h.length < 16) throw new Error("en-tête MP4 tronqué");
+      size = mp4U32(h, 8) * 4294967296 + mp4U32(h, 12); hdr = 16;
+    } else if(size === 0) size = file.size - o;
+    if(size < hdr || o + size > file.size) throw new Error("fichier MP4 tronqué ou structure inattendue");
+    boxes.push({type, start:o, size, hdr, end:o+size});
+    o += size;
+  }
+  return boxes;
+}
+/* Élément d'étiquette iTunes : [taille][type][ [taille]['data'][0,0,0,1 = UTF-8][0,0,0,0][texte] ] */
+function mp4Item(type, text){
+  const data = new TextEncoder().encode(text);
+  const dataBox = new Uint8Array(16 + data.length);
+  mp4W32(dataBox, 0, dataBox.length);
+  for(let i=0;i<4;i++) dataBox[4+i] = "data".charCodeAt(i);
+  mp4W32(dataBox, 8, 1);   // type de données : 1 = texte UTF-8
+  mp4W32(dataBox, 12, 0);  // locale
+  dataBox.set(data, 16);
+  return mp4Box(type, [dataBox]);
+}
+/* Atome texte QuickTime (MOV) : [taille][type][longueur texte 2 octets][langue 2 octets][texte] */
+function mp4QtText(type, text){
+  const data = new TextEncoder().encode(text);
+  const head = new Uint8Array(4);
+  head[0] = (data.length>>8)&255; head[1] = data.length&255; head[2] = 0x15; head[3] = 0xC7; // langue « non précisée » (QuickTime)
+  return mp4Box(type, [head, data]);
+}
+function mp4Hdlr(){
+  // version/flags(4) + pré-défini(4) + type « mdir »(4) + fabricant « appl » et 8 octets nuls(12) + nom vide (1)
+  const p = new Uint8Array(25);
+  for(let i=0;i<4;i++){ p[8+i] = "mdir".charCodeAt(i); p[12+i] = "appl".charCodeAt(i); }
+  return mp4Box("hdlr", [p]);
+}
+function mp4RebuildMeta(buf, metaBox, replaceTypes, newItems){
+  const pStart = metaBox.start + metaBox.hdr;
+  const iso = mp4Fourcc(buf, pStart+8) === "hdlr";       // [version/flags][hdlr…]
+  const qt  = !iso && mp4Fourcc(buf, pStart+4) === "hdlr"; // [hdlr…] (variante QuickTime)
+  if(!iso && !qt) throw new Error("bloc meta inattendu");
+  const kidsStart = pStart + (iso ? 4 : 0);
+  const kids = mp4ParseBoxes(buf, kidsStart, metaBox.end);
+  mp4RequireFullCoverage(kids, kidsStart, metaBox.end, "meta");
+  const hd = kids.find(k=>k.type === "hdlr");
+  if(!hd) throw new Error("bloc meta sans hdlr");
+  const handler = mp4Fourcc(buf, hd.start + hd.hdr + 8);
+  if(handler !== "mdir") throw new Error("bloc meta d'un autre type (« " + handler + " »)");
+  const parts = []; let ilstDone = false;
+  for(const k of kids){
+    if(k.type === "ilst"){
+      const items = mp4ParseBoxes(buf, k.start + k.hdr, k.end);
+      mp4RequireFullCoverage(items, k.start + k.hdr, k.end, "ilst");
+      const kept = items.filter(it=> !replaceTypes.includes(it.type)).map(it=> buf.slice(it.start, it.end));
+      parts.push(mp4Box("ilst", [...kept, ...newItems])); ilstDone = true;
+    } else parts.push(buf.slice(k.start, k.end));
+  }
+  if(!ilstDone) parts.push(mp4Box("ilst", newItems));
+  return mp4Box("meta", [iso ? new Uint8Array(4) : new Uint8Array(0), ...parts]);
+}
+function mp4BuildUdta(buf, udta, replaceTypes, newItems, qtAtoms){
+  const freshMeta = ()=> mp4Box("meta", [new Uint8Array(4), mp4Hdlr(), mp4Box("ilst", newItems)]);
+  if(!udta) return mp4Box("udta", [freshMeta(), ...qtAtoms.map(a=>a.bytes)]);
+  const uStart = udta.start + udta.hdr;
+  const kids = mp4ParseBoxes(buf, uStart, udta.end);
+  // un udta se termine parfois par 4 octets nuls (fin de liste QuickTime) : toléré, et abandonné
+  const covered = kids.length ? kids[kids.length-1].end : uStart;
+  if(covered !== udta.end && udta.end - covered !== 4) throw new Error("structure inattendue dans udta");
+  const qtTypes = qtAtoms.map(a=>a.type);
+  const metaBox = kids.find(k=>k.type === "meta");
+  const parts = [];
+  for(const k of kids){
+    if(qtTypes.includes(k.type)) continue;                      // atome texte QuickTime remplacé
+    parts.push(k === metaBox ? mp4RebuildMeta(buf, k, replaceTypes, newItems) : buf.slice(k.start, k.end));
+  }
+  if(!metaBox) parts.push(freshMeta());
+  qtAtoms.forEach(a=> parts.push(a.bytes));
+  return mp4Box("udta", parts);
+}
+function mp4WalkPath(buf, start, end, path, cb){
+  for(const b of mp4ParseBoxes(buf, start, end)){
+    if(path.length === 0) cb(b);
+    else if(b.type === path[0]) mp4WalkPath(buf, b.start + b.hdr, b.end, path.slice(1), cb);
+  }
+}
+/* Le « moov » change de taille : si les données (mdat) viennent APRÈS lui, leurs positions (stco/co64) glissent d'autant. */
+function mp4ShiftChunkOffsets(buf, delta, oldMoovEnd){
+  if(!delta) return;
+  mp4WalkPath(buf, 8, buf.length, ["trak","mdia","minf","stbl"], b=>{
+    if(b.type !== "stco" && b.type !== "co64") return;
+    const p = b.start + b.hdr, count = mp4U32(buf, p+4), wide = b.type === "co64";
+    for(let i=0;i<count;i++){
+      const at = p + 8 + i * (wide ? 8 : 4);
+      let v = wide ? mp4U32(buf, at) * 4294967296 + mp4U32(buf, at+4) : mp4U32(buf, at);
+      if(v < oldMoovEnd) continue; // pointe avant le moov : inchangé
+      v += delta;
+      if(wide){ mp4W32(buf, at, Math.floor(v / 4294967296)); mp4W32(buf, at+4, v % 4294967296); }
+      else { if(v > 0xFFFFFFFF) throw new Error("décalage des positions > 4 Go"); mp4W32(buf, at, v); }
+    }
+  });
+}
+/* entries : [[type, texte], …]. Renvoie un nouveau Blob (même vidéo, métadonnées ajoutées/remplacées) ou null s'il n'y a rien à écrire.
+   Lève une Error explicite si le fichier n'est pas pris en charge. Les autres étiquettes déjà présentes sont conservées. */
+async function writeMp4Metadata(file, entries){
+  if(!entries.length) return null;
+  const top = await mp4ScanTopLevel(file);
+  if(top.some(b=>b.type === "moof")) throw new Error("vidéo fragmentée (fMP4) non prise en charge");
+  const moov = top.find(b=>b.type === "moov");
+  if(!moov) throw new Error("bloc moov introuvable");
+  if(moov.size > 256 * 1024 * 1024) throw new Error("bloc moov trop volumineux");
+  const old = new Uint8Array(await file.slice(moov.start, moov.end).arrayBuffer());
+  const kids = mp4ParseBoxes(old, moov.hdr, old.length);
+  mp4RequireFullCoverage(kids, moov.hdr, old.length, "moov");
+  const isMov = /\.mov$/i.test(file.name || "");
+  const types = entries.map(e=>e[0]);
+  const items = entries.map(([t,v])=> mp4Item(t, v));
+  const qtAtoms = isMov ? entries.filter(([t])=> t.charCodeAt(0) === 0xA9).map(([t,v])=> ({type:t, bytes: mp4QtText(t, v)})) : [];
+  const newUdta = mp4BuildUdta(old, kids.find(k=>k.type === "udta"), types, items, qtAtoms);
+  const parts = []; let placed = false;
+  for(const k of kids){
+    if(k.type === "udta" && !placed){ parts.push(newUdta); placed = true; }
+    else parts.push(old.subarray(k.start, k.end));
+  }
+  if(!placed) parts.push(newUdta);
+  const body = mp4Concat(parts);
+  const newMoov = new Uint8Array(8 + body.length);
+  if(newMoov.length >= 4294967296) throw new Error("bloc moov trop volumineux");
+  mp4W32(newMoov, 0, newMoov.length);
+  for(let i=0;i<4;i++) newMoov[4+i] = "moov".charCodeAt(i);
+  newMoov.set(body, 8);
+  mp4ShiftChunkOffsets(newMoov, newMoov.length - old.length, moov.end);
+  return new Blob([file.slice(0, moov.start), newMoov, file.slice(moov.end)], {type: file.type || videoMimeFor(file.name)});
+}
+/* Rubriques de la photo → étiquettes vidéo. Seules les rubriques renseignées sont écrites. */
+function videoMetaEntries(p){
+  const e = [];
+  const add = (t, v)=>{ v = (v == null ? "" : String(v)).trim(); if(v) e.push([t, v]); };
+  add("\u00A9nam", p.personnage || p.titre);
+  const q = p.map ? (mapEmbedQueryFromMapField(p.map) || p.map) : "";
+  add("\u00A9cmt", [p.lieu, q].filter(Boolean).join(" \u2014 "));
+  add("\u00A9ART", p.auteur);
+  add("cprt", p.auteur);
+  const d = String(p.dateAchat || "").slice(0, 10);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(d)) add("\u00A9day", d);
+  return e;
+}
+/* Empreinte des métadonnées écrites : permet de savoir si celles d'une vidéo ont changé depuis son dernier envoi. */
+function videoMetaSig(p){
+  const s = JSON.stringify(videoMetaEntries(p)); let h = 5381;
+  for(let i=0;i<s.length;i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36) + ":" + s.length;
+}
+/* Envoi « resumable » Drive (gros fichiers) par morceaux de 8 Mo ; reprise du morceau en cas d'incident réseau.
+   existingId : remplace le CONTENU d'un fichier Drive existant (même identifiant). Renvoie {id, webViewLink}. */
+async function driveResumableUpload(blob, {name, parentId, mimeType, existingId}, onProgress){
+  const base = "https://www.googleapis.com/upload/drive/v3/files";
+  const init = await driveApiFetch(existingId ? `${base}/${existingId}?uploadType=resumable&fields=id,webViewLink` : `${base}?uploadType=resumable&fields=id,webViewLink`, {
+    method: existingId ? "PATCH" : "POST",
+    headers: {"Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": mimeType, "X-Upload-Content-Length": String(blob.size)},
+    body: JSON.stringify(existingId ? {} : {name, parents: [parentId], mimeType})
+  });
+  const session = init.headers.get("Location");
+  if(!session) throw new Error("Drive n'a pas ouvert de session d'envoi (en-tête Location absent).");
+  const CHUNK = 8 * 1024 * 1024; // multiple de 256 Kio, exigé par Drive
+  let offset = 0;
+  if(blob.size === 0) throw new Error("fichier vide");
+  while(offset < blob.size){
+    const end = Math.min(offset + CHUNK, blob.size);
+    let res, attempt = 0;
+    for(;;){
+      try{
+        res = await fetch(session, {method:"PUT", headers:{"Content-Range": `bytes ${offset}-${end-1}/${blob.size}`}, body: blob.slice(offset, end)});
+        if(res.status === 308 || res.ok) break;
+        if(res.status >= 500 && ++attempt <= 3){ await new Promise(r=>setTimeout(r, 1000*attempt)); continue; }
+        throw Object.assign(new Error(`envoi refusé par Drive (HTTP ${res.status})`), {fatal:true});
+      }catch(err){
+        if(err.fatal || ++attempt > 3) throw err;
+        await new Promise(r=>setTimeout(r, 1000*attempt)); // coupure réseau : on renvoie le même morceau
+      }
+    }
+    if(res.ok){ const d = await res.json(); if(onProgress) onProgress(blob.size, blob.size); return {id: d.id, webViewLink: d.webViewLink || ""}; }
+    // 308 : morceau reçu. L'en-tête Range indique l'octet confirmé ; s'il n'est pas lisible (CORS), on suppose le morceau accepté en entier.
+    const range = res.headers.get("Range");
+    const confirmed = range && /bytes=0-(\d+)/.test(range) ? parseInt(range.match(/bytes=0-(\d+)/)[1], 10) + 1 : end;
+    offset = Math.min(Math.max(confirmed, 0), blob.size);
+    if(onProgress) onProgress(offset, blob.size);
+  }
+  throw new Error("envoi terminé sans confirmation de Drive");
+}
+
+/* ---------------------------------------------------------------
    « Sauver sur Drive » = TOUT enregistrer dans le dossier Drive du catalogue :
      1) les images nouvelles (absentes du dossier Drive) ;
      2) les images modifiées dans l'éditeur (fichier Drive mis À JOUR, jamais dupliqué) ;
-     3) le catalogue .csv (mis à jour sur place s'il vient de Drive).
+     3) les vidéos : nouvelles (envoyées par morceaux, métadonnées écrites dans le fichier) et, si demandé,
+        vidéos déjà sur Drive dont les métadonnées sont à corriger (fichier Drive remplacé, même identifiant) ;
+     4) le catalogue .csv (mis à jour sur place s'il vient de Drive).
    Dossier cible = dossier du CSV chargé depuis Drive (sinon IMAGINES, comme avant).
    Rien n'est jamais supprimé sur Drive. Un envoi interrompu (bouton Arrêter, session
    expirée, réseau) se reprend en relançant « Sauver » : les images déjà envoyées sont
@@ -16488,6 +16744,19 @@ function driveSaveButton(label, primary){
   const b = document.createElement("button"); b.className = "btn" + (primary ? " copper" : "");
   b.style.cssText = "width:100%; margin-bottom:6px;"; b.textContent = label; return b;
 }
+/* Fichier vidéo à envoyer : File d'origine gardé en session (grosses vidéos) ou petite vidéo stockée dans l'appli. */
+function hasVideoSource(p){ return pendingVideoFiles.has(p.id) || (!p.videoPending && !!(p.hasFullImage || p.dataUrl)); }
+async function getVideoSourceFile(p){
+  const f = pendingVideoFiles.get(p.id);
+  if(f) return f;
+  const du = await getFullDataUrl(p);
+  const m = du && du.match(/^data:([^;]+);base64,([\s\S]*)$/);
+  if(!m) throw new Error("fichier vidéo introuvable sur cet appareil");
+  const bin = atob(m[2]), bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], p.fileName, {type: m[1] || videoMimeFor(p.fileName)});
+}
+function videoSizeOf(p, hit){ const f = pendingVideoFiles.get(p.id); return (f && f.size) || p.videoSizeBytes || p.sizeBytes || (hit && +hit.size) || 0; }
 async function saveEverythingToDrive(){
   if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
   if(!State.photos.length) throw new Error("Catalogue vide : rien n'a été envoyé, votre CSV sur Drive reste intact. Chargez d'abord un catalogue (Charger depuis Drive) ou des images.");
@@ -16496,53 +16765,135 @@ async function saveEverythingToDrive(){
   const folderLabel = mediaFolder ? driveMediaFolderLabel() : "IMAGINES";
   const win = driveSaveWindow("Sauver sur Drive");
   try{
-    // 1) Plan : listing FRAIS du dossier, pour ne jamais créer de doublon.
+    // 1) Plan : listing FRAIS du dossier (images + vidéos), pour ne jamais créer de doublon.
     win.body.textContent = "Comparaison avec le dossier « " + folderLabel + " »…";
     driveMediaIndexPromise = null; driveMediaIndexFolder = "";
     const idx = await getDriveMediaIndex(folderId);
-    const toCreate = [], toUpdate = [];
-    State.photos.forEach(p=>{
-      if(p.corbeille || p.isVideo || !(p.hasFullImage || p.dataUrl)) return; // pas d'image locale (ligne du CSV seule), corbeille, vidéo : rien à envoyer
-      const hit = driveNameCandidates(p).map(k=>idx.get(k)).find(Boolean);
-      if(hit){ p.driveFileId = hit.id; if(p.driveDirty) toUpdate.push(p); } // déjà sur Drive (reconnue par son nom)
-      else toCreate.push(p);
-    });
-    // 2) Choix de l'utilisateur
-    let sendImages = false;
-    if(toCreate.length || toUpdate.length){
-      const mb = Math.round([...toCreate, ...toUpdate].reduce((s,p)=> s + (p.sizeBytes || (p.poids||0)*1024), 0) / 1048576);
-      const choice = await new Promise(resolve=>{
-        win.body.innerHTML = "";
-        const t = document.createElement("p"); t.style.cssText = "margin:0 0 12px; line-height:1.5;";
-        t.textContent = `Dossier Drive : « ${folderLabel} ». ${toCreate.length} image(s) nouvelle(s) et ${toUpdate.length} modifiée(s) à envoyer (≈ ${mb} Mo). Le catalogue .csv sera aussi mis à jour. Rien n'est supprimé sur Drive.`;
-        win.body.appendChild(t);
-        const bAll = driveSaveButton("Envoyer images + catalogue", true), bCsv = driveSaveButton("Catalogue seulement"), bNo = driveSaveButton("Annuler");
-        bAll.onclick = ()=> resolve("all"); bCsv.onclick = ()=> resolve("csv"); bNo.onclick = ()=> resolve(null);
-        [bAll, bCsv, bNo].forEach(b=> win.body.appendChild(b));
+    const buildPlan = ()=>{
+      const plan = {imgCreate:[], imgUpdate:[], vidCreate:[], vidFix:[], vidNoSource:[]};
+      State.photos.forEach(p=>{
+        if(p.corbeille) return;
+        const hit = driveNameCandidates(p).map(k=>idx.get(k)).find(Boolean); // déjà sur Drive (reconnue par son nom)
+        if(p.isVideo){
+          if(hit){
+            p.driveFileId = hit.id;
+            // métadonnées jamais écrites par Imago, ou modifiées depuis : à corriger (MP4/MOV uniquement)
+            if(MP4_META_EXT_RE.test(p.fileName || "") && videoMetaEntries(p).length && p.videoMetaSig !== videoMetaSig(p)) plan.vidFix.push({p, hit});
+          } else if(hasVideoSource(p)) plan.vidCreate.push({p});
+          else plan.vidNoSource.push(p);
+          return;
+        }
+        if(!(p.hasFullImage || p.dataUrl)) return; // ligne du CSV sans image locale : rien à envoyer
+        if(hit){ p.driveFileId = hit.id; if(p.driveDirty) plan.imgUpdate.push(p); }
+        else plan.imgCreate.push(p);
       });
-      if(!choice){ win.close(); return null; }
-      sendImages = choice === "all";
+      return plan;
+    };
+    let plan = buildPlan();
+    // 2) Choix de l'utilisateur (cases à cocher)
+    const sel = {img: true, vidNew: true, vidFix: false};
+    let sendMode = "csv";
+    if(plan.imgCreate.length || plan.imgUpdate.length || plan.vidCreate.length || plan.vidFix.length || plan.vidNoSource.length){
+      sendMode = await new Promise(resolve=>{
+        const mo = n => n < 1048576 ? "moins de 1 Mo" : "≈ " + Math.round(n / 1048576) + " Mo";
+        const para = text=>{ const t = document.createElement("p"); t.style.cssText = "margin:0 0 12px; line-height:1.5;"; t.textContent = text; return t; };
+        const row = (key, text)=>{
+          const lab = document.createElement("label"); lab.style.cssText = "display:flex; gap:8px; align-items:flex-start; margin:0 0 12px; line-height:1.4;";
+          const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = sel[key]; cb.onchange = ()=>{ sel[key] = cb.checked; };
+          const sp = document.createElement("span"); sp.textContent = text;
+          lab.appendChild(cb); lab.appendChild(sp); return lab;
+        };
+        const render = ()=>{
+          win.body.innerHTML = "";
+          win.body.appendChild(para(`Dossier Drive : « ${folderLabel} ». Le catalogue .csv sera aussi mis à jour. Rien n'est supprimé sur Drive.`));
+          if(plan.imgCreate.length || plan.imgUpdate.length){
+            const sz = [...plan.imgCreate, ...plan.imgUpdate].reduce((s,p)=> s + (p.sizeBytes || (p.poids||0)*1024), 0);
+            win.body.appendChild(row("img", `Images : ${plan.imgCreate.length} nouvelle(s), ${plan.imgUpdate.length} modifiée(s) — ${mo(sz)}`));
+          }
+          if(plan.vidCreate.length){
+            const sz = plan.vidCreate.reduce((s,x)=> s + videoSizeOf(x.p), 0);
+            win.body.appendChild(row("vidNew", `Vidéos nouvelles : ${plan.vidCreate.length} — ${mo(sz)}. Leurs métadonnées (titre, commentaires, auteur, date) sont écrites dans le fichier avant l'envoi (MP4, M4V, MOV).`));
+          }
+          if(plan.vidFix.length){
+            const sz = plan.vidFix.reduce((s,x)=> s + videoSizeOf(x.p, x.hit), 0);
+            win.body.appendChild(row("vidFix", `Vidéos déjà sur Drive à corriger : ${plan.vidFix.length} — ${mo(sz)}. Leurs métadonnées sont mises à jour puis le fichier est renvoyé (téléchargé depuis Drive s'il n'est pas sur cet appareil).`));
+          }
+          if(plan.vidNoSource.length){
+            win.body.appendChild(para(`${plan.vidNoSource.length} vidéo(s) du catalogue ne sont pas sur Drive et leur fichier n'est pas disponible sur cet appareil.`));
+            const pick = document.createElement("input"); pick.type = "file"; pick.multiple = true; pick.accept = "video/*,.mp4,.m4v,.mov,.avi,.mpg,.mpeg";
+            pick.onchange = ()=>{
+              for(const f of pick.files){
+                const q = plan.vidNoSource.find(p=> catalogLooseKey(p.fileName) === catalogLooseKey(f.name));
+                if(q) pendingVideoFiles.set(q.id, f);
+              }
+              plan = buildPlan(); render();
+            };
+            pick.style.display = "none"; win.body.appendChild(pick); // rattaché à la fenêtre (certains navigateurs mobiles l'exigent)
+            const bPick = driveSaveButton("Choisir les fichiers vidéo…"); bPick.onclick = ()=> pick.click();
+            win.body.appendChild(bPick);
+          }
+          const bAll = driveSaveButton("Envoyer la sélection + catalogue", true), bCsv = driveSaveButton("Catalogue seulement"), bNo = driveSaveButton("Annuler");
+          bAll.onclick = ()=> resolve("all"); bCsv.onclick = ()=> resolve("csv"); bNo.onclick = ()=> resolve(null);
+          [bAll, bCsv, bNo].forEach(b=> win.body.appendChild(b));
+        };
+        render();
+      });
+      if(!sendMode){ win.close(); return null; }
     }
-    // 3) Envoi des images (séquentiel, un échec n'arrête pas les autres ; Arrêter = on passe au catalogue)
-    let created = 0, updated = 0, stopped = false, sessionLost = false;
-    const failed = [];
-    if(sendImages){
-      const createSet = new Set(toCreate), work = [...toCreate, ...toUpdate];
+    // 3) Envoi (séquentiel ; un échec n'arrête pas les autres ; Arrêter = on passe au catalogue après le fichier en cours)
+    const done = {imgNew:0, imgUpd:0, vidNew:0, vidFix:0};
+    let stopped = false, sessionLost = false;
+    const failed = [], metaSkipped = [];
+    if(sendMode === "all"){
+      const work = [];
+      if(sel.img){ plan.imgCreate.forEach(p=> work.push({k:"imgNew", p})); plan.imgUpdate.forEach(p=> work.push({k:"imgUpd", p})); }
+      if(sel.vidNew) plan.vidCreate.forEach(x=> work.push({k:"vidNew", p:x.p}));
+      if(sel.vidFix) plan.vidFix.forEach(x=> work.push({k:"vidFix", p:x.p, hit:x.hit}));
       win.body.innerHTML = "";
-      const status = document.createElement("p"); status.style.cssText = "margin:0 0 12px;"; win.body.appendChild(status);
+      const status = document.createElement("p"); status.style.cssText = "margin:0 0 12px; line-height:1.5;"; win.body.appendChild(status);
       const bStop = driveSaveButton("Arrêter (le catalogue sera quand même sauvegardé)"); bStop.onclick = ()=>{ stopped = true; bStop.disabled = true; };
       win.body.appendChild(bStop);
       for(let i=0;i<work.length && !stopped;i++){
-        const p = work[i];
-        status.textContent = `Envoi des images… ${i+1} / ${work.length} — ${p.fileName}`;
+        const {k, p, hit} = work[i];
+        const head = `Envoi ${i+1} / ${work.length} — ${p.fileName}`;
+        status.textContent = head;
+        const progress = (a, b)=>{ status.textContent = `${head} — ${Math.round(a * 100 / b)} %`; };
         try{
-          if(createSet.has(p)){
+          if(k === "imgNew"){
             const existedBefore = !!p.driveFileId; // image déjà envoyée ailleurs (partage) : simplement rattachée au dossier
             const up = await ensurePhotoUploadedToDrive(p, folderId);
             p.driveFileId = up.id; p.driveWebViewLink = up.webViewLink || "";
             if(existedBefore && p.driveDirty) await updateDriveImageContent(p);
-            created++;
-          } else { await updateDriveImageContent(p); updated++; }
+            done.imgNew++;
+          } else if(k === "imgUpd"){ await updateDriveImageContent(p); done.imgUpd++; }
+          else if(k === "vidNew"){
+            const file = await getVideoSourceFile(p);
+            let toSend = file, wrote = false;
+            const entries = videoMetaEntries(p);
+            if(MP4_META_EXT_RE.test(p.fileName || "") && entries.length){
+              status.textContent = head + " — écriture des métadonnées…";
+              try{ const b = await writeMp4Metadata(file, entries); if(b){ toSend = new File([b], p.fileName, {type: b.type}); wrote = true; } }
+              catch(err){ metaSkipped.push(`${p.fileName} (${err.message})`); } // vidéo envoyée telle quelle plutôt que de ne pas l'envoyer
+            } else if(entries.length) metaSkipped.push(`${p.fileName} (format sans métadonnées prises en charge)`);
+            const up = await driveResumableUpload(toSend, {name: p.fileName, parentId: folderId, mimeType: videoMimeFor(p.fileName, file.type)}, progress);
+            p.driveFileId = up.id; p.driveWebViewLink = up.webViewLink || "";
+            if(wrote) p.videoMetaSig = videoMetaSig(p);
+            done.vidNew++;
+          } else if(k === "vidFix"){
+            let file;
+            if(hasVideoSource(p)) file = await getVideoSourceFile(p);
+            else{
+              status.textContent = head + " — téléchargement depuis Drive…";
+              file = new File([await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob()], p.fileName, {type: hit.mimeType || videoMimeFor(p.fileName)});
+            }
+            status.textContent = head + " — écriture des métadonnées…";
+            const b = await writeMp4Metadata(file, videoMetaEntries(p)); // lève une erreur si le fichier n'est pas pris en charge : rien n'est renvoyé
+            if(b){
+              await driveResumableUpload(new File([b], p.fileName, {type: b.type}), {existingId: hit.id, mimeType: videoMimeFor(p.fileName, file.type)}, progress);
+              p.driveFileId = hit.id; p.videoMetaSig = videoMetaSig(p);
+              done.vidFix++;
+            }
+          }
           p.driveDirty = false;
           try{ await idbPut("photos", p); }catch(e){ console.warn("Référence Drive non mémorisée pour " + p.fileName, e); }
         }catch(err){
@@ -16553,12 +16904,22 @@ async function saveEverythingToDrive(){
       }
     }
     // 4) Catalogue (toujours en dernier : il décrit l'état final)
-    if(sessionLost){ win.close(); throw new Error(`Votre session Drive a expiré après ${created+updated} image(s) envoyée(s). Reconnectez-vous puis relancez « Sauver sur Drive » : l'envoi reprendra là où il s'est arrêté. Catalogue non modifié sur Drive.`); }
+    const sentCount = done.imgNew + done.imgUpd + done.vidNew + done.vidFix;
+    if(sessionLost){ win.close(); throw new Error(`Votre session Drive a expiré après ${sentCount} fichier(s) envoyé(s). Reconnectez-vous puis relancez « Sauver sur Drive » : l'envoi reprendra là où il s'est arrêté. Catalogue non modifié sur Drive.`); }
     win.body.textContent = "Sauvegarde du catalogue…";
     await saveCsvToDrive(folderId);
     win.close();
     const parts = [];
-    if(sendImages) parts.push(`${created} image(s) envoyée(s), ${updated} mise(s) à jour`);
+    if(sendMode === "all"){
+      const bits = [];
+      if(done.imgNew) bits.push(`${done.imgNew} image(s)`);
+      if(done.vidNew) bits.push(`${done.vidNew} vidéo(s)`);
+      parts.push(bits.length ? `${bits.join(" et ")} envoyée(s)` : "aucun nouveau fichier envoyé");
+      if(done.imgUpd || done.vidFix) parts.push(`${done.imgUpd} image(s) et ${done.vidFix} vidéo(s) mises à jour`);
+    }
+    if(metaSkipped.length){ console.warn("Vidéos envoyées sans métadonnées :", metaSkipped); parts.push(`${metaSkipped.length} vidéo(s) envoyée(s) sans métadonnées (voir la console)`); }
+    const noSrc = plan.vidNoSource.length;
+    if(noSrc) parts.push(`${noSrc} vidéo(s) non envoyée(s) : fichier absent de cet appareil`);
     if(stopped) parts.push("envoi interrompu : relancez Sauver pour la suite");
     if(failed.length) parts.push(`${failed.length} échec(s) (voir la console)`);
     return {message: `« ${State.catalogFileName} » sauvegardé dans « ${folderLabel} »` + (parts.length ? " — " + parts.join(" ; ") : "") + ".", ok: !failed.length && !stopped};
