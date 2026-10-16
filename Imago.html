@@ -1772,6 +1772,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
           <button class="btn copper" id="faceAlbumBtn" type="button" title="Constitue la référence de chaque personnage à partir des photos listées dans Album-Favori.csv (lecture des fichiers ORIGINAUX, haute résolution)">📂 Apprendre depuis Album-Favori.csv…</button>
           <span class="drive-note" style="margin:0;">Choisissez le dossier racine de vos photos (celui qui contient « Album-Favori.csv » et les sous-dossiers par année).</span>
         </div>
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button class="btn" id="faceDriveSyncBtn" type="button" title="Fusionne les références de visages de cet appareil avec celles de Drive (dossier privé « Imago-Prive », hors IMAGINES) puis les y sauvegarde. Rien n'est supprimé.">☁ Synchroniser les références avec Drive</button>
+          <span class="drive-note" style="margin:0;">Partage vos visages appris entre vos appareils (PC, téléphone…). Le fichier est rangé dans « Imago-Prive », jamais partagé avec le partenaire.</span>
+        </div>
         <div style="margin-top:12px;">
           <label style="font-size:13px; cursor:pointer;"><input type="checkbox" id="faceAutoChk" checked> Reconnaître automatiquement les visages au référencement d'un dossier (en arrière-plan, après le chargement)</label>
           <div style="margin-top:6px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12px;">
@@ -10786,6 +10790,24 @@ function faceSpreadOrder(arr){
   for(let i = 0; i < n; i++) if(!seen.has(i)) out.push(arr[i]);
   return out;
 }
+/* Choix des références « par âge » : une année = une époque. On pioche à tour de rôle dans chaque année (les années elles-mêmes
+   étant prises dans un ordre étalé sur toute la période), et au sein d'une année on varie les prises de vue. Ainsi, même avec
+   peu de références, chaque époque est représentée, au lieu que l'année la plus riche en photos domine. Lignes sans date : en dernier. */
+function faceYearBalancedOrder(rows){
+  const byYear = new Map();
+  for(const r of rows){
+    const m = String(r.date || "").match(/^(\d{4})/), y = m ? m[1] : "????";
+    if(!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(r);
+  }
+  const queues = faceSpreadOrder([...byYear.keys()].sort()).map(y=> faceSpreadOrder(byYear.get(y)));
+  const out = [];
+  for(let k = 0, more = true; more; k++){
+    more = false;
+    for(const q of queues) if(k < q.length){ out.push(q[k]); more = true; }
+  }
+  return out;
+}
 function updateFaceIndexSummary(){
   const el = document.getElementById("faceIndexSummary"); if(!el) return;
   const persons = faceReferencePersons();
@@ -10895,7 +10917,7 @@ updateFaceIndexSummary();
    Apprentissage depuis Album-Favori.csv
    L'utilisateur désigne le dossier racine de ses photos (sous-dossiers par année). On lit Album-Favori.csv (colonnes fileName,
    sousDossier, personnage, dateAchat, rotation…), on ne retient que les lignes à UN seul personnage, on retrouve chaque fichier
-   ORIGINAL dans le dossier, et pour chaque personnage on garde les empreintes de quelques visages (photos étalées dans le temps).
+   ORIGINAL dans le dossier, et pour chaque personnage on garde les empreintes de quelques visages (photos réparties année par année, donc à différents âges).
    Résultat mémorisé (localStorage) : à ne refaire que si l'Album change. Rien n'est lu en dehors des fichiers retenus.
    --------------------------------------------------------------------- */
 const faceAlbumFolderInput = document.createElement("input");
@@ -10950,7 +10972,7 @@ async function learnFromAlbum(files){
     for(const g of groups.values()){
       const display = [...g.spell.entries()].sort((a,b)=> b[1] - a[1])[0][0]; // graphie la plus fréquente dans l'Album
       g.rows.sort((a,b)=> String(a.date||"9999").localeCompare(String(b.date||"9999")));
-      jobs.push({name: display, cands: faceSpreadOrder(g.rows)});
+      jobs.push({name: display, cands: faceYearBalancedOrder(g.rows)});
     }
     jobs.sort((a,b)=> b.cands.length - a.cands.length);
     let totalPlan = 0; for(const j of jobs) totalPlan += Math.min(j.cands.length, maxPer * 2);
@@ -10985,12 +11007,81 @@ async function learnFromAlbum(files){
     statusEl.textContent = (faceBuildAbort ? "Arrêté. " : "Terminé. ") + total + " ligne(s) dans l'Album, " + single + " à un seul personnage ; " + analysed + " photo(s) analysée(s), " +
       refsTotal + " visage(s) de référence pour " + jobs.length + " personnage(s)." + (missing ? " " + missing + " fichier(s) introuvable(s) dans ce dossier." : "") +
       (ok ? "" : " ⚠ Mémorisation impossible (stockage du navigateur plein).");
+    if(State.drive.token && ok){ // connecté : les références apprises sont aussitôt partagées avec vos autres appareils
+      try{ statusEl.textContent += " " + faceSyncMessage(await syncFaceRefsWithDrive()); }
+      catch(e){ statusEl.textContent += " (Drive : " + ((e && e.message) || e) + ")"; }
+    }
   }catch(err){
     statusEl.textContent = "Erreur : " + (err && err.message ? err.message : err);
   }finally{
     faceBuilding = false; faceRefVersion++; setFaceBuildUi(false); updateFaceIndexSummary();
   }
 }
+
+/* ---------------------------------------------------------------------
+   Références de visages : synchronisation avec Drive (partage entre appareils).
+   Fichier « Imago-Visages.json » dans le dossier « Imago-Prive » à la RACINE de Drive, volontairement HORS d'IMAGINES :
+   le partage « partenaire » donne accès à IMAGINES en entier, ces données (prénoms + empreintes) ne doivent pas en faire partie.
+   Fusion sans perte (union des deux côtés, rien n'est jamais supprimé), puis envoi du résultat. Seules les références
+   exploitables (empreinte de 128 valeurs + prénom) sont échangées.
+   --------------------------------------------------------------------- */
+const FACE_DRIVE_FOLDER = "Imago-Prive", FACE_DRIVE_FILE = "Imago-Visages.json";
+var faceDrivePullTried = false;
+async function ensureFacePrivateFolder(){
+  const q = encodeURIComponent(`name='${FACE_DRIVE_FOLDER}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false`);
+  const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=1`)).json();
+  if(j.files && j.files[0]) return j.files[0].id;
+  const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?fields=id`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: FACE_DRIVE_FOLDER, mimeType: "application/vnd.google-apps.folder"}) // sans « parents » : racine de Drive
+  });
+  return (await res.json()).id;
+}
+function faceRefIsUsable(r){
+  return !!r && typeof r.name === "string" && r.name.trim() && r.name.length <= 80 && Array.isArray(r.d) && r.d.length === 128 && r.d.every(Number.isFinite);
+}
+async function syncFaceRefsWithDrive({pullOnly = false} = {}){
+  if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
+  const folderId = await ensureFacePrivateFolder();
+  const q = encodeURIComponent(`'${folderId}' in parents and trashed=false and name='${FACE_DRIVE_FILE}'`);
+  const found = ((await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,modifiedTime)&pageSize=10`)).json()).files || [])
+    .sort((a,b)=> String(b.modifiedTime).localeCompare(String(a.modifiedTime)));
+  let added = 0, upgraded = 0;
+  for(const f of found){ // plusieurs fichiers du même nom (rare) : tous fusionnés, le plus récent est mis à jour
+    let o = null;
+    try{ o = JSON.parse(await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).text()); }catch(e){ o = null; }
+    if(!o || o.v !== 1 || !o.refs || typeof o.refs !== "object") throw new Error("le fichier « " + FACE_DRIVE_FILE + " » de Drive est illisible : rien n'a été modifié, ni sur Drive ni ici");
+    for(const [k, r] of Object.entries(o.refs)){
+      if(!faceRefIsUsable(r)) continue;
+      const l = FaceAlbum.refs[k];
+      if(!l){ FaceAlbum.refs[k] = {sig: String(r.sig || ""), name: r.name, d: r.d, n: r.n || 1}; added++; }
+      else if(!l.d){ FaceAlbum.refs[k] = {...l, name: l.name || r.name, d: r.d, n: r.n || 1}; upgraded++; }
+    }
+  }
+  if(added || upgraded){ saveFaceAlbum(); faceRefVersion++; updateFaceIndexSummary(); }
+  const refs = {};
+  for(const [k, r] of Object.entries(FaceAlbum.refs)) if(faceRefIsUsable(r)) refs[k] = r;
+  const total = Object.keys(refs).length;
+  let uploaded = false;
+  if(!pullOnly && total){
+    await uploadOrUpdateToDriveFolder({fileId: found[0] && found[0].id, name: FACE_DRIVE_FILE, mimeType: "application/json", folderId,
+      content: JSON.stringify({v: 1, app: "Imago", savedAt: new Date().toISOString(), refs})});
+    uploaded = true;
+  }
+  return {added, upgraded, uploaded, total};
+}
+function faceSyncMessage(r){
+  const got = r.added + r.upgraded;
+  return `☁ Drive : ${r.total} référence(s) au total` + (got ? `, dont ${got} récupérée(s) depuis Drive` : "") + (r.uploaded ? ", sauvegardées dans Drive › " + FACE_DRIVE_FOLDER + "." : ".");
+}
+document.getElementById("faceDriveSyncBtn").addEventListener("click", async ()=>{
+  if(faceBuilding) return;
+  const st = document.getElementById("faceBuildStatus"), btn = document.getElementById("faceDriveSyncBtn");
+  btn.disabled = true; st.textContent = "Synchronisation des références avec Drive…";
+  try{ st.textContent = faceSyncMessage(await syncFaceRefsWithDrive()); }
+  catch(err){ st.textContent = "Synchronisation impossible : " + ((err && err.message) || err); }
+  finally{ btn.disabled = false; }
+});
 
 /* ---------------------------------------------------------------------
    Passe automatique APRÈS le référencement d'un dossier : les photos qui viennent d'être importées SANS personnage sont analysées
@@ -11023,7 +11114,13 @@ function scheduleFaceAutoPass(){
 }
 async function faceAutoPass(){
   if(faceAutoRunning || faceBuilding) return;
-  const persons = faceReferencePersons(); if(!persons.size) return;
+  let persons = faceReferencePersons();
+  if(!persons.size && State.drive.token && !faceDrivePullTried){ // appareil sans référence : on reprend celles de Drive (une seule tentative par session)
+    faceDrivePullTried = true;
+    try{ await syncFaceRefsWithDrive({pullOnly: true}); }catch(e){ console.warn("Références de visages : récupération depuis Drive impossible.", e); }
+    persons = faceReferencePersons();
+  }
+  if(!persons.size) return;
   const cands = State.photos.slice(faceAutoStartIdx).filter(p=> !p.corbeille && !p.isVideo && p.hasFullImage && !String(p.personnage || "").trim());
   if(!cands.length) return;
   faceAutoRunning = true; faceAutoAbort = false; const run = ++faceAutoRun;
