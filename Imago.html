@@ -1769,8 +1769,8 @@ details.pave .btn{width:100%; margin-bottom:8px;}
           <button class="btn reset" id="faceClearBtn" type="button">Oublier les visages appris</button>
         </div>
         <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button class="btn copper" id="faceAlbumBtn" type="button" title="Constitue la référence de chaque personnage à partir des photos listées dans Album-Favori.csv (lecture des fichiers ORIGINAUX, haute résolution)">📂 Apprendre depuis Album-Favori.csv…</button>
-          <span class="drive-note" style="margin:0;">Choisissez le dossier racine de vos photos (celui qui contient « Album-Favori.csv » et les sous-dossiers par année).</span>
+          <button class="btn copper" id="faceAlbumBtn" type="button" title="Constitue la référence de chaque personnage à partir des photos listées dans Album-Favori.csv et, si vous les cochez, d'autres catalogues .csv (lecture des fichiers ORIGINAUX, haute résolution)">📂 Apprendre depuis Album-Favori.csv (et autres catalogues)…</button>
+          <span class="drive-note" style="margin:0;">Choisissez le dossier racine de vos photos (celui qui contient « Album-Favori.csv » et les sous-dossiers par année), puis cochez les catalogues .csv à utiliser. Les photos de groupe servent aussi, pour les personnes encore mal reconnues.</span>
         </div>
         <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <button class="btn" id="faceDriveSyncBtn" type="button" title="Fusionne les références de visages de cet appareil avec celles de Drive (dossier privé « Imago-Prive », hors IMAGINES) puis les y sauvegarde. Rien n'est supprimé.">☁ Synchroniser les références avec Drive</button>
@@ -10914,33 +10914,197 @@ document.getElementById("btnPersonnages").addEventListener("click", updateFaceIn
 updateFaceIndexSummary();
 
 /* ---------------------------------------------------------------------
-   Apprentissage depuis Album-Favori.csv
-   L'utilisateur désigne le dossier racine de ses photos (sous-dossiers par année). On lit Album-Favori.csv (colonnes fileName,
-   sousDossier, personnage, dateAchat, rotation…), on ne retient que les lignes à UN seul personnage, on retrouve chaque fichier
-   ORIGINAL dans le dossier, et pour chaque personnage on garde les empreintes de quelques visages (photos réparties année par année, donc à différents âges).
-   Résultat mémorisé (localStorage) : à ne refaire que si l'Album change. Rien n'est lu en dehors des fichiers retenus.
+   Apprentissage depuis les catalogues « Album-*.csv »
+   L'utilisateur désigne le dossier racine de ses photos (sous-dossiers par année) puis COCHE un ou plusieurs fichiers .csv
+   (Album-Favori.csv par défaut ; on peut en ajouter, y compris situés ailleurs). Colonnes lues : fileName, sousDossier,
+   personnage, dateAchat, rotation, corbeille. Chaque fichier ORIGINAL est retrouvé dans le dossier.
+   1) Photos à UN seul personnage (un seul visage détecté) : références directes, réparties année par année (différents âges).
+   2) Photos de GROUPE (2 à 4 personnages, autant de visages) : pour les personnes encore mal connues seulement.
+      a) par ÉLIMINATION : si tous sauf un sont déjà connus et que leur visage se distingue nettement, l'autre visage est le dernier ;
+      b) deux personnes toujours ensemble (jamais isolées) : on sépare leurs deux visages sur toutes leurs photos communes, puis
+         l'utilisateur confirme UNE fois « qui est qui » devant des vignettes. Aucune attribution douteuse n'est mémorisée.
+   Résultat mémorisé (localStorage) : à ne refaire que si les catalogues changent. Rien n'est lu en dehors des fichiers retenus.
    --------------------------------------------------------------------- */
 const faceAlbumFolderInput = document.createElement("input");
 faceAlbumFolderInput.type = "file"; faceAlbumFolderInput.multiple = true; faceAlbumFolderInput.webkitdirectory = true; faceAlbumFolderInput.className = "hidden";
 document.body.appendChild(faceAlbumFolderInput);
 document.getElementById("faceAlbumBtn").addEventListener("click", ()=>{ if(!faceBuilding) faceAlbumFolderInput.click(); });
 faceAlbumFolderInput.addEventListener("change", ()=>{ const fl = Array.from(faceAlbumFolderInput.files || []); faceAlbumFolderInput.value = ""; if(fl.length) learnFromAlbum(fl); });
+
+const FACE_ELIM_MARGIN = 0.10;   // écart minimal entre la meilleure attribution et la suivante
+const FACE_REF_KEY_SEP = "\u00A7"; // « chemin§prénom » : une photo de groupe donne une référence par personne
+function faceMinDist(desc, arr){ let b = Infinity; for(const r of arr){ const d = faceDistance(desc, r); if(d < b) b = d; } return b; }
+/* Toutes les suites de k visages distincts parmi n (k ≤ 3, n ≤ 4 : au plus 24). */
+function faceAssignments(n, k){
+  const out = [], cur = [], used = Array(n).fill(false);
+  (function rec(){
+    if(cur.length === k){ out.push(cur.slice()); return; }
+    for(let i = 0; i < n; i++){ if(used[i]) continue; used[i] = true; cur.push(i); rec(); cur.pop(); used[i] = false; }
+  })();
+  return out;
+}
+/* n visages, n-1 personnes connues : à quel visage correspond chacune ? Renvoie l'indice du visage restant (= la personne inconnue),
+   ou null si une attribution n'est pas NETTEMENT meilleure que les autres (jumeaux, visages flous…). */
+function faceEliminate(descs, knownKeys, knownMap, maxDist){
+  const n = descs.length, k = knownKeys.length;
+  if(n < 2 || k !== n - 1) return null;
+  let best = null, second = Infinity;
+  for(const asg of faceAssignments(n, k)){
+    let cost = 0, ok = true;
+    for(let j = 0; j < k; j++){
+      const d = faceMinDist(descs[asg[j]], knownMap.get(knownKeys[j]));
+      if(d > maxDist){ ok = false; break; }
+      cost += d;
+    }
+    if(!ok) continue;
+    if(!best || cost < best.cost){ if(best) second = Math.min(second, best.cost); best = {asg, cost}; }
+    else if(cost < second) second = cost;
+  }
+  if(!best || (second - best.cost) < FACE_ELIM_MARGIN) return null;
+  for(let i = 0; i < n; i++) if(!best.asg.includes(i)) return {leftover: i};
+  return null;
+}
+/* Deux personnes toujours ensemble : sépare leurs deux visages sur chaque photo commune (photos prises dans l'ordre du temps,
+   comparaison au plus proche voisin pour suivre le vieillissement). rows[i] = [descripteur, descripteur].
+   Renvoie [{i, x, y}] : sur la photo i, le visage x est celui du cluster ①, le visage y celui du cluster ②. Photos ambiguës écartées. */
+function faceClusterPair(rows, margin){
+  if(!rows.length) return [];
+  const X = [rows[0][0]], Y = [rows[0][1]], out = [{i: 0, x: 0, y: 1}];
+  for(let i = 1; i < rows.length; i++){
+    const [a, b] = rows[i];
+    const c1 = faceMinDist(a, X) + faceMinDist(b, Y), c2 = faceMinDist(b, X) + faceMinDist(a, Y);
+    if(Math.abs(c1 - c2) < margin) continue;
+    if(c1 < c2){ X.push(a); Y.push(b); out.push({i, x: 0, y: 1}); }
+    else { X.push(b); Y.push(a); out.push({i, x: 1, y: 0}); }
+  }
+  return out;
+}
+/* Vignette carrée autour d'un visage (box normalisée 0..1). */
+function faceCropDataUrl(canvas, box){
+  const W = canvas.width, H = canvas.height;
+  const side = Math.max(box.w * W, box.h * H) * 1.6, cx = (box.x + box.w / 2) * W, cy = (box.y + box.h / 2) * H;
+  const x = Math.max(0, Math.min(W - 1, cx - side / 2)), y = Math.max(0, Math.min(H - 1, cy - side / 2));
+  const s = Math.max(8, Math.min(side, W - x, H - y));
+  const out = document.createElement("canvas"); out.width = out.height = 96;
+  out.getContext("2d").drawImage(canvas, x, y, s, s, 0, 0, 96, 96);
+  return out.toDataURL("image/jpeg", 0.8);
+}
+function faceModal(title){
+  const ov = document.createElement("div"); ov.className = "modal-overlay show";
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h2></h2></div><div class="modal-body"></div></div>';
+  ov.querySelector("h2").textContent = title;
+  document.body.appendChild(ov);
+  return {body: ov.querySelector(".modal-body"), close: ()=> ov.remove()};
+}
+function faceModalButton(label, primary){
+  const b = document.createElement("button"); b.className = "btn" + (primary ? " copper" : "");
+  b.style.cssText = "width:100%; margin-bottom:6px;"; b.textContent = label; return b;
+}
+/* Fenêtre : quels fichiers .csv utiliser ? (cases à cocher + ajout d'un .csv situé ailleurs). Renvoie les File cochés ou null. */
+function faceChooseCsvs(found){
+  return new Promise(resolve=>{
+    const win = faceModal("Apprendre les visages : quels catalogues ?");
+    const items = [...found].sort((a,b)=> (/^album-/i.test(b.name) - /^album-/i.test(a.name)) || a.name.localeCompare(b.name, "fr"));
+    const favs = items.filter(f=> /^Album-Favori.*\.csv$/i.test(f.name)).sort((a,b)=> b.lastModified - a.lastModified);
+    const checked = new Set(favs.length ? [favs[0]] : []);
+    const extra = document.createElement("input"); extra.type = "file"; extra.accept = ".csv"; extra.multiple = true; extra.style.display = "none";
+    const render = ()=>{
+      win.body.innerHTML = "";
+      const p = document.createElement("p"); p.style.cssText = "margin:0 0 12px; line-height:1.5;";
+      p.textContent = "Cochez les catalogues dont les photos serviront à apprendre les visages (plus il y en a, plus les personnes souvent photographiées ensemble ont de chances d'être reconnues). Seules les colonnes fileName et personnage sont indispensables.";
+      win.body.appendChild(p);
+      if(!items.length){ const n = document.createElement("p"); n.textContent = "Aucun fichier .csv dans le dossier choisi : ajoutez-en un ci-dessous."; win.body.appendChild(n); }
+      items.slice(0, 40).forEach(f=>{
+        const lab = document.createElement("label"); lab.style.cssText = "display:flex; gap:8px; align-items:flex-start; margin:0 0 8px; line-height:1.35;";
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = checked.has(f);
+        cb.onchange = ()=>{ if(cb.checked) checked.add(f); else checked.delete(f); };
+        const sp = document.createElement("span");
+        sp.textContent = (f.webkitRelativePath || f.name) + " — " + new Date(f.lastModified).toLocaleDateString("fr-FR") + ", " + Math.max(1, Math.round(f.size / 1024)) + " Ko";
+        lab.appendChild(cb); lab.appendChild(sp); win.body.appendChild(lab);
+      });
+      if(items.length > 40){ const m = document.createElement("p"); m.textContent = "… et " + (items.length - 40) + " autre(s) fichier(s) .csv non listé(s)."; win.body.appendChild(m); }
+      win.body.appendChild(extra);
+      const bAdd = faceModalButton("＋ Ajouter un fichier .csv situé ailleurs…"); bAdd.onclick = ()=> extra.click();
+      const bGo = faceModalButton("Apprendre depuis la sélection", true), bNo = faceModalButton("Annuler");
+      bGo.onclick = ()=>{ win.close(); resolve([...checked]); };
+      bNo.onclick = ()=>{ win.close(); resolve(null); };
+      [bAdd, bGo, bNo].forEach(b=> win.body.appendChild(b));
+    };
+    extra.onchange = ()=>{ for(const f of extra.files){ items.unshift(f); checked.add(f); } extra.value = ""; render(); };
+    render();
+  });
+}
+/* Fenêtre : deux personnes toujours ensemble — « qui est qui ? ». Renvoie "12" (① = A, ② = B), "21" (① = B, ② = A) ou null (passer). */
+function faceAskWhoIsWho({nameA, nameB, crops1, crops2, count}){
+  return new Promise(resolve=>{
+    const win = faceModal("Qui est qui ?");
+    const p = document.createElement("p"); p.style.cssText = "margin:0 0 12px; line-height:1.5;";
+    p.textContent = `« ${nameA} » et « ${nameB} » apparaissent ensemble sur ${count} photo(s) et jamais seuls : je distingue bien deux visages différents, mais je ne peux pas savoir lequel est lequel. Vérifiez que chaque colonne montre toujours la même personne, puis dites-moi qui est qui.`;
+    win.body.appendChild(p);
+    const strip = (label, crops)=>{
+      const col = document.createElement("div"); col.style.cssText = "margin-bottom:12px;";
+      const t = document.createElement("div"); t.style.cssText = "font-weight:600; margin-bottom:4px;"; t.textContent = label; col.appendChild(t);
+      const row = document.createElement("div"); row.style.cssText = "display:flex; gap:6px; flex-wrap:wrap;";
+      crops.forEach(src=>{ const im = document.createElement("img"); im.src = src; im.style.cssText = "width:72px; height:72px; object-fit:cover; border-radius:6px;"; row.appendChild(im); });
+      col.appendChild(row); return col;
+    };
+    win.body.appendChild(strip("① Première personne", crops1));
+    win.body.appendChild(strip("② Seconde personne", crops2));
+    const b1 = faceModalButton(`① est ${nameA}, ② est ${nameB}`, true), b2 = faceModalButton(`① est ${nameB}, ② est ${nameA}`), b3 = faceModalButton("Passer (ne rien mémoriser)");
+    b1.onclick = ()=>{ win.close(); resolve("12"); }; b2.onclick = ()=>{ win.close(); resolve("21"); }; b3.onclick = ()=>{ win.close(); resolve(null); };
+    [b1, b2, b3].forEach(b=> win.body.appendChild(b));
+  });
+}
+/* Lit un catalogue : lignes {fileName, sub, date, rot, toks} ; lève une Error si les colonnes indispensables manquent. */
+async function faceReadAlbumCsv(file){
+  const text = (await file.text()).replace(/^\uFEFF/, "");
+  const lines = text.split(/\r?\n/).filter(l=> l.trim());
+  if(lines.length < 2) throw new Error("fichier vide");
+  const delim = (lines[0].split(";").length >= lines[0].split(",").length) ? ";" : ",";
+  const header = parseCsvLine(lines[0], delim).map(h=> h.trim());
+  const ix = n=> header.indexOf(n);
+  const iName = ix("fileName"), iSub = ix("sousDossier"), iPers = ix("personnage"), iDate = ix("dateAchat"), iRot = ix("rotation"), iTrash = ix("corbeille");
+  if(iName < 0 || iPers < 0) throw new Error("colonnes « fileName » et « personnage » introuvables");
+  const rows = []; let total = 0;
+  for(let i = 1; i < lines.length; i++){
+    const c = parseCsvLine(lines[i], delim); total++;
+    if(iTrash >= 0 && String(c[iTrash] || "").trim() === "true") continue;
+    rows.push({fileName: c[iName], sub: iSub >= 0 ? (c[iSub] || "") : "", date: iDate >= 0 ? (c[iDate] || "") : "",
+               rot: iRot >= 0 ? (Number(c[iRot]) || 0) : 0, toks: personnageTokens(c[iPers] || "")});
+  }
+  return {rows, total};
+}
 async function learnFromAlbum(files){
   if(faceBuilding) return;
   faceBuilding = true; faceBuildAbort = false;
   const statusEl = document.getElementById("faceBuildStatus"), prog = document.getElementById("faceProgress");
   try{
     setFaceBuildUi(true);
-    const csvs = files.filter(f=> /^Album-Favori.*\.csv$/i.test(f.name)).sort((a,b)=> b.lastModified - a.lastModified);
-    if(!csvs.length) throw new Error("Aucun fichier « Album-Favori.csv » dans ce dossier : choisissez le dossier racine de vos photos (celui qui contient aussi les sous-dossiers par année).");
-    statusEl.textContent = "Lecture de « " + csvs[0].name + " »…";
-    const text = (await csvs[0].text()).replace(/^\uFEFF/, "");
-    const rowsText = text.split(/\r?\n/).filter(l=> l.trim());
-    const delim = (rowsText[0].split(";").length >= rowsText[0].split(",").length) ? ";" : ",";
-    const header = parseCsvLine(rowsText[0], delim).map(h=> h.trim());
-    const ix = n=> header.indexOf(n);
-    const iName = ix("fileName"), iSub = ix("sousDossier"), iPers = ix("personnage"), iDate = ix("dateAchat"), iRot = ix("rotation"), iTrash = ix("corbeille");
-    if(iName < 0 || iPers < 0) throw new Error("Colonnes « fileName » et « personnage » introuvables dans « " + csvs[0].name + " ».");
+    // 1) Catalogues choisis par l'utilisateur
+    const chosen = await faceChooseCsvs(files.filter(f=> /\.csv$/i.test(f.name)));
+    if(!chosen || !chosen.length){ statusEl.textContent = chosen ? "Aucun catalogue coché : rien à apprendre." : "Apprentissage annulé."; return; }
+    const spell = new Map();   // clé du prénom -> (graphie -> nombre)
+    const singles = new Map(); // clé -> lignes à un seul personnage
+    const multi = [];          // lignes de groupe (2 à 4 personnes différentes)
+    const seen = new Set(), skippedCsv = [];
+    let total = 0, singleCount = 0;
+    for(const f of chosen){
+      statusEl.textContent = "Lecture de « " + f.name + " »…";
+      let parsed;
+      try{ parsed = await faceReadAlbumCsv(f); }catch(e){ skippedCsv.push(f.name + " (" + e.message + ")"); continue; }
+      total += parsed.total;
+      for(const r of parsed.rows){
+        const pkey = ((r.sub ? r.sub + "/" : "") + r.fileName).toLowerCase();
+        if(seen.has(pkey)) continue; seen.add(pkey); // même photo présente dans plusieurs catalogues : comptée une fois
+        const keys = [];
+        for(const t of r.toks){ const k = faceNameKey(t); if(!k) continue; if(!spell.has(k)) spell.set(k, new Map()); spell.get(k).set(t, (spell.get(k).get(t) || 0) + 1); if(!keys.includes(k)) keys.push(k); }
+        const row = {fileName: r.fileName, sub: r.sub, date: r.date, rot: r.rot, keys};
+        if(keys.length === 1){ singleCount++; if(!singles.has(keys[0])) singles.set(keys[0], []); singles.get(keys[0]).push(row); }
+        else if(keys.length >= 2 && keys.length <= 4) multi.push(row);
+      }
+    }
+    if(!singles.size && !multi.length) throw new Error("Aucune ligne exploitable (1 à 4 personnages) dans les catalogues choisis." + (skippedCsv.length ? " Ignorés : " + skippedCsv.join(" ; ") + "." : ""));
+    const displayOf = key=> [...spell.get(key).entries()].sort((a,b)=> b[1] - a[1])[0][0]; // graphie la plus fréquente
     // Fichiers images du dossier, indexés par nom (insensible à la casse)
     const byName = new Map();
     for(const f of files){
@@ -10954,37 +11118,25 @@ async function learnFromAlbum(files){
       const want = ("/" + (sub ? String(sub).replace(/\\/g, "/") + "/" : "") + name).toLowerCase();
       return arr.find(f=> ("/" + (f.webkitRelativePath || f.name)).toLowerCase().endsWith(want)) || null;
     };
-    // Lignes à UN seul personnage, regroupées par prénom normalisé
-    const groups = new Map(); let single = 0, total = 0;
-    for(let i = 1; i < rowsText.length; i++){
-      const c = parseCsvLine(rowsText[i], delim); total++;
-      if(iTrash >= 0 && String(c[iTrash]||"").trim() === "true") continue;
-      const toks = personnageTokens(c[iPers] || ""); if(toks.length !== 1) continue;
-      const key = faceNameKey(toks[0]); if(!key) continue; single++;
-      let g = groups.get(key); if(!g){ g = {spell:new Map(), rows:[]}; groups.set(key, g); }
-      g.spell.set(toks[0], (g.spell.get(toks[0]) || 0) + 1);
-      g.rows.push({fileName:c[iName], sub: iSub >= 0 ? (c[iSub]||"") : "", date: iDate >= 0 ? (c[iDate]||"") : "", rot: iRot >= 0 ? (Number(c[iRot]) || 0) : 0});
-    }
-    if(!groups.size) throw new Error("Aucune ligne de « " + csvs[0].name + " » n'a exactement un personnage : rien à apprendre.");
     await loadFaceEngine(msg=>{ statusEl.textContent = msg; });
     const maxPer = Math.max(2, Math.min(40, parseInt(document.getElementById("faceMaxPerPerson").value, 10) || 8));
+    const albumPaths = new Set(); let done = 0, analysed = 0, refsTotal = 0, missing = 0;
+    // 2) Photos à un seul personnage : références directes
     const jobs = [];
-    for(const g of groups.values()){
-      const display = [...g.spell.entries()].sort((a,b)=> b[1] - a[1])[0][0]; // graphie la plus fréquente dans l'Album
-      g.rows.sort((a,b)=> String(a.date||"9999").localeCompare(String(b.date||"9999")));
-      jobs.push({name: display, cands: faceYearBalancedOrder(g.rows)});
+    for(const [key, rows] of singles){
+      rows.sort((a,b)=> String(a.date||"9999").localeCompare(String(b.date||"9999")));
+      jobs.push({name: displayOf(key), cands: faceYearBalancedOrder(rows)});
     }
     jobs.sort((a,b)=> b.cands.length - a.cands.length);
     let totalPlan = 0; for(const j of jobs) totalPlan += Math.min(j.cands.length, maxPer * 2);
     prog.max = Math.max(1, totalPlan); prog.value = 0;
-    const albumPaths = new Set(); let done = 0, analysed = 0, refsTotal = 0, missing = 0;
     for(const job of jobs){
       let refs = 0;
       for(const row of job.cands){
         const path = (row.sub ? row.sub + "/" : "") + row.fileName; albumPaths.add(path.toLowerCase());
-        if(faceBuildAbort || refs >= maxPer) continue; // on continue la boucle seulement pour recenser les chemins de l'Album
+        if(faceBuildAbort || refs >= maxPer) continue; // on continue la boucle seulement pour recenser les chemins
         done++; prog.value = Math.min(done, totalPlan);
-        statusEl.textContent = "Album : " + job.name + " — " + refs + "/" + maxPer + " références (" + done + "/" + totalPlan + ")" + (FACE_ENGINE.backend === "cpu" ? " — moteur lent (CPU)" : "");
+        statusEl.textContent = "Photos individuelles : " + job.name + " — " + refs + "/" + maxPer + " références (" + done + "/" + totalPlan + ")" + (FACE_ENGINE.backend === "cpu" ? " — moteur lent (CPU)" : "");
         const f = findFile(row.fileName, row.sub);
         if(!f){ missing++; continue; }
         const sig = f.size + "|" + f.lastModified, key = path.toLowerCase(), old = FaceAlbum.refs[key];
@@ -11002,10 +11154,110 @@ async function learnFromAlbum(files){
       }
       refsTotal += refs;
     }
-    if(!faceBuildAbort) for(const k of Object.keys(FaceAlbum.refs)) if(!albumPaths.has(k)) delete FaceAlbum.refs[k]; // lignes retirées de l'Album
+    // 3) Photos de groupe : seulement pour les personnes encore mal connues (moins de 2 références)
+    const refMap = ()=>{ const m = new Map(); for(const k in FaceAlbum.refs){ const r = FaceAlbum.refs[k]; if(r && r.d && r.name){ const kk = faceNameKey(r.name); if(!m.has(kk)) m.set(kk, []); m.get(kk).push(r.d); } } return m; };
+    const groupStats = {candidates: 0, analysed: 0, byElimination: 0, byConfirmation: 0, pairsAsked: 0, pairsSkipped: 0, unresolved: 0};
+    for(const r of multi) albumPaths.add(((r.sub ? r.sub + "/" : "") + r.fileName).toLowerCase());
+    if(!faceBuildAbort && multi.length){
+      let known = refMap();
+      // « ancre » : au moins 2 références (assez pour distinguer son visage dans un groupe) ; on continue ensuite d'enrichir
+      // chaque personne jusqu'à WANT références (plusieurs époques) sans dépasser maxPer, pour borner le temps d'analyse.
+      const WANT = Math.min(maxPer, 6);
+      const isWeak = k=> (known.get(k) || []).length < 2;
+      const needsMore = k=> (known.get(k) || []).length < WANT;
+      const byWeak = new Map();
+      for(const r of multi) for(const k of r.keys) if(needsMore(k)){ if(!byWeak.has(k)) byWeak.set(k, []); byWeak.get(k).push(r); }
+      const pick = new Set();
+      for(const rows of byWeak.values()){
+        rows.sort((a,b)=> String(a.date||"9999").localeCompare(String(b.date||"9999")));
+        faceYearBalancedOrder(rows).slice(0, maxPer * 2).forEach(r=> pick.add(r));
+      }
+      const cand = [...pick].slice(0, 400);
+      groupStats.candidates = cand.length;
+      const ready = [];
+      prog.max = Math.max(1, cand.length); prog.value = 0;
+      for(let i = 0; i < cand.length && !faceBuildAbort; i++){
+        const row = cand[i], path = ((row.sub ? row.sub + "/" : "") + row.fileName).toLowerCase();
+        prog.value = i + 1;
+        statusEl.textContent = "Photos de groupe : analyse " + (i+1) + "/" + cand.length + " (" + row.keys.map(displayOf).join(" + ") + ")";
+        const f = findFile(row.fileName, row.sub);
+        if(!f){ missing++; continue; }
+        const fsig = f.size + "|" + f.lastModified, marker = path + FACE_REF_KEY_SEP + "?";
+        if(row.keys.every(k=> FaceAlbum.refs[path + FACE_REF_KEY_SEP + k] && FaceAlbum.refs[path + FACE_REF_KEY_SEP + k].sig === fsig)) continue; // déjà appris
+        if(FaceAlbum.refs[marker] && FaceAlbum.refs[marker].sig === fsig + "|" + row.keys.length) continue;                                       // déjà vue : visages ≠ personnes
+        try{
+          const canvas = await faceCanvasFromFile(f, row.rot, FACE_ALBUM_SIDE);
+          const faces = await detectFacesInCanvas(canvas); groupStats.analysed++;
+          if(faces.length !== row.keys.length || faces.some(x=> x.px.h < FACE_REF_MIN_PX)){
+            FaceAlbum.refs[marker] = {sig: fsig + "|" + row.keys.length, name: "", d: null, n: faces.length}; continue;
+          }
+          faces.forEach(x=>{ x.crop = faceCropDataUrl(canvas, x.box); });
+          ready.push({row, path, fsig, faces});
+        }catch(e){ console.warn("Album (groupe) : échec sur " + path, e); }
+        await faceSleep(0);
+      }
+      const count = k=> (known.get(k) || []).length;
+      const markSeen = a=>{ FaceAlbum.refs[a.path + FACE_REF_KEY_SEP + "?"] = {sig: a.fsig + "|" + a.row.keys.length, name: "", d: null, n: a.faces.length}; };
+      const addRef = (a, key, face)=>{
+        const rk = a.path + FACE_REF_KEY_SEP + key, d = face.descriptor.map(v=> Math.round(v*1000)/1000);
+        FaceAlbum.refs[rk] = {sig: a.fsig, name: displayOf(key), d, n: a.faces.length};
+        if(!known.has(key)) known.set(key, []); known.get(key).push(d);
+      };
+      // 3a) Élimination : toutes les personnes sauf une sont connues
+      const pending = new Set(ready);
+      for(let pass = 0, progress = true; progress && pass < 4 && !faceBuildAbort; pass++){
+        progress = false;
+        for(const a of [...pending]){
+          const weakKeys = a.row.keys.filter(isWeak);                // personnes sans ancre (moins de 2 références)
+          if(weakKeys.length > 1) continue;                          // plusieurs inconnues : voir 3b
+          // cible = l'unique inconnue ; si tout le monde est déjà ancré, la personne la moins bien fournie (si elle en veut encore)
+          const target = weakKeys.length === 1 ? weakKeys[0] : a.row.keys.filter(needsMore).sort((p,q)=> count(p) - count(q))[0];
+          if(!target || !needsMore(target)){ pending.delete(a); continue; } // rien à apprendre ici
+          const knownKeys = a.row.keys.filter(k=> k !== target);
+          const res = faceEliminate(a.faces.map(x=> x.descriptor), knownKeys, known, faceThresholds().maybe);
+          if(!res) continue;
+          addRef(a, target, a.faces[res.leftover]);
+          markSeen(a); // photo traitée : inutile de la ré-analyser à la prochaine exécution
+          pending.delete(a); progress = true; groupStats.byElimination++;
+        }
+      }
+      // 3b) Deux personnes toujours ensemble : séparation des visages puis confirmation « qui est qui »
+      const pairs = new Map();
+      for(const a of pending){
+        if(a.row.keys.length !== 2 || !a.row.keys.every(isWeak)) continue;
+        const id = [...a.row.keys].sort().join(FACE_REF_KEY_SEP);
+        if(!pairs.has(id)) pairs.set(id, []); pairs.get(id).push(a);
+      }
+      for(const [id, arr] of pairs){
+        if(faceBuildAbort) break;
+        if(arr.length < 3){ groupStats.pairsSkipped++; continue; } // trop peu de photos pour être sûr
+        arr.sort((a,b)=> String(a.row.date||"9999").localeCompare(String(b.row.date||"9999")));
+        const asg = faceClusterPair(arr.map(a=> a.faces.map(x=> x.descriptor)), FACE_ELIM_MARGIN);
+        if(asg.length < 3){ groupStats.pairsSkipped++; continue; }
+        const [kA, kB] = id.split(FACE_REF_KEY_SEP);
+        const spread = (side)=>{ const n = asg.length, take = Math.min(4, n), out = []; for(let j = 0; j < take; j++){ const x = asg[Math.floor(j * (n - 1) / Math.max(1, take - 1))]; out.push(arr[x.i].faces[x[side]].crop); } return out; };
+        groupStats.pairsAsked++;
+        const answer = await faceAskWhoIsWho({nameA: displayOf(kA), nameB: displayOf(kB), crops1: spread("x"), crops2: spread("y"), count: asg.length});
+        if(!answer){ groupStats.pairsSkipped++; arr.forEach(markSeen); continue; } // « Passer » : on ne repose pas la question à chaque exécution (« Oublier les visages appris » la réactive)
+        const forX = answer === "12" ? kA : kB, forY = answer === "12" ? kB : kA;
+        for(const [key, side] of [[forX, "x"], [forY, "y"]]){
+          const items = asg.map(x=> ({date: arr[x.i].row.date, a: arr[x.i], face: arr[x.i].faces[x[side]]}));
+          for(const it of faceYearBalancedOrder(items)){
+            if(count(key) >= maxPer) break;
+            addRef(it.a, key, it.face); groupStats.byConfirmation++;
+          }
+        }
+        for(const x of asg) pending.delete(arr[x.i]);
+      }
+      groupStats.unresolved = pending.size;
+    }
+    if(!faceBuildAbort) for(const k of Object.keys(FaceAlbum.refs)) if(!albumPaths.has(k.split(FACE_REF_KEY_SEP)[0])) delete FaceAlbum.refs[k]; // lignes retirées des catalogues
     const ok = saveFaceAlbum();
-    statusEl.textContent = (faceBuildAbort ? "Arrêté. " : "Terminé. ") + total + " ligne(s) dans l'Album, " + single + " à un seul personnage ; " + analysed + " photo(s) analysée(s), " +
-      refsTotal + " visage(s) de référence pour " + jobs.length + " personnage(s)." + (missing ? " " + missing + " fichier(s) introuvable(s) dans ce dossier." : "") +
+    statusEl.textContent = (faceBuildAbort ? "Arrêté. " : "Terminé. ") + chosen.length + " catalogue(s), " + total + " ligne(s) : " + singleCount + " à un seul personnage, " + multi.length + " de groupe ; " +
+      analysed + " photo(s) individuelle(s) analysée(s), " + refsTotal + " visage(s) de référence pour " + jobs.length + " personnage(s)." +
+      (multi.length ? " Photos de groupe : " + groupStats.analysed + " analysée(s), " + groupStats.byElimination + " référence(s) par élimination, " + groupStats.byConfirmation + " après votre confirmation" +
+        (groupStats.pairsSkipped ? ", " + groupStats.pairsSkipped + " duo(s) ignoré(s)" : "") + (groupStats.unresolved ? ", " + groupStats.unresolved + " photo(s) non exploitable(s)" : "") + "." : "") +
+      (missing ? " " + missing + " fichier(s) introuvable(s) dans ce dossier." : "") + (skippedCsv.length ? " Catalogue(s) ignoré(s) : " + skippedCsv.join(" ; ") + "." : "") +
       (ok ? "" : " ⚠ Mémorisation impossible (stockage du navigateur plein).");
     if(State.drive.token && ok){ // connecté : les références apprises sont aussitôt partagées avec vos autres appareils
       try{ statusEl.textContent += " " + faceSyncMessage(await syncFaceRefsWithDrive()); }
