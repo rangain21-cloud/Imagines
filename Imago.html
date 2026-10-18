@@ -1792,6 +1792,11 @@ details.pave .btn{width:100%; margin-bottom:8px;}
             <input type="number" id="faceProbMax" min="0.30" max="0.70" step="0.01" value="0.51" style="width:70px;">
             <span>(plus petit = plus sévère ; au-delà, le nom est seulement proposé en un clic)</span>
           </div>
+          <div style="margin-top:6px; font-size:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span id="faceInfoFromNote">Point de départ : la première image ouverte dans « Infos ».</span>
+            <button class="btn" id="faceInfoFromBtn" type="button" title="Fixe le point de départ sur l'image actuellement affichée">↦ Repartir de l'image en cours</button>
+          </div>
+          <div class="drive-note" style="margin:6px 0 0;">Seules les images situées à partir du point de départ (dans l'ordre d'affichage), pas encore validées et sans personnage déjà indiqué, sont complétées automatiquement. Les autres ne sont jamais modifiées ; leurs propositions restent disponibles en un clic. Les vidéos ne sont pas analysées.</div>
         </div>
         <progress id="faceProgress" value="0" max="1" class="hidden" style="width:100%; margin-top:8px;"></progress>
         <p class="drive-note" id="faceBuildStatus"></p>
@@ -8568,6 +8573,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         etiquette: existingRow.etiquette || "",
         auteur: existingRow.auteur || "Philippe",
         favori: existingRow.favori === "true",
+        visagesValides: existingRow.visagesValides === "true" ? true : undefined, // validé dans « Infos » (voir infoFaceEligibility)
         art: existingRow.art === "true",
         concert: existingRow.concert === "true",
         histoire: existingRow.histoire === "true",
@@ -8883,6 +8889,7 @@ function buildOrphanRecordFromCsvRow(row, fileName){
     etiquette: row.etiquette || "",
     auteur: row.auteur || "Philippe",
     favori: row.favori === "true",
+    visagesValides: row.visagesValides === "true" ? true : undefined,
     art: row.art === "true",
     concert: row.concert === "true",
     histoire: row.histoire === "true",
@@ -11353,7 +11360,9 @@ function saveFaceOpts(){ try{ localStorage.setItem(FACE_OPTS_KEY, JSON.stringify
   chk.checked = !!faceOpts.auto; wr.value = faceOpts.write; sz.value = String(faceOpts.size);
   const ic = document.getElementById("faceInfoChk"), pm = document.getElementById("faceProbMax");
   ic.checked = !!faceOpts.info; pm.value = String(faceOpts.probMax);
-  ic.addEventListener("change", ()=>{ faceOpts.info = ic.checked; saveFaceOpts(); });
+  ic.addEventListener("change", ()=>{ faceOpts.info = ic.checked; if(ic.checked) setInfoFaceAnchor(getSelected()); saveFaceOpts(); });
+  document.getElementById("faceInfoFromBtn").addEventListener("click", ()=>{ const p = getSelected(); if(!p){ toast("Ouvrez d'abord une image."); return; } setInfoFaceAnchor(p); });
+  document.getElementById("btnPersonnages").addEventListener("click", updateFaceInfoFromNote);
   pm.addEventListener("change", ()=>{ const v = parseFloat(String(pm.value).replace(",", ".")); faceOpts.probMax = isFinite(v) ? Math.max(0.30, Math.min(0.70, v)) : 0.51; pm.value = String(faceOpts.probMax); saveFaceOpts(); });
   chk.addEventListener("change", ()=>{ faceOpts.auto = chk.checked; saveFaceOpts(); });
   wr.addEventListener("change", ()=>{ faceOpts.write = wr.value; saveFaceOpts(); });
@@ -14536,7 +14545,9 @@ function renderInfoFaces(p){
       const k = faceNameKey(a.name);
       if(!faceInfoRejected.has(p.id)) faceInfoRejected.set(p.id, new Set());
       faceInfoRejected.get(p.id).add(k);
+      p.facesRejected = [...new Set([...(p.facesRejected || []), k])]; // mémorisé : jamais ré-ajouté automatiquement, même après rechargement
       c.auto = c.auto.filter(z=> faceNameKey(z.name) !== k);
+      if(!c.suggest.length) p.visagesValides = true;
       await infoSetPersonnageTokens(p, personnageTokens(p.personnage).filter(t=> faceNameKey(t) !== k));
       renderInfoModal(p);
     });
@@ -14550,11 +14561,54 @@ function renderInfoFaces(p){
       const toks = personnageTokens(p.personnage);
       if(!toks.some(t=> faceNameKey(t) === faceNameKey(sg.name))) toks.push(sg.name);
       c.suggest = c.suggest.filter(z=> z !== sg);
+      if(!c.suggest.length) p.visagesValides = true; // dernière proposition traitée : image validée
       await infoSetPersonnageTokens(p, toks);
       renderInfoModal(p);
     });
     chips.appendChild(ch);
   });
+}
+/* Point de départ de la reconnaissance automatique dans « Infos » : l'image en cours au moment où l'on coche la case (ou
+   « Repartir de l'image en cours »). Repéré par son chemin (stable après rechargement), pas par son identifiant. */
+function infoPhotoKey(p){ return ((p.sousDossier ? p.sousDossier + "/" : "") + (p.fileName || "")).toLowerCase(); }
+function updateFaceInfoFromNote(){
+  const el = document.getElementById("faceInfoFromNote"); if(!el) return;
+  const a = faceOpts.infoFrom && State.photos.find(x=> infoPhotoKey(x) === faceOpts.infoFrom);
+  if(!a){ el.textContent = "Point de départ : la première image ouverte dans « Infos »."; return; }
+  const list = activePhotos(), i = list.findIndex(x=> x.id === a.id);
+  el.textContent = "Point de départ : « " + (a.fileName || "") + " »" + (i >= 0 ? " (n° " + (i + 1) + " sur " + list.length + ")" : "") + " et toutes les suivantes.";
+}
+function setInfoFaceAnchor(p){
+  faceOpts.infoFrom = p ? infoPhotoKey(p) : ""; saveFaceOpts(); updateFaceInfoFromNote();
+  if(p) toast("Reconnaissance dans « Infos » à partir de « " + (p.fileName || "") + " » et des suivantes. Les images déjà validées ne sont pas modifiées.", 6000);
+}
+/* Une image est traitée automatiquement seulement si : elle n'est pas validée, elle n'a pas déjà de personnage indiqué (renseignée
+   avant la mise en place de la validation = considérée validée) et elle n'est pas AVANT le point de départ. Sinon : propositions à la demande. */
+function infoFaceEligibility(p){
+  if(p.visagesValides === true) return {auto: false, reason: "validated"};
+  if(personnageTokens(p.personnage).length) return {auto: false, reason: "filled"};
+  if(!faceOpts.infoFrom || !State.photos.some(x=> infoPhotoKey(x) === faceOpts.infoFrom)){ faceOpts.infoFrom = infoPhotoKey(p); saveFaceOpts(); updateFaceInfoFromNote(); }
+  const list = activePhotos(), iFrom = list.findIndex(x=> infoPhotoKey(x) === faceOpts.infoFrom), iP = list.findIndex(x=> x.id === p.id);
+  if(iFrom >= 0 && iP >= 0 && iP < iFrom) return {auto: false, reason: "before"};
+  return {auto: true, reason: ""};
+}
+function renderInfoFacesHeld(p, reason){
+  const row = document.getElementById("infoFaceRow"), box = document.getElementById("infoFaceBox"); if(!row || !box) return;
+  box.textContent = ""; row.classList.remove("hidden", "face-collapsed");
+  if(reason === "validated"){
+    row.classList.add("face-collapsed");
+    const ib = document.createElement("button"); ib.type = "button"; ib.className = "info-face-icon"; ib.textContent = "🧑✓";
+    ib.title = "Visages validés : rien n'est modifié automatiquement (cliquer pour revoir les propositions)";
+    ib.addEventListener("click", ()=> infoFacesAnalyze(p, false));
+    box.appendChild(ib); return;
+  }
+  const line = document.createElement("div"); line.className = "sub-line"; box.appendChild(line);
+  line.textContent = reason === "before"
+    ? "Visages : avant le point de départ de la reconnaissance automatique — rien n'est modifié. "
+    : "Visages : personnage déjà indiqué — rien n'est modifié automatiquement. ";
+  const b = document.createElement("button"); b.type = "button"; b.className = "info-face-icon"; b.textContent = "Voir les propositions";
+  b.addEventListener("click", ()=> infoFacesAnalyze(p, false));
+  line.appendChild(b);
 }
 function infoFacesStart(p){
   const row = document.getElementById("infoFaceRow"); if(!row) return;
@@ -14572,6 +14626,12 @@ function infoFacesStart(p){
   }
   const cached = faceInfoCache.get(p.id);
   if(cached && cached.key === faceInfoKey()){ renderInfoFaces(p); return; }
+  const el = infoFaceEligibility(p);
+  if(!el.auto){ renderInfoFacesHeld(p, el.reason); return; } // validée / déjà renseignée / avant le point de départ : aucune analyse ni modification automatique
+  infoFacesAnalyze(p, true);
+}
+/* auto = true : les personnages « sûrs » / « probables » sont ajoutés ; false : tout est seulement PROPOSÉ (un clic pour ajouter). */
+function infoFacesAnalyze(p, auto){
   faceInfoCache.delete(p.id);
   renderInfoFaces(p);
   if(faceInfoPending.has(p.id)) return;
@@ -14587,7 +14647,7 @@ function infoFacesStart(p){
       const faces = await detectFacesInCanvas(canvas);
       const persons = faceReferencePersons(), th = faceThresholds();
       const toks = personnageTokens(p.personnage), have = new Set(toks.map(faceNameKey));
-      const rejected = faceInfoRejected.get(p.id) || new Set();
+      const rejected = new Set([...(faceInfoRejected.get(p.id) || []), ...(p.facesRejected || [])]); // retraits de l'utilisateur : gardés même après rechargement
       entry.nFaces = faces.length;
       let added = false;
       for(const f of faces){
@@ -14599,14 +14659,18 @@ function infoFacesStart(p){
         const solid = !r.ambiguous && (
           (r.verdict === "sure" && (top.refs >= 2 || top.dist <= th.sure - 0.05)) ||
           (r.verdict === "maybe" && top.dist <= faceOpts.probMax && top.refs >= 2));
-        if(solid && !rejected.has(k)){
+        if(solid && auto && !rejected.has(k)){
           if(!have.has(k)){ toks.push(top.name); have.add(k); added = true; entry.auto.push({name: top.name, dist: top.dist, verdict: r.verdict}); }
         }else if(!entry.suggest.some(z=> faceNameKey(z.name) === k)){
           entry.suggest.push({name: top.name, dist: top.dist});
           if(r.ambiguous && r.matches[1] && !entry.suggest.some(z=> faceNameKey(z.name) === faceNameKey(r.matches[1].name))) entry.suggest.push({name: r.matches[1].name, dist: r.matches[1].dist});
         }
       }
+      // Validation mémorisée (et inscrite dans le CSV) : plus aucune proposition en attente. Dès lors cette image n'est plus jamais retraitée.
+      const wasValid = p.visagesValides === true;
+      if(!entry.suggest.length) p.visagesValides = true;
       if(added) await infoSetPersonnageTokens(p, toks);
+      else if(!wasValid && p.visagesValides){ await idbPut("photos", p); autoBuildCsv(); }
     }catch(err){
       entry = {key, error: (err && err.message ? err.message : String(err)), nFaces:0, nUnknown:0, auto:[], present:[], suggest:[]};
     }finally{
@@ -15938,7 +16002,7 @@ document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
 /* ---------------------------------------------------------------
    15. CSV — génération automatique, export, import
    --------------------------------------------------------------- */
-const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","art","concert","histoire","partition","corbeille","rotation","albums","filterKey","optique","poids","map"];
+const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","art","concert","histoire","partition","corbeille","rotation","albums","filterKey","optique","poids","map","visagesValides"];
 /* Titre auto-construit à partir de Lieu + Personnage : AUCUNE ponctuation,
    AUCUN chiffre — uniquement des lettres et des espaces, sans le mot de
    liaison "et". Reste éditable dans la modale Information : si
@@ -16367,6 +16431,7 @@ async function mergeCsvIntoCatalog(text){
     rec.etiquette = row.etiquette || "";
     rec.auteur = row.auteur || "Philippe";
     rec.favori = row.favori === "true";
+    if(row.visagesValides === "true") rec.visagesValides = true; // union : une validation n'est jamais perdue par un rechargement
     rec.art = row.art === "true";
     rec.concert = row.concert === "true";
     rec.histoire = row.histoire === "true";
