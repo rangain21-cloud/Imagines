@@ -50,10 +50,12 @@ button{font-family:inherit;}
 
 /* ---------- topbar ---------- */
 .topbar{
-  position:fixed; top:0; left:0; right:0; height:var(--topbar-h);
+  /* Hauteur NON figée : la barre grandit quand les boutons passent à la ligne (fenêtre étroite, Windows à 125-150 %…).
+     --topbar-h (copie de sa hauteur réelle, voir « topbarSync ») sert seulement à décaler le contenu situé dessous. */
+  position:fixed; top:0; left:0; right:0; height:auto; min-height:56px;
   z-index:500;
   display:flex; align-items:center; gap:10px;
-  padding:0 14px;
+  padding:4px 14px;
   background:
     repeating-linear-gradient(90deg,
       rgba(0,0,0,.35) 0 6px, transparent 6px 20px) top/100% 6px no-repeat,
@@ -98,6 +100,10 @@ button{font-family:inherit;}
 
 .topbar-spacer{flex:1;}
 .selection-hint{font-size:12px; color:var(--ink-dim); margin-right:6px;}
+/* Agencement › « Barre du haut : icônes seules » (PC) : même rendu compact que sur smartphone, pour tout voir sur un petit écran. */
+html.bar-icons .topbar-tools .tool-btn span:last-child{display:none;}
+html.bar-icons .topbar-tools .tool-btn{padding:0 9px;}
+html.bar-icons .brand, html.bar-icons .selection-hint{display:none;}
 
 /* ---------- layout ---------- */
 .app-body{
@@ -1154,6 +1160,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <optgroup label="Tablette & mobile"><option value="tablette1024">Tablette 1024</option><option value="smartphoneGrand">Smartphone grand (Pro Max/Ultra)</option><option value="smartphoneStandard">Smartphone standard</option><option value="smartphonePetit">Smartphone petit (SE/mini)</option></optgroup>
       <option value="lisibilite">Lisibilité max</option>
     </select></div>
+    <div class="search-field"><label for="barModeSelect">Barre du haut</label>
+      <select id="barModeSelect">
+        <option value="auto">Automatique (textes + icônes)</option>
+        <option value="icons">Icônes seules (compacte)</option>
+      </select></div>
+    <div class="search-field"><label style="text-transform:none; letter-spacing:0; font-size:12px; cursor:pointer; display:flex; gap:7px; align-items:flex-start; color:var(--ink);"><input type="checkbox" id="noZoomChk" style="width:auto; margin-top:2px;"> Ne pas zoomer l'affichage (ignore l'échelle des préréglages)</label></div>
+    <button class="btn" id="layoutRescueBtn" type="button" style="width:100%;" title="Remet l'affichage à 100 % avec la barre du haut en icônes seules">↺ Retrouver IMAGO en entier</button>
+    <div class="drive-note" style="margin:8px 0 0;">Barre du haut tronquée ou absente ? Ce bouton remet l'affichage à 100 % avec la barre en icônes seules. Si le menu lui-même est inaccessible, ajoutez « #ui-reset » à la fin de l'adresse de la page.</div>
   </details>
 </nav>
 
@@ -5960,12 +5974,22 @@ document.getElementById("btnResetFilters").addEventListener("click", ()=>{
    --------------------------------------------------------------- */
 const UI_SCALE_FACTORS = {compact:0.85, standard:1, comfortable:1.15, xl:1.3};
 function applyUiScale(key){
-  const factor = UI_SCALE_FACTORS[key] || 1;
+  // « Ne pas zoomer » (Agencement) : l'échelle des préréglages est ignorée, affichage à 100 % (secours si l'écran est tronqué).
+  const factor = localStorage.getItem("imago_ui_nozoom") === "1" ? 1 : (UI_SCALE_FACTORS[key] || 1);
   document.documentElement.style.zoom = factor;
+  if(typeof window.imagoTopbarSync === "function") window.imagoTopbarSync();
 }
+function applyBarMode(mode){ document.documentElement.classList.toggle("bar-icons", mode === "icons"); if(typeof window.imagoTopbarSync === "function") window.imagoTopbarSync(); }
 (function initUiScale(){
+  // Secours sans accès au menu : « …/Imago.html#ui-reset » (ou ?ui=reset) remet l'affichage à 100 % avec la barre en icônes seules.
+  if(/(^|[#&?])ui-reset\b|[?&]ui=reset\b/.test(location.hash + location.search)){
+    localStorage.removeItem("imago_ui_scale"); localStorage.removeItem("imago_agencement");
+    localStorage.setItem("imago_ui_nozoom", "1"); localStorage.setItem("imago_bar_mode", "icons");
+    try{ history.replaceState(null, "", location.pathname); }catch(e){}
+  }
   const saved = localStorage.getItem("imago_ui_scale") || "standard";
   applyUiScale(UI_SCALE_FACTORS[saved] !== undefined ? saved : "standard");
+  applyBarMode(localStorage.getItem("imago_bar_mode") || "auto");
 })();
 
 /* ---------------------------------------------------------------
@@ -6016,6 +6040,18 @@ function applyAgencement(key, persist){
   applyAgencement(select.value, false);
   select.addEventListener("change", ()=>{
     applyAgencement(select.value, true);
+  });
+  // Paramètres « tout voir » : barre du haut, zoom, et bouton de secours
+  const barSel = document.getElementById("barModeSelect"), nz = document.getElementById("noZoomChk");
+  barSel.value = localStorage.getItem("imago_bar_mode") === "icons" ? "icons" : "auto";
+  nz.checked = localStorage.getItem("imago_ui_nozoom") === "1";
+  barSel.addEventListener("change", ()=>{ localStorage.setItem("imago_bar_mode", barSel.value); applyBarMode(barSel.value); });
+  nz.addEventListener("change", ()=>{ localStorage.setItem("imago_ui_nozoom", nz.checked ? "1" : "0"); applyUiScale(localStorage.getItem("imago_ui_scale") || "standard"); });
+  document.getElementById("layoutRescueBtn").addEventListener("click", ()=>{
+    localStorage.setItem("imago_ui_nozoom", "1"); localStorage.setItem("imago_bar_mode", "icons");
+    nz.checked = true; barSel.value = "icons";
+    applyUiScale(localStorage.getItem("imago_ui_scale") || "standard"); applyBarMode("icons");
+    toast("Affichage remis à 100 % avec la barre du haut en icônes seules.", 5000);
   });
 })();
 
@@ -17474,10 +17510,22 @@ syncFilterControls();
 loadAll();
 </script>
 <script>
-/* topbarSync : recopie la hauteur réelle de la barre du haut dans --topbar-h (elle peut occuper plusieurs lignes sur smartphone). */
+/* topbarSync : recopie la hauteur réelle de la barre du haut dans --topbar-h (elle peut occuper plusieurs lignes : smartphone, fenêtre étroite).
+   Mesure ÉTALONNÉE : avec la propriété CSS « zoom » (échelles de l'Agencement), Chrome rapporte selon sa version des tailles zoomées ou non ;
+   recopier la mesure brute créait une boucle qui, à chaque passage, réduisait la barre à quelques pixels (échelle < 1) ou la faisait exploser
+   (échelle > 1). On la rapporte donc à une sonde de 100 px CSS mesurée dans le même contexte : le résultat est en pixels CSS, quel que soit le zoom. */
 (function(){
   const tb = document.querySelector(".topbar"); if(!tb) return;
-  const sync = ()=>{ const h = Math.ceil(tb.getBoundingClientRect().height); if(h > 0) document.documentElement.style.setProperty("--topbar-h", h + "px"); };
+  const probe = document.createElement("div");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText = "position:fixed; left:0; top:0; width:100px; height:100px; visibility:hidden; pointer-events:none; z-index:-1;";
+  document.body.appendChild(probe);
+  const sync = ()=>{
+    const k = probe.getBoundingClientRect().height / 100;            // pixels mesurés par pixel CSS (= zoom, ou 1 selon la version de Chrome)
+    const h = Math.ceil(tb.getBoundingClientRect().height / (k > 0 ? k : 1));
+    if(h > 0 && h < 600) document.documentElement.style.setProperty("--topbar-h", h + "px"); // garde-fou : jamais plus de 600 px
+  };
+  window.imagoTopbarSync = sync;
   sync();
   if(typeof ResizeObserver === "function") new ResizeObserver(sync).observe(tb);
   window.addEventListener("resize", sync); window.addEventListener("orientationchange", sync);
