@@ -1790,6 +1790,18 @@ details.pave .btn{width:100%; margin-bottom:8px;}
           <button class="btn" id="faceDriveSyncBtn" type="button" title="Fusionne les références de visages de cet appareil avec celles de Drive (dossier privé « Imago-Prive », hors IMAGINES) puis les y sauvegarde. Rien n'est supprimé.">☁ Synchroniser les références avec Drive</button>
           <span class="drive-note" style="margin:0;">Partage vos visages appris entre vos appareils (PC, téléphone…). Le fichier est rangé dans « Imago-Prive », jamais partagé avec le partenaire.</span>
         </div>
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button class="btn" id="faceLocalExportBtn" type="button" title="Enregistre vos références de visages dans un fichier Imago-Visages.json (copie locale, utilisable sans connexion).">💾 Exporter les références (fichier)</button>
+          <button class="btn" id="faceLocalImportBtn" type="button" title="Fusionne un fichier Imago-Visages.json (copie locale) avec les références de cet appareil. Rien n'est supprimé.">📂 Importer un fichier de références…</button>
+          <input type="file" id="faceLocalImportInput" accept=".json,application/json" class="hidden">
+          <span class="drive-note" style="margin:0;">Mode hors ligne : même format que le fichier de Drive, fusion sans perte.</span>
+        </div>
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button class="btn" id="faceEnginePrepBtn" type="button" title="Charge le moteur de reconnaissance (≈ 15 Mo) et le garde dans ce navigateur pour un usage sans connexion. Nécessite Internet une seule fois.">⬇ Préparer le mode hors ligne (connexion requise)</button>
+          <button class="btn" id="faceEngineFolderBtn" type="button" title="Installe le moteur depuis un dossier local contenant face-api.js et le sous-dossier model/ (sans Internet).">📁 Installer le moteur depuis un dossier…</button>
+          <input type="file" id="faceEngineFolderInput" webkitdirectory multiple class="hidden">
+          <span class="drive-note" style="margin:0;" id="faceEngineState"></span>
+        </div>
         <div style="margin-top:12px;">
           <label style="font-size:13px; cursor:pointer;"><input type="checkbox" id="faceAutoChk" checked> Reconnaître automatiquement les visages au référencement d'un dossier (en arrière-plan, après le chargement)</label>
           <div style="margin-top:6px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12px;">
@@ -10683,27 +10695,83 @@ function faceSig(p){ return (p.fileName||"") + "|" + (p.thumbDataUrl ? p.thumbDa
 function faceSleep(ms){ return new Promise(r=> setTimeout(r, ms||0)); }
 function fmtDist(d){ return d.toFixed(2).replace(".", ","); }
 
+/* Copie locale du moteur (face-api.js + modèles) dans IndexedDB « imago_face_engine » : permet la reconnaissance sans connexion.
+   Clés : "face-api.js", "model/<nom de fichier>". Valeurs : ArrayBuffer. */
+const FaceEngineStore = (function(){
+  let dbp = null;
+  function db(){
+    if(!dbp) dbp = new Promise((res, rej)=>{
+      const r = indexedDB.open("imago_face_engine", 1);
+      r.onupgradeneeded = ()=> r.result.createObjectStore("files");
+      r.onsuccess = ()=> res(r.result); r.onerror = ()=> rej(r.error);
+    });
+    return dbp;
+  }
+  async function tx(mode, fn){
+    const d = await db();
+    return new Promise((res, rej)=>{
+      const t = d.transaction("files", mode), rq = fn(t.objectStore("files"));
+      t.oncomplete = ()=> res(rq && rq.result); t.onerror = t.onabort = ()=> rej(t.error);
+    });
+  }
+  return { get: k=> tx("readonly", s=> s.get(k)), put: (k, v)=> tx("readwrite", s=> s.put(v, k)), keys: ()=> tx("readonly", s=> s.getAllKeys()) };
+})();
+// Familles de modèles nécessaires (le nom exact des fichiers .json/.bin dépend de la version du paquet : on les stocke tels quels).
+const FACE_ENGINE_MODEL_FAMILIES = [/^ssd_mobilenetv1/i, /^face_landmark_68_model/i, /^face_recognition_model/i];
+
 function loadFaceEngine(onStatus){
   if(FACE_ENGINE.ready) return Promise.resolve();
   if(FACE_ENGINE.loading) return FACE_ENGINE.loading;
   FACE_ENGINE.loading = (async ()=>{
     if(!window.faceapi){
       if(onStatus) onStatus("Chargement du moteur de reconnaissance…");
+      // 1) copie locale (IndexedDB, voir FaceEngineStore) ; 2) sinon Internet (jsDelivr, vérifié par SRI) puis mise en copie locale
+      let buf = null;
+      try{ buf = await FaceEngineStore.get("face-api.js"); }catch(e){ buf = null; }
+      if(!buf){
+        try{
+          const r = await fetch(FACE_ENGINE.scriptUrl, {integrity: FACE_ENGINE.scriptSri, mode: "cors"});
+          if(!r.ok) throw new Error("HTTP " + r.status);
+          buf = await r.arrayBuffer();
+        }catch(e){
+          throw new Error("Moteur de reconnaissance indisponible hors ligne : il n'a jamais été chargé sur cet appareil. Utilisez « Préparer le mode hors ligne » (une fois, avec Internet) ou « Installer le moteur depuis un dossier ».");
+        }
+        try{ await FaceEngineStore.put("face-api.js", buf); }catch(e){ console.warn("Moteur de visages non mis en copie locale", e); }
+      }
       await new Promise((res, rej)=>{
         const sc = document.createElement("script");
-        sc.src = FACE_ENGINE.scriptUrl; sc.integrity = FACE_ENGINE.scriptSri; sc.crossOrigin = "anonymous"; sc.async = true;
-        sc.onload = res;
-        sc.onerror = ()=> rej(new Error("Moteur de reconnaissance introuvable (" + FACE_ENGINE.scriptUrl + "). Une connexion Internet est nécessaire la première fois."));
+        sc.src = URL.createObjectURL(new Blob([buf], {type: "text/javascript"})); sc.async = true;
+        sc.onload = res; sc.onerror = ()=> rej(new Error("Moteur de reconnaissance illisible (copie locale corrompue ?). Réinstallez-le."));
         document.head.appendChild(sc);
       });
     }
     await faceapi.tf.ready();
     FACE_ENGINE.backend = faceapi.tf.getBackend();
-    if(onStatus) onStatus("Chargement des modèles (≈ 14 Mo, mis en cache ensuite)…");
-    await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_ENGINE.modelUrl);
-    await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_ENGINE.modelUrl);
-    await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_ENGINE.modelUrl);
+    if(onStatus) onStatus("Chargement des modèles (≈ 14 Mo, copie locale ensuite)…");
+    // Pendant ce chargement seulement, fetch lit d'abord la copie locale des modèles, sinon le réseau (et garde le résultat).
+    const realFetch = window.fetch;
+    window.fetch = function(url, init){
+      const u = String(url && url.url || url), base = FACE_ENGINE.modelUrl;
+      if(u.indexOf(base) !== 0) return realFetch.apply(this, arguments);
+      const key = "model/" + u.slice(base.length).split("?")[0];
+      return FaceEngineStore.get(key).catch(()=>null).then(b=>{
+        if(b) return new Response(b, {status: 200});
+        return realFetch.call(window, url, init).then(async r=>{
+          if(r.ok){ try{ await FaceEngineStore.put(key, await r.clone().arrayBuffer()); }catch(e){} }
+          return r;
+        });
+      });
+    };
+    try{
+      await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_ENGINE.modelUrl);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_ENGINE.modelUrl);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_ENGINE.modelUrl);
+    }catch(e){
+      throw new Error("Modèles de reconnaissance indisponibles hors ligne (" + ((e && e.message) || e) + "). Utilisez « Préparer le mode hors ligne » avec Internet, ou « Installer le moteur depuis un dossier ».");
+    }finally{ window.fetch = realFetch; }
     FACE_ENGINE.ready = true;
+    try{ navigator.storage && navigator.storage.persist && navigator.storage.persist(); }catch(e){}
+    updateFaceEngineState();
   })().catch(e=>{ FACE_ENGINE.loading = null; throw e; });
   return FACE_ENGINE.loading;
 }
@@ -11335,6 +11403,17 @@ async function ensureFacePrivateFolder(){
 function faceRefIsUsable(r){
   return !!r && typeof r.name === "string" && r.name.trim() && r.name.length <= 80 && Array.isArray(r.d) && r.d.length === 128 && r.d.every(Number.isFinite);
 }
+// Fusion sans perte d'un objet {v:1, refs} (fichier Drive OU fichier local) dans FaceAlbum.refs ; n'enregistre pas (à faire par l'appelant).
+function mergeFaceRefsObject(o){
+  let added = 0, upgraded = 0;
+  for(const [k, r] of Object.entries(o.refs)){
+    if(!faceRefIsUsable(r)) continue;
+    const l = FaceAlbum.refs[k];
+    if(!l){ FaceAlbum.refs[k] = {sig: String(r.sig || ""), name: r.name, d: r.d, n: r.n || 1}; added++; }
+    else if(!l.d){ FaceAlbum.refs[k] = {...l, name: l.name || r.name, d: r.d, n: r.n || 1}; upgraded++; }
+  }
+  return {added, upgraded};
+}
 async function syncFaceRefsWithDrive({pullOnly = false} = {}){
   if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
   const folderId = await ensureFacePrivateFolder();
@@ -11346,12 +11425,7 @@ async function syncFaceRefsWithDrive({pullOnly = false} = {}){
     let o = null;
     try{ o = JSON.parse(await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).text()); }catch(e){ o = null; }
     if(!o || o.v !== 1 || !o.refs || typeof o.refs !== "object") throw new Error("le fichier « " + FACE_DRIVE_FILE + " » de Drive est illisible : rien n'a été modifié, ni sur Drive ni ici");
-    for(const [k, r] of Object.entries(o.refs)){
-      if(!faceRefIsUsable(r)) continue;
-      const l = FaceAlbum.refs[k];
-      if(!l){ FaceAlbum.refs[k] = {sig: String(r.sig || ""), name: r.name, d: r.d, n: r.n || 1}; added++; }
-      else if(!l.d){ FaceAlbum.refs[k] = {...l, name: l.name || r.name, d: r.d, n: r.n || 1}; upgraded++; }
-    }
+    const m = mergeFaceRefsObject(o); added += m.added; upgraded += m.upgraded;
   }
   if(added || upgraded){ saveFaceAlbum(); faceRefVersion++; updateFaceIndexSummary(); }
   const refs = {};
@@ -11376,6 +11450,84 @@ document.getElementById("faceDriveSyncBtn").addEventListener("click", async ()=>
   try{ st.textContent = faceSyncMessage(await syncFaceRefsWithDrive()); }
   catch(err){ st.textContent = "Synchronisation impossible : " + ((err && err.message) || err); }
   finally{ btn.disabled = false; }
+});
+
+/* ---------------------------------------------------------------------
+   Mode hors ligne : copie locale des références (fichier Imago-Visages.json) et du moteur de reconnaissance.
+   --------------------------------------------------------------------- */
+function faceLocalRefsPayload(){
+  const refs = {};
+  for(const [k, r] of Object.entries(FaceAlbum.refs)) if(faceRefIsUsable(r)) refs[k] = r;
+  return {count: Object.keys(refs).length, json: JSON.stringify({v: 1, app: "Imago", savedAt: new Date().toISOString(), refs})};
+}
+document.getElementById("faceLocalExportBtn").addEventListener("click", async ()=>{
+  const st = document.getElementById("faceBuildStatus"), p = faceLocalRefsPayload();
+  if(!p.count){ st.textContent = "Aucune référence de visage à exporter (apprenez d'abord des visages)."; return; }
+  const blob = new Blob([p.json], {type: "application/json"});
+  try{
+    if(typeof window.showSaveFilePicker === "function"){
+      const h = await window.showSaveFilePicker({suggestedName: FACE_DRIVE_FILE, types: [{description: "Références de visages Imago", accept: {"application/json": [".json"]}}]});
+      const w = await h.createWritable(); await w.write(blob); await w.close();
+    }else{
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = FACE_DRIVE_FILE;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=> URL.revokeObjectURL(a.href), 4000);
+    }
+    st.textContent = `💾 ${p.count} référence(s) exportée(s) dans « ${FACE_DRIVE_FILE} ».`;
+  }catch(err){
+    st.textContent = (err && err.name === "AbortError") ? "Export annulé." : "Export impossible : " + ((err && err.message) || err);
+  }
+});
+document.getElementById("faceLocalImportBtn").addEventListener("click", ()=> document.getElementById("faceLocalImportInput").click());
+document.getElementById("faceLocalImportInput").addEventListener("change", async ev=>{
+  const f = ev.target.files && ev.target.files[0]; ev.target.value = "";
+  if(!f) return;
+  const st = document.getElementById("faceBuildStatus");
+  try{
+    let o = null;
+    try{ o = JSON.parse(await f.text()); }catch(e){ o = null; }
+    if(!o || o.v !== 1 || !o.refs || typeof o.refs !== "object") throw new Error("le fichier « " + f.name + " » n'est pas un fichier de références Imago valide : rien n'a été modifié");
+    const m = mergeFaceRefsObject(o);
+    if(m.added || m.upgraded){ saveFaceAlbum(); faceRefVersion++; updateFaceIndexSummary(); }
+    const total = Object.values(FaceAlbum.refs).filter(faceRefIsUsable).length;
+    st.textContent = `📂 ${total} référence(s) au total` + ((m.added + m.upgraded) ? `, dont ${m.added + m.upgraded} récupérée(s) depuis « ${f.name} »` : " (rien de nouveau dans ce fichier)") + ".";
+  }catch(err){ st.textContent = "Import impossible : " + ((err && err.message) || err); }
+});
+
+async function updateFaceEngineState(){
+  const el = document.getElementById("faceEngineState"); if(!el) return;
+  try{
+    const keys = await FaceEngineStore.keys(), models = keys.filter(k=> String(k).indexOf("model/") === 0).length;
+    el.textContent = (keys.indexOf("face-api.js") >= 0 && models >= 6)
+      ? "✅ Moteur disponible hors ligne sur cet appareil."
+      : "Moteur non disponible hors ligne" + (keys.length ? " (copie incomplète)." : ".");
+  }catch(e){ el.textContent = ""; }
+}
+updateFaceEngineState();
+document.getElementById("faceEnginePrepBtn").addEventListener("click", async ()=>{
+  const st = document.getElementById("faceBuildStatus"), btn = document.getElementById("faceEnginePrepBtn");
+  btn.disabled = true;
+  try{ await loadFaceEngine(t=> st.textContent = t); st.textContent = "✅ Moteur de reconnaissance prêt et conservé sur cet appareil : il fonctionnera sans connexion."; }
+  catch(err){ st.textContent = "Préparation impossible : " + ((err && err.message) || err); }
+  finally{ btn.disabled = false; updateFaceEngineState(); }
+});
+document.getElementById("faceEngineFolderBtn").addEventListener("click", ()=> document.getElementById("faceEngineFolderInput").click());
+document.getElementById("faceEngineFolderInput").addEventListener("change", async ev=>{
+  const files = Array.from(ev.target.files || []); ev.target.value = "";
+  const st = document.getElementById("faceBuildStatus");
+  if(!files.length) return;
+  try{
+    // face-api.js : le fichier du dossier « dist » s'il existe (jamais .min / .esm / .nobundle)
+    const js = files.filter(f=> f.name === "face-api.js").sort((a,b)=> (/\/dist\//.test(b.webkitRelativePath) ? 1 : 0) - (/\/dist\//.test(a.webkitRelativePath) ? 1 : 0))[0];
+    const models = files.filter(f=> /\.(json|bin)$/i.test(f.name) && FACE_ENGINE_MODEL_FAMILIES.some(re=> re.test(f.name)));
+    const missing = FACE_ENGINE_MODEL_FAMILIES.filter(re=> !(models.some(f=> re.test(f.name) && /\.json$/i.test(f.name)) && models.some(f=> re.test(f.name) && /\.bin$/i.test(f.name))));
+    if(!js || missing.length) throw new Error("dossier incomplet — il faut face-api.js" + (js ? "" : " (introuvable)") + " et les modèles ssd_mobilenetv1, face_landmark_68_model et face_recognition_model (.json + .bin)" + (missing.length ? " ; manque : " + missing.map(re=> String(re).replace(/[\^\/i\\]/g, "")).join(", ") : ""));
+    st.textContent = "Installation du moteur…";
+    await FaceEngineStore.put("face-api.js", await js.arrayBuffer());
+    for(const f of models) await FaceEngineStore.put("model/" + f.name, await f.arrayBuffer());
+    try{ navigator.storage && navigator.storage.persist && navigator.storage.persist(); }catch(e){}
+    st.textContent = `✅ Moteur installé (face-api.js + ${models.length} fichier(s) de modèles). Il fonctionnera sans connexion.`;
+  }catch(err){ st.textContent = "Installation impossible : " + ((err && err.message) || err); }
+  finally{ updateFaceEngineState(); }
 });
 
 /* ---------------------------------------------------------------------
