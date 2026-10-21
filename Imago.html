@@ -1581,6 +1581,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
               </label>
               <button type="button" class="btn reset" id="edFreeRotateResetBtn">Réinitialiser</button>
             </div>
+            <label style="display:flex; gap:7px; align-items:flex-start; margin-top:6px; font-size:12.5px; color:var(--ink-dim); cursor:pointer;" title="Décoché : l'image pivotée garde sa taille entière, les coins sont noirs. Coché : l'image est recadrée au plus grand rectangle de même proportion, sans coins noirs.">
+              <input type="checkbox" id="edFreeRotateCrop" style="width:auto; margin-top:2px;"> Recadrer automatiquement (sans coins noirs)
+            </label>
           </div>
           <button class="btn reset" id="edRotateResetBtn">Réinitialiser la rotation</button>
           <button class="btn" id="edCropBtn" type="button">✂ Rogner l'image…</button>
@@ -14305,8 +14308,9 @@ document.getElementById("edLieu").addEventListener("input", (e)=>{
 /* Grave une rotation (degrés) DANS LES PIXELS de l'image. Sans cela, la rotation n'était qu'un attribut
    d'affichage (p.rotation, appliqué en CSS) : le fichier écrit dans le dossier restait « à l'envers » et
    réapparaissait ainsi au rechargement du dossier. Quarts de tour : dimensions échangées, rien n'est rogné.
-   Angle quelconque (curseur « Libre ») : rectangle de même proportion inscrit dans l'image pivotée (pas de coins noirs). */
-function bakeRotationIntoDataUrl(dataUrl, deg){
+   Angle quelconque (curseur « Libre ») : au choix (case « Recadrer automatiquement »), coins noirs (défaut, image entière) ou rectangle de même proportion inscrit dans l'image pivotée. */
+function bakeRotationIntoDataUrl(dataUrl, deg, cropInside){
+  if(cropInside === undefined) cropInside = freeRotateCropPref();
   return new Promise((resolve, reject)=>{
     const img = new Image();
     img.onerror = ()=> reject(new Error("image illisible"));
@@ -14321,12 +14325,15 @@ function bakeRotationIntoDataUrl(dataUrl, deg){
         if(Math.abs(rot - q) < 0.01){
           const swap = (q % 180) !== 0;
           cw = swap ? H : W; ch = swap ? W : H;
-        }else{
+        }else if(cropInside){
           const sc = Math.min(W / (W*cos + H*sin), H / (W*sin + H*cos));
           cw = Math.max(1, Math.round(W * sc)); ch = Math.max(1, Math.round(H * sc));
+        }else{
+          cw = Math.round(W*cos + H*sin); ch = Math.round(W*sin + H*cos); // image entière, coins noirs
         }
         const c = document.createElement("canvas"); c.width = cw; c.height = ch;
         const ctx = c.getContext("2d");
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cw, ch);
         ctx.translate(cw/2, ch/2); ctx.rotate(rad);
         ctx.drawImage(img, -W/2, -H/2);
         resolve({dataUrl: c.toDataURL("image/jpeg", 0.92), width: cw, height: ch});
@@ -14335,6 +14342,13 @@ function bakeRotationIntoDataUrl(dataUrl, deg){
     img.src = dataUrl;
   });
 }
+function freeRotateCropPref(){ try{ return localStorage.getItem("imago_free_rotate_crop") === "1"; }catch(e){ return false; } } // défaut : coins noirs
+(function(){
+  const cb = document.getElementById("edFreeRotateCrop");
+  if(!cb) return;
+  cb.checked = freeRotateCropPref();
+  cb.addEventListener("change", ()=>{ try{ localStorage.setItem("imago_free_rotate_crop", cb.checked ? "1" : "0"); }catch(e){} });
+})();
 function hasPendingRotation(deg){ const r = ((deg||0) % 360 + 360) % 360; return r > 0.01 && r < 359.99; }
 /* Filet de sécurité à l'export : une photo encore « pivotée seulement à l'affichage » (anciennes modifications,
    ou rotation rapide du menu « Plus ») est gravée dans ses pixels avant d'être écrite dans le dossier / le .zip / Drive,
