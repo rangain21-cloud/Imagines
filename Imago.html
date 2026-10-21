@@ -742,6 +742,12 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   display:flex; align-items:center; gap:6px;
   background:rgba(13,23,18,.85); border:1px solid var(--line); border-radius:20px; padding:4px 10px;
 }
+.redeye-ring{
+  position:absolute; z-index:6; pointer-events:none; border-radius:50%;
+  border:1.5px solid #fff; outline:1px solid rgba(0,0,0,.65); transform:translate(-50%,-50%);
+  box-shadow:0 0 0 1px rgba(0,0,0,.35) inset;
+}
+.redeye-ring::after{ content:""; position:absolute; left:50%; top:50%; width:3px; height:3px; margin:-1.5px 0 0 -1.5px; border-radius:50%; background:#fff; outline:1px solid rgba(0,0,0,.7); }
 .edit-zoom-controls button{ background:none; border:none; color:var(--ink); font-size:16px; cursor:pointer; width:20px; padding:0; }
 .edit-zoom-controls button:hover{ color:var(--copper-hi); }
 .edit-zoom-controls input[type=range]{ width:90px; }
@@ -1494,9 +1500,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <div class="crop-overlay hidden" id="cropOverlay"><div class="crop-rect hidden" id="cropRect"></div></div>
       <div class="face-overlay hidden" id="faceOverlay"></div>
       <canvas class="hidden" id="cloneLiveCanvas"></canvas>
+      <div class="redeye-ring hidden" id="redEyeRing"></div>
       <div class="edit-zoom-controls" id="editZoomControls">
         <button type="button" id="edZoomOut" title="Diminuer">–</button>
-        <input type="range" id="edZoomRange" min="100" max="300" value="100">
+        <input type="range" id="edZoomRange" min="100" max="800" value="100">
         <button type="button" id="edZoomIn" title="Agrandir">+</button>
         <button type="button" id="edZoomResetBtn" title="Réinitialiser la vue">⟲</button>
       </div>
@@ -1524,13 +1531,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <button class="btn" id="edRedEyeBtn" type="button" style="width:100%; margin-top:5px; padding:5px; font-size:6.5px;">👁️ Correctif yeux rouges</button>
         <div class="slider-row hidden" id="redEyeBrushRow" style="margin-top:5px; margin-bottom:0;">
           <label for="redEyeBrushSize">Taille du pinceau <span id="redEyeBrushSizeVal">100%</span></label>
-          <input type="range" id="redEyeBrushSize" min="30" max="250" value="100">
+          <input type="range" id="redEyeBrushSize" min="10" max="250" value="100">
         </div>
         <p class="drive-note" id="redEyeHint" style="margin-top:3px; margin-bottom:0; font-size:6.5px; line-height:1.25;">
-          Activez, puis touchez chaque œil concerné sur l'aperçu ci-dessus —
-          la zone rougie est neutralisée à chaque appui, autant de fois que
-          nécessaire. Ajustez la taille du pinceau ci-dessus pour ne pas
-          déborder sur la peau. Touchez à nouveau le bouton pour arrêter.
+          Activez, puis zoomez (molette de la souris, jusqu'à 800 %) et faites glisser l'image pour amener l'œil au centre. Le cercle blanc montre la zone de recherche : placez-le sur la pupille et cliquez. Réduisez la taille du pinceau pour plus de précision. Touchez à nouveau le bouton pour arrêter.
         </p>
         <div class="slider-row hidden" id="cloneBrushRow" style="margin-top:8px; margin-bottom:0;">
           <label for="cloneBrushSize">Taille du pinceau (Baguette magique) <span id="cloneBrushSizeVal">100%</span></label>
@@ -1553,8 +1557,8 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <!-- Panneau Recadrer / pivoter -->
       <div class="edit-panel hidden" data-panel="recadrer">
         <div class="sidebar-actions">
-          <button class="btn" id="edRotateLeftBtn">↺ Pivoter à gauche (−45°)</button>
-          <button class="btn" id="edRotateRightBtn">↻ Pivoter à droite (+45°)</button>
+          <button class="btn" id="edRotateLeftBtn">↺ Pivoter à gauche (−90°)</button>
+          <button class="btn" id="edRotateRightBtn">↻ Pivoter à droite (+90°)</button>
           <button class="btn" id="edFreeRotateBtn" type="button">◇ Libre</button>
           <div class="free-rotate-panel hidden" id="edFreeRotatePanel">
             <div class="free-rotate-row">
@@ -13603,6 +13607,7 @@ function exitRedEyeMode(){
   btn.textContent = "👁️ Correctif yeux rouges";
   img.style.cursor = "";
   document.getElementById("redEyeBrushRow").classList.add("hidden");
+  const ring = document.getElementById("redEyeRing"); if(ring) ring.classList.add("hidden");
 }
 document.getElementById("redEyeBrushSize").addEventListener("input", (e)=>{
   redEyeBrushFactor = e.target.value / 100;
@@ -13737,7 +13742,7 @@ function applyRedEyeFix(cx, cy){
   // Rayon de recherche (px réels) : ~4 % du plus petit côté (8 px minimum) × curseur "Taille du
   // pinceau" (30 % à 250 %). C'est la distance max entre le point touché et le reflet à corriger ;
   // seule la zone colorée connectée au reflet est modifiée, pas tout le disque.
-  const R = Math.max(3, Math.round(Math.max(8, Math.min(canvas.width, canvas.height) * 0.04) * redEyeBrushFactor));
+  const R = redEyeSearchRadius(img); // même formule que le cercle de visée
   const margin = Math.ceil(R * 1.8) + 6;
   const x0 = Math.max(0, cx - margin), y0 = Math.max(0, cy - margin);
   const w = Math.min(canvas.width, cx + margin + 1) - x0;
@@ -13776,7 +13781,7 @@ document.getElementById("edRedEyeBtn").addEventListener("click", ()=>{
   document.getElementById("redEyeBrushRow").classList.toggle("hidden", !redEyeModeOn);
 });
 document.getElementById("edPreviewImg").addEventListener("click", (e)=>{
-  if(!redEyeModeOn) return;
+  if(!redEyeModeOn || editSuppressClick) return;
   const img = e.currentTarget;
   const bounds = img.getBoundingClientRect();
   // Échelle calculée sur le rectangle réellement affiché (bounds), pas sur clientWidth : robuste au
@@ -14016,7 +14021,7 @@ function applyEditZoom(){
   syncFaceOverlay(); // idem pour les cadres de la reconnaissance des visages
 }
 function setEditZoom(scale, anchor){
-  const newScale = Math.min(3, Math.max(1, scale)); // pas de dézoom sous 100% : le calage "fit" initial est déjà le minimum utile
+  const newScale = Math.min(8, Math.max(1, scale)); // jusqu'à 800 % : assez pour viser précisément une pupille // pas de dézoom sous 100% : le calage "fit" initial est déjà le minimum utile
   if(newScale === editViewScale) return;
   const wrap = document.getElementById("editPreviewWrap");
   const rect = wrap.getBoundingClientRect();
@@ -14045,8 +14050,8 @@ window.addEventListener("resize", ()=> applyEditZoom());
 if("ResizeObserver" in window){
   new ResizeObserver(()=> applyEditZoom()).observe(document.getElementById("editPreviewWrap"));
 }
-document.getElementById("edZoomIn").addEventListener("click", ()=> setEditZoom(editViewScale + 0.2));
-document.getElementById("edZoomOut").addEventListener("click", ()=> setEditZoom(editViewScale - 0.2));
+document.getElementById("edZoomIn").addEventListener("click", ()=> setEditZoom(editViewScale * 1.25));
+document.getElementById("edZoomOut").addEventListener("click", ()=> setEditZoom(editViewScale / 1.25));
 document.getElementById("edZoomResetBtn").addEventListener("click", ()=>{
   editViewScale = 1; applyEditZoom();
   document.getElementById("editPreviewWrap").scrollTo(0,0);
@@ -14059,28 +14064,64 @@ document.getElementById("editPreviewWrap").addEventListener("wheel", (e)=>{
   // bas), la molette seule n'avait donc plus d'usage de défilement à
   // préserver ici.
   e.preventDefault();
-  setEditZoom(editViewScale + (e.deltaY<0 ? 0.15 : -0.15), {clientX:e.clientX, clientY:e.clientY});
+  setEditZoom(editViewScale * (e.deltaY<0 ? 1.18 : 1/1.18), {clientX:e.clientX, clientY:e.clientY}); // zoom proportionnel : fluide aussi à 500-800 %
 }, {passive:false});
 
-let editDragging=false, editDragStart={x:0,y:0}, editScrollStart={x:0,y:0};
+let editDragging=false, editPanActive=false, editSuppressClick=false, editDragStart={x:0,y:0}, editScrollStart={x:0,y:0};
 document.getElementById("editPreviewWrap").addEventListener("mousedown", (e)=>{
   const wrap = document.getElementById("editPreviewWrap");
-  if(redEyeModeOn || cloneModeOn || wrap.classList.contains("cropping") || editViewScale <= 1.001) return; // ne pas gêner ces modes, et rien à déplacer si l'image tient déjà entièrement dans le cadre
+  if(e.target.closest && e.target.closest("#editZoomControls")) return; // le curseur de zoom ne doit pas déplacer l'image
+  if(cloneModeOn || wrap.classList.contains("cropping") || editViewScale <= 1.001) return; // rien à déplacer si l'image tient déjà entièrement dans le cadre
+  if(e.button !== 0 && e.button !== 1) return;
+  if(e.button === 1) e.preventDefault(); // pas de défilement automatique du clic molette
   editDragging = true;
-  wrap.classList.add("panning");
+  // Correctif yeux rouges actif : un simple clic corrige, un glisser (> 5 px) déplace la vue.
+  editPanActive = !redEyeModeOn || e.button === 1;
+  if(editPanActive) wrap.classList.add("panning");
   editDragStart = {x:e.clientX, y:e.clientY};
   editScrollStart = {x:wrap.scrollLeft, y:wrap.scrollTop};
 });
 window.addEventListener("mousemove", (e)=>{
   if(!editDragging) return;
   const wrap = document.getElementById("editPreviewWrap");
-  wrap.scrollLeft = editScrollStart.x - (e.clientX - editDragStart.x);
-  wrap.scrollTop = editScrollStart.y - (e.clientY - editDragStart.y);
+  const dx = e.clientX - editDragStart.x, dy = e.clientY - editDragStart.y;
+  if(!editPanActive){
+    if(Math.hypot(dx, dy) < 5) return;
+    editPanActive = true; wrap.classList.add("panning");
+  }
+  wrap.scrollLeft = editScrollStart.x - dx;
+  wrap.scrollTop = editScrollStart.y - dy;
 });
 window.addEventListener("mouseup", ()=>{
-  editDragging = false;
+  if(editDragging && editPanActive && redEyeModeOn){
+    editSuppressClick = true; // le "click" qui suit ce glisser ne doit pas déclencher une correction
+    setTimeout(()=>{ editSuppressClick = false; }, 0);
+  }
+  editDragging = false; editPanActive = false;
   document.getElementById("editPreviewWrap").classList.remove("panning");
 });
+
+/* Cercle de visée du correctif yeux rouges : montre, à l'échelle de l'écran (donc du zoom), le rayon de
+   recherche réellement utilisé par applyRedEyeFix (même formule). */
+function redEyeSearchRadius(img){
+  return Math.max(3, Math.round(Math.max(8, Math.min(img.naturalWidth, img.naturalHeight) * 0.04) * redEyeBrushFactor));
+}
+(function(){
+  const wrap = document.getElementById("editPreviewWrap"), ring = document.getElementById("redEyeRing"), img = document.getElementById("edPreviewImg");
+  wrap.addEventListener("mousemove", (e)=>{
+    if(!redEyeModeOn || editPanActive || !img.naturalWidth){ ring.classList.add("hidden"); return; }
+    const b = img.getBoundingClientRect();
+    if(e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom){ ring.classList.add("hidden"); return; }
+    const wr = wrap.getBoundingClientRect();
+    const k = img.offsetWidth / b.width; // pixels CSS par pixel d'écran (robuste à l'échelle globale de l'interface)
+    const rCss = redEyeSearchRadius(img) * img.offsetWidth / img.naturalWidth;
+    ring.style.width = ring.style.height = (2 * rCss) + "px";
+    ring.style.left = ((e.clientX - wr.left) * k + wrap.scrollLeft) + "px";
+    ring.style.top  = ((e.clientY - wr.top)  * k + wrap.scrollTop) + "px";
+    ring.classList.remove("hidden");
+  });
+  wrap.addEventListener("mouseleave", ()=> ring.classList.add("hidden"));
+})();
 
 /* -----------------------------------------------------------------
    Déplacement de la modale "Modifier" elle-même sur l'écran, en glissant
@@ -14261,6 +14302,70 @@ document.getElementById("edLieu").addEventListener("input", (e)=>{
   if(wasAuto) mapEl.value = mapUrlFromLieu(e.target.value.trim());
 });
 
+/* Grave une rotation (degrés) DANS LES PIXELS de l'image. Sans cela, la rotation n'était qu'un attribut
+   d'affichage (p.rotation, appliqué en CSS) : le fichier écrit dans le dossier restait « à l'envers » et
+   réapparaissait ainsi au rechargement du dossier. Quarts de tour : dimensions échangées, rien n'est rogné.
+   Angle quelconque (curseur « Libre ») : rectangle de même proportion inscrit dans l'image pivotée (pas de coins noirs). */
+function bakeRotationIntoDataUrl(dataUrl, deg){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onerror = ()=> reject(new Error("image illisible"));
+    img.onload = ()=>{
+      try{
+        const W = img.naturalWidth, H = img.naturalHeight;
+        const rot = ((deg % 360) + 360) % 360;
+        const rad = rot * Math.PI / 180;
+        const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+        let cw, ch;
+        const q = Math.round(rot / 90) * 90;
+        if(Math.abs(rot - q) < 0.01){
+          const swap = (q % 180) !== 0;
+          cw = swap ? H : W; ch = swap ? W : H;
+        }else{
+          const sc = Math.min(W / (W*cos + H*sin), H / (W*sin + H*cos));
+          cw = Math.max(1, Math.round(W * sc)); ch = Math.max(1, Math.round(H * sc));
+        }
+        const c = document.createElement("canvas"); c.width = cw; c.height = ch;
+        const ctx = c.getContext("2d");
+        ctx.translate(cw/2, ch/2); ctx.rotate(rad);
+        ctx.drawImage(img, -W/2, -H/2);
+        resolve({dataUrl: c.toDataURL("image/jpeg", 0.92), width: cw, height: ch});
+      }catch(e){ reject(e); }
+    };
+    img.src = dataUrl;
+  });
+}
+function hasPendingRotation(deg){ const r = ((deg||0) % 360 + 360) % 360; return r > 0.01 && r < 359.99; }
+/* Filet de sécurité à l'export : une photo encore « pivotée seulement à l'affichage » (anciennes modifications,
+   ou rotation rapide du menu « Plus ») est gravée dans ses pixels avant d'être écrite dans le dossier / le .zip / Drive,
+   puis p.rotation repasse à 0 (sinon le catalogue la repivoterait une 2e fois au rechargement). */
+let rotationBakedDuringExport = false;
+async function getPhotoDataUrlForExport(p){
+  let full = await getFullDataUrl(p);
+  if(!full || p.isVideo || !hasPendingRotation(p.rotation)) return full;
+  try{
+    const r = await bakeRotationIntoDataUrl(full, p.rotation);
+    full = await writeMetadataIntoJpegDataUrl(r.dataUrl, {
+      cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert
+    });
+    p.width = r.width; p.height = r.height; p.rotation = 0;
+    p.sizeBytes = Math.round(full.length * 0.75); p.poids = Math.round(p.sizeBytes / 1024);
+    p.hasFullImage = true;
+    p.thumbDataUrl = await makeThumbnail(full);
+    cacheFullImage(p.id, full);
+    await saveEditedPhoto(p, full);
+    rotationBakedDuringExport = true;
+  }catch(e){
+    console.warn(`[Imago] Rotation non gravée pour "${p.fileName}" (export de l'image telle quelle) :`, e);
+    full = await getFullDataUrl(p);
+  }
+  return full;
+}
+function finalizeExportBake(){
+  if(!rotationBakedDuringExport) return;
+  rotationBakedDuringExport = false;
+  State.dirty = true; renderGrid(); autoBuildCsv();
+}
 async function applyEditFormToSelectedPhoto(){
   const p = getSelected(); if(!p || !editDraft) return null;
   // Nom du fichier : modifiable, avec garde-fous pour ne jamais aboutir à un
@@ -14311,6 +14416,22 @@ async function applyEditFormToSelectedPhoto(){
     // ré-estime le poids depuis la nouvelle image (taille du base64 ≈ 3/4 de sa longueur)
     p.poids = Math.round((editDraft.dataUrl.length * 0.75) / 1024);
     p.sizeBytes = Math.round(editDraft.dataUrl.length * 0.75);
+  }
+  // Rotation (quarts de tour + réglage fin) gravée dans les pixels : le fichier enregistré est réellement
+  // à l'endroit, et p.rotation repasse à 0 (plus aucune rotation « d'affichage » à réappliquer au rechargement).
+  const rotToBake = totalEditRotation();
+  if(!p.isVideo && fullDataUrl && hasPendingRotation(rotToBake)){
+    try{
+      const r = await bakeRotationIntoDataUrl(fullDataUrl, rotToBake);
+      fullDataUrl = r.dataUrl;
+      p.width = r.width; p.height = r.height;
+      p.poids = Math.round((fullDataUrl.length * 0.75) / 1024);
+      p.sizeBytes = Math.round(fullDataUrl.length * 0.75);
+      p.rotation = 0;
+    }catch(e){
+      console.warn("[Imago] Rotation non gravée dans les pixels :", e);
+      toast("⚠️ Rotation non gravée dans le fichier (conservée à l'affichage seulement).");
+    }
   }
   // (Plus de titre automatique « Lieu Personnage » : le titre est exactement celui du champ ci-dessus.)
   // Reporte aussi Caméra/Lieu/Map dans les métadonnées EXIF du fichier
@@ -16526,12 +16647,13 @@ async function exportAllPhotosAsZip(targets, btn){
     // Chargée à la demande (une seule photo complète en mémoire à la fois —
     // voir getFullDataUrl) plutôt que de supposer p.dataUrl déjà disponible,
     // qui n'est plus le cas depuis le chantier "miniatures en mémoire".
-    const full = await getFullDataUrl(p);
+    const full = await getPhotoDataUrlForExport(p);
     if(!full){ failed++; console.warn(`[Imago] Export .zip : image introuvable pour "${p.fileName}".`); }
     else zip.file(exportSubdirParts(p, "").concat(p.fileName || `photo_${i+1}.jpg`).join("/"), dataURLtoBlob(full)); // arborescence d'origine conservée dans le .zip
     btn.textContent = `📦 Préparation du .zip… (${i+1}/${targets.length})`;
     if(i % 20 === 0) await delay(10); // laisse l'interface respirer sur un gros catalogue
   }
+  finalizeExportBake();
   btn.textContent = "📦 Compression…";
   const blob = await zip.generateAsync({type:"blob"});
   const a = document.createElement("a");
@@ -16570,7 +16692,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     const dirCache = new Map();
     for(const p of targets){
       try{
-        const full = await getFullDataUrl(p);
+        const full = await getPhotoDataUrlForExport(p);
         if(!full) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
         const targetDir = await getExportTargetDir(dirHandle, exportSubdirParts(p, dirHandle.name), dirCache); // sous-dossiers d'origine reproduits (avant : tout à la racine)
         await writeFileToLocalDirectory(targetDir, p.fileName || `photo_${done+1}.jpg`, dataURLtoBlob(full));
@@ -16582,6 +16704,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
       btn.textContent = `📤 Export vers « ${dirHandle.name} »… (${done}/${targets.length})`;
       await delay(20);
     }
+    finalizeExportBake();
     resetLabel();
     btn.classList.toggle("done", (done-failed) > 0); // fond vert : au moins une photo exportée avec succès
     toast(`✅ ${done-failed} photo(s) exportée(s) vers « ${dirHandle.name} ».` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 8000);
@@ -17382,7 +17505,8 @@ function driveNameCandidates(p){
 }
 /* Remplace le CONTENU du fichier Drive existant de p (même fichier, même identifiant). */
 async function updateDriveImageContent(p){
-  const full = await getFullDataUrl(p);
+  const full = await getPhotoDataUrlForExport(p);
+  finalizeExportBake();
   const m = full && full.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!m) throw new Error("Image introuvable (ni en mémoire, ni dans IndexedDB).");
   const bin = atob(m[2]), bytes = new Uint8Array(bin.length);
