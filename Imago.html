@@ -8622,6 +8622,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         titre: existingRow.titre || "",
         dateAchat: ensureDateAchatHasTime(existingRow.dateAchat, file) || resolveDateAchat(file, exif, meta),
         personnage: existingRow.personnage || "",
+        fromCatalog: true, // catalogue fiabilisé : la rubrique personnage est reprise telle quelle, aucune règle d'affectation automatique (reconnaissance des visages) n'est réappliquée
         lieu: existingRow.lieu || "",
         lieuCandidate: "",
         support: normalizeSupport(existingRow.support, file.name),
@@ -11577,7 +11578,7 @@ async function faceAutoPass(){
     persons = faceReferencePersons();
   }
   if(!persons.size) return;
-  const cands = State.photos.slice(faceAutoStartIdx).filter(p=> !p.corbeille && !p.isVideo && p.hasFullImage && !String(p.personnage || "").trim());
+  const cands = State.photos.slice(faceAutoStartIdx).filter(p=> !p.corbeille && !p.isVideo && p.hasFullImage && !p.fromCatalog && !String(p.personnage || "").trim());
   if(!cands.length) return;
   faceAutoRunning = true; faceAutoAbort = false; const run = ++faceAutoRun;
   const st = document.getElementById("folderStatus"), cancel = document.getElementById("faceCancelBtn");
@@ -14909,6 +14910,7 @@ function setInfoFaceAnchor(p){
    avant la mise en place de la validation = considérée validée) et elle n'est pas AVANT le point de départ. Sinon : propositions à la demande. */
 function infoFaceEligibility(p){
   if(p.visagesValides === true) return {auto: false, reason: "validated"};
+  if(p.fromCatalog) return {auto: false, reason: "catalog"}; // catalogue rechargé : on garde la rubrique personnage telle quelle
   if(personnageTokens(p.personnage).length) return {auto: false, reason: "filled"};
   if(!faceOpts.infoFrom || !State.photos.some(x=> infoPhotoKey(x) === faceOpts.infoFrom)){ faceOpts.infoFrom = infoPhotoKey(p); saveFaceOpts(); updateFaceInfoFromNote(); }
   const list = activePhotos(), iFrom = list.findIndex(x=> infoPhotoKey(x) === faceOpts.infoFrom), iP = list.findIndex(x=> x.id === p.id);
@@ -14928,6 +14930,8 @@ function renderInfoFacesHeld(p, reason){
   const line = document.createElement("div"); line.className = "sub-line"; box.appendChild(line);
   line.textContent = reason === "before"
     ? "Visages : avant le point de départ de la reconnaissance automatique — rien n'est modifié. "
+    : reason === "catalog"
+    ? "Visages : fiche issue du catalogue — personnage conservé tel quel, rien n'est modifié automatiquement. "
     : "Visages : personnage déjà indiqué — rien n'est modifié automatiquement. ";
   const b = document.createElement("button"); b.type = "button"; b.className = "info-face-icon"; b.textContent = "Voir les propositions";
   b.addEventListener("click", ()=> infoFacesAnalyze(p, false));
@@ -16751,6 +16755,7 @@ async function mergeCsvIntoCatalog(text){
     rec.dateAchat = row.dateAchat || rec.dateAchat;
     rec.sousDossier = row.sousDossier || rec.sousDossier || ""; // conserve la colonne du CSV (sinon vidée au prochain « Sauver »)
     rec.personnage = row.personnage || "";
+    rec.fromCatalog = true; // personnage repris du catalogue : jamais réaffecté automatiquement
     rec.lieu = row.lieu || "";
     rec.support = normalizeSupport(row.support, row.fileName);
     rec.etiquette = row.etiquette || "";
