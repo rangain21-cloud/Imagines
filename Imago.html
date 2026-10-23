@@ -8654,7 +8654,10 @@ async function importOneFile(file, csvRowByFileName, stats){
       // depuis le nom de fichier (à vérifier/compléter par l'utilisateur).
       const dateAchat = resolveDateAchat(file, exif, meta);
       const lieu = "";
-      const personnage = meta.personnage;
+      // 2e usage d'un catalogue (catalogue relu, ou fiches déjà issues d'un catalogue dans cette session) : plus de
+      // pré-affectation du personnage depuis le nom de fichier — seule la 1re constitution du catalogue l'applique.
+      const catalogReused = csvRowByFileName.size > 0 || State.photos.some(x=>x.fromCatalog);
+      const personnage = catalogReused ? "" : meta.personnage;
       rec = {
         id: uid("ph"), fileName: file.name, sousDossier, titre: meta.etiquette || "", dataUrl: finalDataUrl, thumbDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
