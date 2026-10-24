@@ -1559,6 +1559,8 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <div class="sidebar-actions">
           <button class="btn" id="edRotateLeftBtn">↺ Pivoter à gauche (−90°)</button>
           <button class="btn" id="edRotateRightBtn">↻ Pivoter à droite (+90°)</button>
+          <button class="btn" id="edRotate180Btn" title="Retourne la photo de 180° (texte ou image à l'envers)">⟳ Inverser (180°)</button>
+          <button class="btn" id="edMirrorBtn" title="Effet miroir : inverse la photo de gauche à droite (texte écrit à l'envers, vu dans un miroir)">⇋ Miroir (gauche ↔ droite)</button>
           <button class="btn" id="edFreeRotateBtn" type="button">◇ Libre</button>
           <div class="free-rotate-panel hidden" id="edFreeRotatePanel">
             <div class="free-rotate-row">
@@ -13373,6 +13375,51 @@ document.getElementById("edRotateLeftBtn").addEventListener("click", ()=>{
 document.getElementById("edRotateRightBtn").addEventListener("click", ()=>{
   pushEditHistory();
   editDraft.rotation = ((editDraft.rotation||0) + 90) % 360; refreshEditPreview();
+});
+document.getElementById("edRotate180Btn").addEventListener("click", ()=>{
+  pushEditHistory();
+  editDraft.rotation = ((editDraft.rotation||0) + 180) % 360; refreshEditPreview();
+});
+/* Miroir gauche ↔ droite, tel qu'on le voit à l'écran. L'inversion est gravée dans les pixels de editDraft.dataUrl
+   (comme le recadrage ou les yeux rouges, donc annulable par Défaire). Comme miroir∘rotation(θ) = rotation(−θ)∘miroir,
+   on inverse aussi le signe des rotations déjà posées : l'aperçu reste cohérent même après un pivot ou un réglage fin. */
+document.getElementById("edMirrorBtn").addEventListener("click", async ()=>{
+  if(!editDraft || !editDraft.dataUrl){ toast("Image encore en cours de chargement — réessayez dans un instant."); return; }
+  const btn = document.getElementById("edMirrorBtn");
+  btn.disabled = true;
+  try{
+    exitCropMode(); exitRedEyeMode(); exitCloneMode(); // ces modes reposent sur l'image telle qu'elle était
+    const img = await new Promise((resolve, reject)=>{
+      const im = new Image();
+      im.onload = ()=> resolve(im);
+      im.onerror = ()=> reject(new Error("image illisible"));
+      im.src = editDraft.dataUrl;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
+    ctx.drawImage(img, 0, 0);
+    const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    pushEditHistory();
+    editDraft.dataUrl = newDataUrl;
+    editDraft.width = canvas.width; editDraft.height = canvas.height;
+    editDraft.cropped = true; // même indicateur « pixels déjà modifiés » que le recadrage
+    editDraft.rotation = (0 - (editDraft.rotation || 0)) % 360 || 0;
+    editDraft.fineRotation = (0 - (editDraft.fineRotation || 0)) || 0;
+    document.getElementById("edFreeRotateRange").value = editDraft.fineRotation;
+    document.getElementById("edFreeRotateNum").value = editDraft.fineRotation;
+    highlightFreeRotateTicks(editDraft.fineRotation);
+    clearFaceResults(); // les cadres de visages ne correspondent plus à l'image
+    suppressNextEditZoomReset = true;
+    document.getElementById("edPreviewImg").src = newDataUrl;
+    refreshEditPreview();
+  }catch(e){
+    console.warn("[Imago] Miroir impossible :", e);
+    toast("⚠️ Impossible d'appliquer l'effet miroir.");
+  }finally{
+    btn.disabled = false;
+  }
 });
 document.getElementById("edRotateResetBtn").addEventListener("click", ()=>{
   if(editDraft.rotation || editDraft.fineRotation) pushEditHistory();
