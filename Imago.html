@@ -14804,7 +14804,9 @@ function renderInfoModal(p){
       const verified = await verifyCommuneWikipedia(p.lieuCandidate);
       if(verified.ok){
         const candidate = p.lieuCandidate;
+        const oldLieu = p.lieu || "";
         p.lieu = verified.name;
+        syncMapWithLieu(p, oldLieu, p.lieu);
         p.lieuCandidate = "";
         p.personnage = removeTokenFromPersonnage(p.personnage, candidate); // ce n'était pas un prénom
         if(!p.titre || p.titre === buildTitre("", p.personnage)) p.titre = buildTitre(p.lieu, p.personnage);
@@ -14839,7 +14841,9 @@ async function maybeFetchGpsLieuCandidate(p){
     const place = await reverseGeocode(p.gpsLat, p.gpsLon);
     p.lieuGpsChecked = true; // évite de réinterroger le service à chaque réouverture, même si rien n'a été trouvé
     if(place){
+      const oldLieu = p.lieu || "";
       p.lieu = place;
+      syncMapWithLieu(p, oldLieu, p.lieu);
       if(!p.titre || p.titre === buildTitre("", p.personnage)) p.titre = buildTitre(p.lieu, p.personnage);
     }
     await idbPut("photos", p);
@@ -15058,6 +15062,14 @@ function infoFacesAnalyze(p, auto){
   })();
 }
 
+/* Quand le lieu change, la carte de la modale Infos (iframe.info-map) change aussi : la rubrique « map » (ligne 🗺 Map)
+   doit suivre. Règle identique à renameLieuxEverywhere : on ne touche qu'à une carte NON personnalisée (vide, ou encore
+   égale au lien construit depuis l'ancien lieu) ; avec un GPS dans le fichier, la carte reste celle des coordonnées. */
+function syncMapWithLieu(p, oldLieu, newLieu){
+  const wasAutoMap = !p.map || p.map === mapUrlFromLieu(oldLieu);
+  if(!wasAutoMap) return;
+  p.map = (p.gpsLat!=null && p.gpsLon!=null) ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : mapUrlFromLieu(newLieu);
+}
 function startInlineEdit(containerId, field, p){
   const container = document.getElementById(containerId);
   if(!container || container.querySelector("input")) return;
@@ -15076,7 +15088,11 @@ function startInlineEdit(containerId, field, p){
   wrap.querySelector("button").addEventListener("click", async ()=>{
     if(field==="date") p.dateAchat = normalizeDateAchatInput(input.value) || p.dateAchat;
     else if(field==="personnage") p.personnage = input.value.trim();
-    else p.lieu = input.value.trim();
+    else{
+      const oldLieu = p.lieu || "";
+      p.lieu = input.value.trim();
+      syncMapWithLieu(p, oldLieu, p.lieu); // l'aperçu carte change : la rubrique map suit
+    }
     await idbPut("photos", p);
     populateFilterOptions();
     renderGrid();
