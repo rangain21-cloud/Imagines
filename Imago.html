@@ -372,6 +372,11 @@ html.bar-icons .brand, html.bar-icons .selection-hint{display:none;}
 .btn.reset{background:transparent; border:1px solid var(--line); color:var(--ink-dim);}
 .btn.done{background:var(--ok); border-color:var(--ok); color:#0c1f14; font-weight:600;}
 .btn.done:hover{filter:brightness(1.12);}
+/* Onglet « Recad. » de la modale Modifier : boutons d'action deux fois moins hauts (≈ 18 px au lieu de ≈ 36 px),
+   police réduite en proportion, et espacement resserré. Seuls les boutons directs de la colonne sont concernés
+   (pas ceux du panneau « Libre »). */
+#modalEdit [data-panel="recadrer"] .sidebar-actions{ gap:4px; margin-top:8px; }
+#modalEdit [data-panel="recadrer"] .sidebar-actions > .btn{ padding:3px 10px; font-size:10px; line-height:1.15; }
 .result-count{font-size:12px; color:var(--ink-dim); margin-top:10px;}
 
 /* ---------- burger side menu ---------- */
