@@ -627,7 +627,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 }
 #modalCatalogPick .modal-body{flex:1 1 auto; min-height:0; overflow-y:auto;}
 #modalCatalogPick .modal-head, #modalCatalogPick .modal-foot{flex:0 0 auto;}
-/* Modale "Modifier" : 80% de l'écran sur PC/tablette (au lieu de 760px fixe,
+/* Modale "Modifier" : plein écran par défaut sur PC/tablette (l'utilisateur peut la réduire avec la poignée en bas à droite — au lieu de 760px fixe,
    souvent trop petit pour bien juger une retouche) — réservé aux écrans
    assez larges : sur mobile, la modale profite déjà de presque tout
    l'écran par défaut (voir .modal-overlay), un 80vw fixe la rendrait au
@@ -635,9 +635,11 @@ details.pave .btn{width:100%; margin-bottom:8px;}
    garder l'en-tête, la barre d'onglets et les boutons toujours visibles,
    l'aperçu et le panneau d'onglets se partageant le reste. */
 @media (min-width: 761px){
+  #modalEdit{ padding:0; } /* plus de marge autour : la modale occupe tout l'écran à l'ouverture */
   #modalEdit .modal{
-    width:80vw; max-width:95vw; min-width:480px;
-    height:80vh; max-height:95vh; min-height:420px;
+    width:100vw; max-width:100vw; min-width:480px;
+    height:100vh; max-height:100vh; min-height:420px;
+    border-radius:0;
     display:flex; flex-direction:column;
     overflow:hidden; /* le défilement se fait dans les zones internes ci-dessous, pas sur toute la modale ; nécessaire aussi pour que "resize" ci-dessous fonctionne */
     resize:both; /* poignée native en bas à droite pour agrandir/réduire la modale à la souris — la barre latérale des onglets garde une largeur fixe (54px, voir .edit-tab), donc tout agrandissement profite d'abord à l'aperçu et au panneau actif */
@@ -1173,7 +1175,6 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       </select></div>
     <div class="search-field"><label style="text-transform:none; letter-spacing:0; font-size:12px; cursor:pointer; display:flex; gap:7px; align-items:flex-start; color:var(--ink);"><input type="checkbox" id="noZoomChk" style="width:auto; margin-top:2px;"> Ne pas zoomer l'affichage (ignore l'échelle des préréglages)</label></div>
     <button class="btn" id="layoutRescueBtn" type="button" style="width:100%;" title="Remet l'affichage à 100 % avec la barre du haut en icônes seules">↺ Retrouver IMAGO en entier</button>
-    <div class="drive-note" style="margin:8px 0 0;">Barre du haut tronquée ou absente ? Ce bouton remet l'affichage à 100 % avec la barre en icônes seules. Si le menu lui-même est inaccessible, ajoutez « #ui-reset » à la fin de l'adresse de la page.</div>
   </details>
 </nav>
 
@@ -1559,8 +1560,6 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <div class="sidebar-actions">
           <button class="btn" id="edRotateLeftBtn">↺ Pivoter à gauche (−90°)</button>
           <button class="btn" id="edRotateRightBtn">↻ Pivoter à droite (+90°)</button>
-          <button class="btn" id="edRotate180Btn" title="Retourne la photo de 180° (texte ou image à l'envers)">⟳ Inverser (180°)</button>
-          <button class="btn" id="edMirrorBtn" title="Effet miroir : inverse la photo de gauche à droite (texte écrit à l'envers, vu dans un miroir)">⇋ Miroir (gauche ↔ droite)</button>
           <button class="btn" id="edFreeRotateBtn" type="button">◇ Libre</button>
           <div class="free-rotate-panel hidden" id="edFreeRotatePanel">
             <div class="free-rotate-row">
@@ -1587,6 +1586,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
               <input type="checkbox" id="edFreeRotateCrop" style="width:auto; margin-top:2px;"> Recadrer automatiquement (sans coins noirs)
             </label>
           </div>
+          <button class="btn" id="edMirrorBtn" title="Effet miroir : inverse la photo de gauche à droite (texte écrit à l'envers, vu dans un miroir)">⇋ Miroir (gauche ↔ droite)</button>
           <button class="btn reset" id="edRotateResetBtn">Réinitialiser la rotation</button>
           <button class="btn" id="edCropBtn" type="button">✂ Rogner l'image…</button>
         </div>
@@ -13375,10 +13375,6 @@ document.getElementById("edRotateLeftBtn").addEventListener("click", ()=>{
 document.getElementById("edRotateRightBtn").addEventListener("click", ()=>{
   pushEditHistory();
   editDraft.rotation = ((editDraft.rotation||0) + 90) % 360; refreshEditPreview();
-});
-document.getElementById("edRotate180Btn").addEventListener("click", ()=>{
-  pushEditHistory();
-  editDraft.rotation = ((editDraft.rotation||0) + 180) % 360; refreshEditPreview();
 });
 /* Miroir gauche ↔ droite, tel qu'on le voit à l'écran. L'inversion est gravée dans les pixels de editDraft.dataUrl
    (comme le recadrage ou les yeux rouges, donc annulable par Défaire). Comme miroir∘rotation(θ) = rotation(−θ)∘miroir,
