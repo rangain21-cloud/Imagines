@@ -1216,7 +1216,8 @@ details.pave .btn{width:100%; margin-bottom:8px;}
           <video id="viewerVideo" class="hidden" controls playsinline></video>
           <div class="viewer-missing hidden" id="viewerVideoError">
             🎬 Cette vidéo ne peut pas être lue par ce navigateur
-            <div class="sub">Cause la plus fréquente : une piste audio dans un format que les navigateurs web ne savent pas décoder (ex. PCM/audio non compressé, courant dans les exports QuickTime/iMovie), même quand la vidéo elle-même est dans un format compatible (H.264). Convertissez le fichier avec VLC (Média → Convertir/Enregistrer → profil incluant l'audio AAC) sans avoir à retoucher la vidéo, puis réimportez-le.</div>
+            <div class="sub">Causes les plus fréquentes : une vidéo enregistrée en HEVC/H.265 (réglage par défaut des iPhone, non lisible sans l'extension vidéo du système), ou une piste audio dans un format que les navigateurs web ne savent pas décoder (ex. PCM/audio non compressé, courant dans les exports QuickTime/iMovie), même quand la vidéo elle-même est en H.264. Ouvrez une copie du fichier avec le lecteur de votre ordinateur (VLC, Lecteur Windows…), ou convertissez-la avec VLC (Média → Convertir/Enregistrer → H.264 + audio AAC), puis réimportez-la.</div>
+            <button class="btn copper hidden" id="btnVideoErrorSave" type="button" style="margin-top:10px;">⬇ Enregistrer une copie pour l'ouvrir</button>
           </div>
           <div class="viewer-video-pending hidden" id="viewerVideoPending">
             <button class="btn copper" id="btnLoadPendingVideo">▶ Charger la vidéo (<span id="pendingVideoSize"></span>)</button>
@@ -12395,11 +12396,27 @@ viewerImg.addEventListener("dblclick", ()=>{ if(getSelected()) openLoupe(State.s
    contrairement à un lecteur de bureau qui s'appuie sur les codecs du
    système. Sans ce message, ça ressemblait à un bug silencieux plutôt qu'à
    une limite de format compréhensible. */
-document.getElementById("viewerVideo").addEventListener("error", ()=>{
+function showViewerVideoError(){
   const p = getSelected();
-  if(!p || !p.isVideo || p.videoPending) return; // pas d'erreur pertinente à afficher (rien n'était en cours de lecture)
+  if(!p || !p.isVideo) return;
+  // Vidéo différée : p.videoPending reste vrai même après « ▶ Charger la vidéo » ; l'erreur est pertinente dès que
+  // playVideoFromFile a posé currentId (sinon rien n'était en cours de lecture). Sans cette distinction, un MOV
+  // illisible (HEVC…) ne montrait AUCUN message : le clic sur « Charger » semblait ne rien faire.
+  if(p.videoPending && document.getElementById("viewerVideo").dataset.currentId !== p.id) return;
   document.getElementById("viewerVideo").classList.add("hidden");
   document.getElementById("viewerVideoError").classList.remove("hidden");
+  document.getElementById("btnVideoErrorSave").classList.toggle("hidden", !pendingVideoFiles.get(p.id));
+}
+document.getElementById("viewerVideo").addEventListener("error", showViewerVideoError);
+// Conteneur lisible mais piste vidéo non décodable (HEVC sans extension) : métadonnées chargées, 0 × 0 pixel, écran noir.
+document.getElementById("viewerVideo").addEventListener("loadedmetadata", ()=>{
+  const v = document.getElementById("viewerVideo");
+  if(v.getAttribute("src") && v.videoWidth === 0 && v.videoHeight === 0) showViewerVideoError();
+});
+document.getElementById("btnVideoErrorSave").addEventListener("click", ()=>{
+  const p = getSelected();
+  const f = p && pendingVideoFiles.get(p.id);
+  if(f) saveVideoCopy(p, f);
 });
 
 /* -----------------------------------------------------------------
@@ -12430,6 +12447,7 @@ function playVideoFromFile(p, file){
   // L'ancienne URL objet (s'il y en avait une) est révoquée pour ne pas
   // accumuler de références mémoire au fil des ouvertures successives.
   if(video.dataset.objectUrl) URL.revokeObjectURL(video.dataset.objectUrl);
+  document.getElementById("viewerVideoError").classList.add("hidden"); // nouvelle tentative : l'éventuel message d'erreur précédent est retiré
   video.src = objectUrl;
   video.dataset.objectUrl = objectUrl;
   video.dataset.currentId = p.id;
