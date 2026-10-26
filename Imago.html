@@ -9062,7 +9062,22 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // les catalogues choisis explicitement via « Choisir le catalogue (.csv)… »
   // (voir pendingCatalogFiles), seul moyen d'en fournir un pour "Sélectionner
   // des images…" puisque son propre sélecteur filtre les .csv.
-  const csvFiles = [...pendingCatalogFiles, ...allFiles.filter(f=>/\.csv$/i.test(f.name))];
+  // Candidats au rôle de catalogue : on écarte les Album-*.csv (fichiers de SORTIE du Hall of fame, jamais un catalogue),
+  // les .csv des sous-dossiers et les doublons (même fichier à la fois retenu via « Choisir le catalogue » et présent dans le dossier). Sans cela, la
+  // modale annonçait « Plusieurs fichiers .csv » alors qu'un seul catalogue était réellement utilisable.
+  const csvFiles = [];
+  const seenCsv = new Set();
+  for(const f of [...pendingCatalogFiles, ...allFiles.filter(f=>/\.csv$/i.test(f.name))]){
+    if(ALBUM_OUTPUT_FILE_RE.test(f.name)) continue;
+    // Seuls les .csv situés directement dans le dossier pointé (« Dossier/fichier.csv ») : ceux des sous-dossiers
+    // (archives, sauvegardes…) sont ignorés. Pas de chemin relatif (sélection de fichiers, catalogue choisi à la main) : conservé.
+    const relParts = String(f.webkitRelativePath || "").split("/").filter(Boolean);
+    if(relParts.length > 2) continue;
+    const key = `${f.name}|${f.size}|${f.lastModified}`;
+    if(seenCsv.has(key)) continue;
+    seenCsv.add(key);
+    csvFiles.push(f);
+  }
   pendingCatalogFiles = []; // usage unique : ne pas les réappliquer silencieusement à un import ultérieur
   // Import Google Drive : le catalogue a déjà été choisi (modale + filtres) AVANT le téléchargement des médias,
   // pour ne télécharger que les fichiers retenus — on réutilise ce choix au lieu de reposer la question.
