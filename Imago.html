@@ -16663,6 +16663,9 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
    runWithConcurrency) : réécrire l'EXIF de nombreuses photos d'affilée
    sans répit peut solliciter la mémoire de la même façon qu'un import,
    sur un appareil à ressources limitées. */
+// Libellés lus dans le HTML : pour les renommer, il suffit de modifier le texte des boutons (le script les restitue après usage).
+const LABEL_WRITE_EXIF_BATCH = document.getElementById("btnWriteExifBatch").textContent;
+const LABEL_EXPORT_ALL_PHOTOS = document.getElementById("btnExportAllPhotos").textContent;
 document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=>{
   const targets = State.photos.filter(p=> !p.isVideo && (p.optique || p.lieu || p.map || p.dateAchat || p.auteur || p.personnage || p.titre || p.favori || p.art || p.concert));
   if(!targets.length){
@@ -16703,7 +16706,7 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
     await delay(30); // même répit qu'à l'import, pour laisser le moteur JS respirer entre deux photos
   }
   btn.disabled = false;
-  btn.textContent = "🖊️ Reporter Caméra/Lieu/Map dans les métadonnées EXIF (tout le catalogue)";
+  btn.textContent = LABEL_WRITE_EXIF_BATCH;
   btn.classList.toggle("done", changed > 0); // fond vert : au moins une photo mise à jour avec succès
   renderGrid();
   autoBuildCsv();
@@ -16788,7 +16791,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     return;
   }
   const btn = document.getElementById("btnExportAllPhotos");
-  const resetLabel = ()=>{ btn.disabled = false; btn.textContent = "📤 Exporter toutes les photos (dossier ou .zip)"; };
+  const resetLabel = ()=>{ btn.disabled = false; btn.textContent = LABEL_EXPORT_ALL_PHOTOS; };
   btn.classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
   if(typeof window.showDirectoryPicker === "function"){
     let dirHandle;
