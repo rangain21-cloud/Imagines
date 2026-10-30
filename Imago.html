@@ -458,10 +458,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 }
 /* ascenseur vertical mis en valeur, dans la palette de l'app */
 .gallery-scroll::-webkit-scrollbar{width:12px;}
-.gallery-scroll::-webkit-scrollbar-track{background:var(--bg-panel);}
-.gallery-scroll::-webkit-scrollbar-thumb{background:var(--line); border-radius:6px; border:2px solid var(--bg-panel);}
-.gallery-scroll::-webkit-scrollbar-thumb:hover{background:var(--copper);}
-.gallery-scroll{scrollbar-width:thin; scrollbar-color:var(--line) var(--bg-panel);}
+.gallery-scroll::-webkit-scrollbar-track{background:#2a3f33;}
+.gallery-scroll::-webkit-scrollbar-thumb{background:var(--copper); border-radius:6px; border:2px solid #2a3f33;}
+.gallery-scroll::-webkit-scrollbar-thumb:hover{background:var(--copper-hi);}
+/* Galerie : c'est elle (overflow-y:scroll) qui porte l'ascenseur vertical de l'écran principal. Largeur « thin » conservée ;
+   seules les couleurs changent : curseur cuivré sur glissière éclaircie. Chrome récent (121+) n'applique QUE ces propriétés
+   standard et ignore les ::-webkit-scrollbar ci-dessus dès que scrollbar-color est défini : ils sont donc gardés pour les
+   navigateurs plus anciens mais, pour rester cohérents, la glissière y est éclaircie de la même façon. */
+.gallery-scroll{scrollbar-width:thin; scrollbar-color:var(--copper) #2a3f33;}
 .gallery-grid{
   display:grid;
   grid-template-columns:repeat(auto-fill, minmax(var(--thumb-min), 1fr));
