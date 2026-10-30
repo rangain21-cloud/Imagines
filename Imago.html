@@ -1274,6 +1274,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <label for="fEtiquette">Mot clé de l'étiquette</label>
       <input type="text" id="fEtiquette" placeholder="rechercher… (mots clés séparés par des virgules)" title="Plusieurs mots clés possibles, séparés par des virgules : les photos dont l'étiquette contient au moins un d'entre eux sont affichées.">
     </div>
+    <div class="search-field">
+      <label for="fToutAzimut">Mot clé... tout azimut</label>
+      <input type="text" id="fToutAzimut" placeholder="rechercher dans tout le catalogue… (mots clés séparés par des virgules)" title="Cherche dans toutes les rubriques du catalogue (nom de fichier, dossier, étiquette, date, personnage, lieu, support, auteur, albums, caméra, map…), sans tenir compte des majuscules ni des accents. Plusieurs mots clés possibles, séparés par des virgules : les photos contenant au moins un d'entre eux sont affichées.">
+    </div>
 
     <div class="sidebar-actions">
       <button class="btn reset" id="btnResetFilters">Réinitialiser les filtres</button>
@@ -4935,6 +4939,13 @@ function activePhotos(){
         if(!kws.some(kw => t.includes(kw))) return false;
       }
     }
+    if(f.tout){
+      const kws = toutAzimutKeywords(f.tout);
+      if(kws.length){
+        const hay = toutAzimutHaystack(p);
+        if(!kws.some(kw => hay.includes(kw))) return false;
+      }
+    }
     return true;
   }).sort((a,b)=>{
     // Tri par nom de fichier (ordre naturel/alphabétique) quand le bouton
@@ -5766,6 +5777,20 @@ function updateToolbarState(){
 function titreKeywords(raw){
   return String(raw||"").split(",").map(k=>k.trim().toLowerCase()).filter(Boolean);
 }
+/* Champ « Mot clé... tout azimut » : recherche dans TOUTES les rubriques textuelles d'une ligne du catalogue (les colonnes du
+   CSV, hors identifiants/valeurs techniques : id, filterKey, rotation, poids, corbeille, favori, visagesValides).
+   Insensible à la casse et aux accents ; mots clés séparés par des virgules = union (comme « Mot clé de l'étiquette »).
+   Liste volontairement locale (et non CSV_COLUMNS, constante déclarée plus bas) et fournie par une fonction : pas d'accès avant initialisation. */
+function toutAzimutFields(){ return ["fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","art","concert","histoire","partition","albums","optique","map"]; }
+function foldSearchText(v){
+  return String(v==null ? "" : v).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+}
+function toutAzimutKeywords(raw){
+  return String(raw||"").split(",").map(foldSearchText).map(k=>k.trim()).filter(Boolean);
+}
+function toutAzimutHaystack(p){
+  return foldSearchText(toutAzimutFields().map(c=> Array.isArray(p[c]) ? p[c].join(" ") : (p[c]==null ? "" : p[c])).join(" \u0001 "));
+}
 function uniqueValues(field){
   return [...new Set(State.photos.filter(p=>!p.corbeille).map(p=>p[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
 }
@@ -5883,7 +5908,7 @@ function populateInfoModalDatalists(){
    de la toute première image du catalogue. */
 const FILTERS_KEY = "imago_filters";
 function loadSavedFilters(){
-  const empty = {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""};
+  const empty = {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:"", tout:""};
   try{
     const o = JSON.parse(localStorage.getItem(FILTERS_KEY) || "null");
     if(o && typeof o === "object"){
@@ -5900,6 +5925,7 @@ function saveFilters(){
 function syncFilterControls(){
   document.getElementById("fFavori").value = State.filters.favori || "";
   document.getElementById("fEtiquette").value = State.filters.titre || "";
+  document.getElementById("fToutAzimut").value = State.filters.tout || "";
 }
 // Repositionne le visualiseur sur le 1er fichier respectant les filtres (tri
 // actuel), sauf si l'utilisateur a déjà choisi une image entre-temps.
@@ -5929,6 +5955,7 @@ document.getElementById("fLieu").addEventListener("change", e=>{State.filters.li
 document.getElementById("fFavori").addEventListener("change", e=>{State.filters.favori=e.target.value; saveFilters(); renderGrid();});
 document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; saveFilters(); renderGrid();});
 document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.titre=e.target.value; saveFilters(); renderGrid();});
+document.getElementById("fToutAzimut").addEventListener("input", e=>{State.filters.tout=e.target.value; saveFilters(); renderGrid();});
 /* Bouton "Tri chronologique" / "Tri anti-chronologique" — présent à deux
    endroits (écran d'accueil "l'heuristique" et visualiseur principal
    "Main 90%"), synchronisés puisqu'ils pilotent le même State.sortOrder,
@@ -5977,7 +6004,8 @@ document.getElementById("btnSortByFileName").addEventListener("click", ()=>{
 updateSortByFileNameBtn();
 updateSortOrderBtn();
 function resetFilters(){
-  State.filters = {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:""};
+  State.filters = {auteur:"", personnage:"", lieu:"", favori:"", type:"", titre:"", tout:""};
+  document.getElementById("fToutAzimut").value="";
   document.getElementById("fAuteur").value="";
   document.getElementById("fPersonnage").value="";
   document.getElementById("fLieu").value="";
@@ -15817,6 +15845,7 @@ function describeActiveFilters(){
   if(f.favori === "non") parts.push("Favori = Non");
   if(f.type) parts.push(`Type = ${f.type}`);
   if(f.titre){ const kws = titreKeywords(f.titre); if(kws.length) parts.push(kws.length>1 ? `Mots clés « ${kws.join(" » ou « ")} »` : `Mot clé « ${kws[0]} »`); }
+  if(f.tout){ const kws = toutAzimutKeywords(f.tout); if(kws.length) parts.push(kws.length>1 ? `Tout azimut « ${kws.join(" » ou « ")} »` : `Tout azimut « ${kws[0]} »`); }
   return parts;
 }
 function updateSsFilterInfo(){
