@@ -121,6 +121,10 @@ html.bar-icons .brand, html.bar-icons .selection-hint{display:none;}
     var(--bg-deep);
   padding:18px 22px 14px;
 }
+/* Ascenseurs plus visibles dans l'écran principal (« Main 90% ») : zone .main et zone image .viewer-scroll.
+   Seules les COULEURS changent (curseur cuivré sur glissière éclaircie) ; la largeur reste celle, native, du navigateur.
+   (Propriétés standard : Chrome/Edge 121+, Firefox, Safari récent. Plus anciens : ascenseur d'origine.) */
+.main, .viewer-scroll{ scrollbar-color:var(--copper) #2a3f33; }
 .sidebar{
   width:var(--side-panel-w); max-width:32vw; flex-shrink:0; /* même largeur ET même plafond que le panneau Infos, fixe (ne grandit plus avec l'écran) */
   height:100%;
