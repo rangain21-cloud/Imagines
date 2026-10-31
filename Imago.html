@@ -8706,7 +8706,8 @@ async function importOneFile(file, csvRowByFileName, stats){
         id: uid("ph"), fileName: file.name, sousDossier, titre: meta.etiquette || "", dataUrl: finalDataUrl, thumbDataUrl, dateAchat,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
-        personnage, lieu, lieuCandidate: meta.lieuCandidate || "", support: supportFromFileName(file.name), etiquette: "", auteur:"Philippe",
+        personnage, fromCatalog: catalogReused, // catalogue utilisé : aucune règle d'affectation du personnage (ni nom de fichier, ni reconnaissance des visages) ; contenu du CSV seul
+        lieu, lieuCandidate: meta.lieuCandidate || "", support: supportFromFileName(file.name), etiquette: "", auteur:"Philippe",
         favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
         sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
         optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
