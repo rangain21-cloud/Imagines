@@ -12799,16 +12799,27 @@ document.getElementById("btnShare").addEventListener("click", ()=>{
   openShareModal([p]);
 });
 function addShareChip(rawValue, containerId){
-  const value = (rawValue||"").trim();
-  if(!value) return;
+  // Plusieurs destinataires saisis d'un coup (« a@x.fr; b@y.fr », séparés par ; , ou retour à la ligne) : une pastille chacun.
+  // Sans ce découpage, « a@x.fr;b@y.fr » devenait UNE pastille à deux « @ », rejetée comme adresse invalide.
+  const parts = String(rawValue||"").split(/[;,\n\r]+/).map(v=>v.trim()).filter(Boolean);
+  if(!parts.length) return;
   const chips = document.getElementById(containerId || "shareChips");
-  // évite les doublons si on clique deux fois
-  if([...chips.children].some(c=>c.textContent.trim()===value)) return;
-  const chip = document.createElement("span");
-  chip.className = "btn"; chip.style.padding="4px 10px"; chip.style.fontSize="12px";
-  chip.textContent = value;
-  chips.appendChild(chip);
+  for(const value of parts){
+    // évite les doublons si on clique deux fois
+    if([...chips.children].some(c=>c.textContent.trim()===value)) continue;
+    const chip = document.createElement("span");
+    chip.className = "btn"; chip.style.padding="4px 10px"; chip.style.fontSize="12px";
+    chip.textContent = value;
+    chips.appendChild(chip);
+  }
 }
+document.getElementById("shareCombo").addEventListener("input", (e)=>{
+  const v = e.target.value;
+  const cut = Math.max(v.lastIndexOf(";"), v.lastIndexOf(","));
+  if(cut < 0) return;
+  addShareChip(v.slice(0, cut), "shareChips"); // tout ce qui précède le dernier séparateur devient pastille…
+  e.target.value = v.slice(cut + 1).replace(/^\s+/, ""); // …et on continue avec la saisie suivante
+});
 document.getElementById("shareCombo").addEventListener("keydown", (e)=>{
   if(e.key==="Enter" && e.target.value.trim()){
     addShareChip(e.target.value, "shareChips");
