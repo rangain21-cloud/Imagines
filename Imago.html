@@ -13030,11 +13030,22 @@ async function gmailSend(emails, subject, message, attachments){
   const mime = buildMimeMessage(emails, subject, message, attachments);
   for(let attempt=0; attempt<2; attempt++){
     const token = await ensureGmailToken();
-    const res = await fetch("https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media", {
-      method: "POST",
-      headers: {"Authorization": "Bearer " + token, "Content-Type": "message/rfc822"},
-      body: new Blob([mime], {type:"message/rfc822"})
-    });
+    let res;
+    try{
+      res = await fetch("https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media", {
+        method: "POST",
+        headers: {"Authorization": "Bearer " + token, "Content-Type": "message/rfc822"},
+        body: new Blob([mime], {type:"message/rfc822"})
+      });
+    }catch(netErr){
+      // « Failed to fetch » : le navigateur n'a pas pu LIRE la réponse (coupure juste après un gros envoi, réponse sans en-tête CORS,
+      // extension de blocage…) alors que Gmail a très souvent déjà traité la requête et envoyé le message. Pas de nouvelle
+      // tentative (risque de doublon) : l'envoi est signalé comme NON CONFIRMÉ, et non comme un échec, sauf hors connexion.
+      if(navigator.onLine === false) throw new Error("pas de connexion Internet.");
+      const e = new Error("la réponse de Gmail n'a pas pu être lue (« " + ((netErr && netErr.message) || netErr) + " »)");
+      e.sendUnverified = true;
+      throw e;
+    }
     if(res.ok) return;
     if(res.status === 401 && attempt === 0){ gmailToken = null; continue; } // jeton expiré : on en redemande un
     let detail = "";
@@ -13042,6 +13053,9 @@ async function gmailSend(emails, subject, message, attachments){
     if(res.status === 403) throw new Error("Gmail a refusé l'envoi (403" + (detail ? " : " + detail : "") + ") — vérifiez que l'API Gmail est activée dans votre projet Google Cloud et que l'autorisation « Envoyer des e-mails » a été accordée. Vous pouvez utiliser « Ouvrir ma messagerie » en attendant.");
     throw new Error("Gmail : erreur " + res.status + (detail ? " — " + detail : ""));
   }
+}
+function batches_label(unverified, targets){
+  return unverified.length > 1 ? ` pour ${unverified.length} e-mails` : "";
 }
 async function sendShareByMail(targets, emails, rejected, btn){
   if(btn.disabled) return;
@@ -13051,6 +13065,7 @@ async function sendShareByMail(targets, emails, rejected, btn){
   const subjectBase = document.getElementById("shareSubject").value.trim() || (targets.length>1 ? `${targets.length} photos` : (targets[0].fileName || "Photo"));
   const message = document.getElementById("shareMessage").value.trim();
   let sentCount = 0;
+  const unverifiedBatches = []; // envois dont la réponse de Gmail est illisible : en principe partis, mais non confirmés
   try{
     btn.textContent = "Autorisation Gmail…";
     await ensureGmailToken(); // 1re étape : la fenêtre d'autorisation Google doit partir du clic de l'utilisateur
@@ -13072,7 +13087,13 @@ async function sendShareByMail(targets, emails, rejected, btn){
     for(let b=0;b<batches.length;b++){
       btn.textContent = batches.length>1 ? `Envoi e-mail ${b+1}/${batches.length}…` : "Envoi de l'e-mail…";
       const subject = batches.length>1 ? `${subjectBase} (${b+1}/${batches.length})` : subjectBase;
-      await gmailSend(emails, subject, message, batches[b]);
+      try{
+        await gmailSend(emails, subject, message, batches[b]);
+      }catch(sendErr){
+        if(!(sendErr && sendErr.sendUnverified)) throw sendErr;
+        console.warn(`[Imago] E-mail ${b+1}/${batches.length} : envoi non confirmé —`, sendErr.message);
+        unverifiedBatches.push(b+1);
+      }
       sentCount += batches[b].length;
     }
   }catch(err){
@@ -13091,7 +13112,8 @@ async function sendShareByMail(targets, emails, rejected, btn){
     sentCount>0,
     `${sentCount} image${plural} envoyée${plural} par e-mail à ${emails.join(", ")}.` +
     (rejected.length ? ` (Ignoré, pas une adresse e-mail valide : ${rejected.join(", ")})` : "") +
-    (failures.length ? ` Non jointes : ${failures.join(", ")}.` : ""),
+    (failures.length ? ` Non jointes : ${failures.join(", ")}.` : "") +
+    (unverifiedBatches.length ? ` ⚠ Gmail n'a pas confirmé l'envoi${batches_label(unverifiedBatches, targets)} (réponse illisible) : l'e-mail est en principe parti — vérifiez le dossier « Envoyés » de Gmail avant de renvoyer.` : ""),
     undefined,
     SHARE_DONE_QUIPS
   );
