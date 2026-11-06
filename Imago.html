@@ -7344,6 +7344,17 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // (déjà en mémoire, inutile de refaire sélectionner un dossier local) :
   // seuls le fichier Album et les fichiers jpg/mp4 effectivement chargés sont gardés.
   const mediaFiles = matchedFiles.filter(f=>/\.(jpe?g|mp4)$/i.test(f.name));
+  // Diagnostic : fichiers retrouvés dans le dossier mais ÉCARTÉS parce que ni .jpg/.jpeg ni .mp4 (.png, .tif, .heic, .mov, .avi…).
+  // Ils ne seront ni chargés ni copiés à l'étape 3 : à ne pas confondre avec des fichiers introuvables.
+  if(mediaFiles.length < matchedFiles.length){
+    const byExt = {};
+    matchedFiles.filter(f=>!/\.(jpe?g|mp4)$/i.test(f.name)).forEach(f=>{
+      const ext = (/\.([^.]+)$/.exec(f.name) || [,"(sans extension)"])[1].toLowerCase();
+      byExt[ext] = (byExt[ext]||0) + 1;
+    });
+    console.warn(`[Imago/HOF] ${matchedFiles.length - mediaFiles.length} fichier(s) retrouvé(s) mais écartés (seuls .jpg/.jpeg/.mp4 sont chargés et copiés). Répartition par extension :`, byExt);
+  }
+  console.info(`[Imago/HOF] « ${albumFile.name} » : ${wantedCount} fichier(s) référencé(s), ${matchedFiles.length} retrouvé(s) dans le dossier choisi, ${mediaFiles.length} jpg/mp4 retenu(s) pour l'affichage et la copie.`);
   // metaByFile : File -> {optique, lieu, map} — indexé par RÉFÉRENCE d'objet
   // (chaque File choisi via le sélecteur système est unique), pour retrouver
   // sans ambiguïté à l'étape 3) Partager la ligne CSV d'un fichier donné et
