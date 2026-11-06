@@ -1071,6 +1071,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .vob-export-bar{ height:100%; width:0%; background:var(--copper); transition:width .2s linear; }
 .vob-export-status{ font-size:12px; color:var(--ink-dim); margin-bottom:14px; }
 
+.hof-save-row{ display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 10px; }
 .hidden{display:none !important;}
 </style>
 </head>
@@ -1173,6 +1174,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <button class="btn" id="btnHOFShare" style="margin-bottom:0;">☁️ Choisir le dossier Drive et partager…</button></div></div>
     <div id="hofProgressWrap" class="hidden" style="margin-top:8px;"><div style="height:8px; border-radius:4px; background:var(--bg-panel); border:1px solid var(--line); overflow:hidden;"><div id="hofProgressBar" style="height:100%; width:0%; background:var(--copper); transition:width .15s ease;"></div></div></div>
     <p class="drive-note" id="hofStatus"></p>
+    <div id="hofAlbumSaveRow" class="hidden hof-save-row">
+      <button class="btn copper" id="btnHOFAlbumSave" type="button">💾 Enregistrer l'Album dans le dossier de mes photos…</button>
+      <button class="btn hidden" id="btnHOFAlbumSaveOther" type="button" title="Choisir un autre dossier que celui mémorisé">📁 Autre dossier…</button>
+    </div>
   </details>
 
   <details class="pave" id="pvAgencement"><summary>Agencement</summary>
@@ -6972,6 +6977,72 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
 function nextFrame(){ return new Promise(r=> requestAnimationFrame(r)); }
 function sleep(ms){ return new Promise(r=> setTimeout(r, ms)); }
 
+/* ---- Enregistrement direct de l'Album dans le dossier des photos (File System Access API, Chrome/Edge) ----
+   Le dossier choisi est MÉMORISÉ (IndexedDB, store « meta ») : aux générations suivantes l'Album y est écrit tout seul si
+   l'autorisation est encore valable, sinon un clic sur le bouton suffit (le navigateur redemande simplement l'accès). */
+let hofLastAlbum = null; // { name, text } du dernier Album généré, en attente/enregistré
+function hofCanSaveAlbumDirectly(){ return typeof window.showDirectoryPicker === "function"; }
+async function hofGetSavedAlbumDir(){
+  try{ return await idbGetMeta("hofAlbumDirHandle", null); }catch(e){ return null; }
+}
+async function hofWriteAlbumToDir(dirHandle){
+  const blob = new Blob(["\uFEFF" + hofLastAlbum.text], {type:"text/csv;charset=utf-8"}); // même encodage que le téléchargement
+  await writeFileToLocalDirectory(dirHandle, hofLastAlbum.name, blob);
+}
+/* Renvoie le nom du dossier où l'Album a été écrit, "" si rien n'a pu l'être sans interaction (interactive=false), et lève
+   une exception si l'utilisateur annule ou si l'écriture échoue en mode interactif. forcePick : toujours demander le dossier. */
+async function hofSaveAlbumDirect(interactive, forcePick){
+  if(!hofLastAlbum) return "";
+  let handle = forcePick ? null : await hofGetSavedAlbumDir();
+  if(handle){
+    try{
+      let perm = await handle.queryPermission({mode:"readwrite"});
+      if(perm !== "granted" && interactive) perm = await handle.requestPermission({mode:"readwrite"});
+      if(perm === "granted"){
+        await hofWriteAlbumToDir(handle);
+        hofLastAlbum.saved = true;
+        return handle.name;
+      }
+    }catch(e){
+      console.warn("[Imago/HOF] Dossier mémorisé inutilisable (supprimé, déplacé, accès refusé) :", e);
+    }
+    handle = null;
+  }
+  if(!interactive) return "";
+  handle = await window.showDirectoryPicker({ id: "imago-hof-album", mode: "readwrite" }); // AbortError si annulé
+  await hofWriteAlbumToDir(handle);
+  hofLastAlbum.saved = true;
+  try{ await idbSetMeta("hofAlbumDirHandle", handle); }catch(e){ console.warn("[Imago/HOF] Dossier non mémorisable :", e); }
+  return handle.name;
+}
+async function hofRefreshAlbumSaveRow(){
+  const row = document.getElementById("hofAlbumSaveRow");
+  const other = document.getElementById("btnHOFAlbumSaveOther");
+  const main = document.getElementById("btnHOFAlbumSave");
+  if(!hofLastAlbum || !hofCanSaveAlbumDirectly()){ row.classList.add("hidden"); return; }
+  const remembered = await hofGetSavedAlbumDir();
+  main.textContent = remembered
+    ? `💾 ${hofLastAlbum.saved ? "Réenregistrer" : "Enregistrer"} « ${hofLastAlbum.name} » dans « ${remembered.name} »`
+    : "💾 Enregistrer l'Album dans le dossier de mes photos…";
+  other.classList.toggle("hidden", !remembered);
+  row.classList.remove("hidden"); // visible tant qu'un Album vient d'être généré (permet aussi de le réenregistrer ailleurs)
+}
+async function hofAlbumSaveClick(forcePick){
+  const statusEl = document.getElementById("hofStatus");
+  try{
+    const where = await hofSaveAlbumDirect(true, forcePick);
+    if(where){
+      statusEl.textContent = `✅ « ${hofLastAlbum.name} » enregistré dans « ${where} » : vous pouvez enchaîner avec « Afficher » ci-dessous (choisissez ce même dossier).`;
+      toast(`💾 « ${hofLastAlbum.name} » enregistré dans « ${where} ».`);
+    }
+  }catch(e){
+    if(e && e.name === "AbortError") return; // sélection annulée : rien à signaler
+    statusEl.textContent = `Enregistrement de l'Album impossible : ${e && e.message ? e.message : e}`;
+  }
+  await hofRefreshAlbumSaveRow();
+}
+document.getElementById("btnHOFAlbumSave").addEventListener("click", ()=> hofAlbumSaveClick(false));
+document.getElementById("btnHOFAlbumSaveOther").addEventListener("click", ()=> hofAlbumSaveClick(true));
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates, animauxPrefix){
   // "animaux" est différent des autres rubriques : ce n'est pas une case à
   // cocher par photo (colonne booléenne "true"/"false" dans le catalogue),
@@ -7160,7 +7231,16 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     }
   }
   const csvText = [header, ...rowsById.values()].join("\r\n");
-  downloadCsvFile(csvText, targetName);
+  // Enregistrement DIRECT dans le dossier des photos (ex. ALBUM-PHOTO) quand le navigateur le permet : plus de copie manuelle
+  // depuis « Téléchargements » (ancien Album oublié en place = « Afficher » relisait l'ancienne version). Sinon : téléchargement.
+  hofLastAlbum = { name: targetName, text: csvText };
+  let albumSavedTo = "";
+  if(hofCanSaveAlbumDirectly()){
+    try{ albumSavedTo = await hofSaveAlbumDirect(false) || ""; }catch(e){ console.warn("[Imago/HOF] Enregistrement direct automatique impossible :", e); }
+    await hofRefreshAlbumSaveRow(); // affiche le bouton « Enregistrer… » tant que le fichier n'a pas été déposé
+  } else {
+    downloadCsvFile(csvText, targetName);
+  }
   document.getElementById("btnHOFGenerate").classList.add("done"); // fond vert : étape 1 terminée avec succès
   const totalOut = rowsById.size;
   statusEl.textContent =
@@ -7173,7 +7253,11 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
     (skippedFiles ? ` Purge des entrées périmées désactivée cette fois (catalogue(s) ignoré(s) ci-dessus : on ne peut pas garantir que leurs entrées manquantes correspondent à de vrais retraits).` : "") +
     ((staleDuplicates && staleDuplicates.length) ? ` ⚠️ ${staleDuplicates.length} autre(s) fichier(s) « ${targetName} »-like trouvé(s) dans ce dossier (${staleDuplicates.map(f=>f.name).join(", ")}) — c'est le plus récent qui a été récupéré comme base ; supprimez les anciens pour éviter toute confusion.` : "") +
     ((staleCatalogDuplicates && staleCatalogDuplicates.length) ? ` ⚠️ ${staleCatalogDuplicates.length} doublon(s) de Catalogue-AAAA.csv trouvé(s) et ignoré(s) (${staleCatalogDuplicates.map(f=>f.name).join(", ")}) — seul le plus récent de chaque année a été utilisé ; supprimez les anciens pour éviter qu'ils ne soient repris par erreur à une prochaine génération.` : "") +
-    " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous.";
+    (albumSavedTo
+      ? ` — enregistré directement dans « ${albumSavedTo} » : vous pouvez enchaîner avec « Afficher » ci-dessous.`
+      : (hofCanSaveAlbumDirectly()
+          ? " — cliquez sur « 💾 Enregistrer l'Album dans le dossier de mes photos… » (choisissez le dossier racine de vos photos), puis utilisez « Afficher » ci-dessous."
+          : " — déposez ce fichier dans le dossier de vos photos pour l'utiliser avec « Afficher » ci-dessous."));
   // toast() en plus du texte hofStatus : cette étape ne ferme pas la modale
   // (contrairement à "Afficher"/"Partager"), donc sans confirmation visible
   // indépendante du scroll, une génération réussie peut sembler n'avoir
