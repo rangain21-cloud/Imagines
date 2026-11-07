@@ -9233,13 +9233,12 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // les catalogues choisis explicitement via « Choisir le catalogue (.csv)… »
   // (voir pendingCatalogFiles), seul moyen d'en fournir un pour "Sélectionner
   // des images…" puisque son propre sélecteur filtre les .csv.
-  // Candidats au rôle de catalogue : on écarte les Album-*.csv (fichiers de SORTIE du Hall of fame, jamais un catalogue),
-  // les .csv des sous-dossiers et les doublons (même fichier à la fois retenu via « Choisir le catalogue » et présent dans le dossier). Sans cela, la
+  // Candidats au rôle de catalogue : on écarte les .csv des sous-dossiers et les doublons (même fichier à la fois retenu via « Choisir le catalogue » et présent dans le dossier). Sans cela, la
   // modale annonçait « Plusieurs fichiers .csv » alors qu'un seul catalogue était réellement utilisable.
   const csvFiles = [];
   const seenCsv = new Set();
   for(const f of [...pendingCatalogFiles, ...allFiles.filter(f=>/\.csv$/i.test(f.name))]){
-    if(ALBUM_OUTPUT_FILE_RE.test(f.name)) continue;
+    // Les Album-*.csv (Hall of fame) restent proposés : on peut charger ses fichiers à partir d'un Album généré.
     // Seuls les .csv situés directement dans le dossier pointé (« Dossier/fichier.csv ») : ceux des sous-dossiers
     // (archives, sauvegardes…) sont ignorés. Pas de chemin relatif (sélection de fichiers, catalogue choisi à la main) : conservé.
     const relParts = String(f.webkitRelativePath || "").split("/").filter(Boolean);
