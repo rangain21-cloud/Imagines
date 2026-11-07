@@ -5967,6 +5967,11 @@ document.getElementById("fPersonnage").addEventListener("change", e=>{State.filt
 document.getElementById("fLieu").addEventListener("change", e=>{State.filters.lieu=e.target.value; saveFilters(); renderGrid();});
 document.getElementById("fFavori").addEventListener("change", e=>{State.filters.favori=e.target.value; saveFilters(); renderGrid();});
 document.getElementById("fType").addEventListener("change", e=>{State.filters.type=e.target.value; saveFilters(); renderGrid();});
+// Une fois le critère choisi, la liste déroulante rend le focus : sinon les flèches ← → continuaient à changer de critère
+// (valeur suivante de la liste) au lieu de parcourir les images correspondant au critère choisi.
+["fAuteur","fPersonnage","fLieu","fFavori","fType"].forEach(id=>{
+  document.getElementById(id).addEventListener("change", e=> e.target.blur());
+});
 document.getElementById("fEtiquette").addEventListener("input", e=>{State.filters.titre=e.target.value; saveFilters(); renderGrid();});
 document.getElementById("fToutAzimut").addEventListener("input", e=>{State.filters.tout=e.target.value; saveFilters(); renderGrid();});
 /* Bouton "Tri chronologique" / "Tri anti-chronologique" — présent à deux
@@ -12688,8 +12693,12 @@ document.addEventListener("keydown", (e)=>{
   const infoIsDockedPanel = window.matchMedia("(min-width: 761px)").matches; // sur PC, le panneau Infos est ancré à droite (non bloquant) ; sur mobile il redevient une vraie modale plein écran
   const blockingModal = document.querySelector(infoIsDockedPanel ? ".modal-overlay.show:not(#modalInfo)" : ".modal-overlay.show");
   if(blockingModal) return;
-  const tag = document.activeElement && document.activeElement.tagName;
-  if(tag==="INPUT" || tag==="TEXTAREA" || tag==="SELECT") return; // laisse les flèches déplacer le curseur dans le champ
+  const activeEl = document.activeElement;
+  const tag = activeEl && activeEl.tagName;
+  // Liste de critères du panneau Recherches : ← → ne doivent PAS passer au critère suivant/précédent, ils parcourent les
+  // images du critère choisi (↑ ↓ restent disponibles pour changer de critère au clavier).
+  const isFilterSelect = tag==="SELECT" && activeEl.closest && activeEl.closest("#sidebar");
+  if(!isFilterSelect && (tag==="INPUT" || tag==="TEXTAREA" || tag==="SELECT")) return; // laisse les flèches déplacer le curseur dans le champ
   if(!getSelected()) return;
   e.preventDefault();
   goToImage(e.key==="ArrowRight" ? 1 : -1);
