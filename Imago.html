@@ -9322,6 +9322,9 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // absent du catalogue (jamais encore importé) est exclu dès qu'un filtre
   // est actif : impossible de savoir s'il correspondrait au critère demandé.
   const restrictionActive = !!(pick.critere || pick.personnages);
+  // Catalogue choisi : on ne charge QUE les fichiers du dossier (et sous-dossiers) qui correspondent à une ligne du CSV
+  // (nom de fichier), et non plus tout ce qui s'y trouve. Les photos/vidéos sans ligne dans le catalogue sont ignorées.
+  const catalogRestrict = csvRowByFileName.size > 0;
   const skippedAlreadyPresentCount = existingFileNames ? files.filter(f=> existingFileNames.has(f.name)).length : 0;
   if(restrictionActive && csvRowByFileName.size){
     const vids = [...csvRowByFileName.values()].filter(r=>CATALOG_VIDEO_EXT_RE.test(r.fileName||""));
@@ -9338,16 +9341,18 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
       if(!samePlace(keptIn, rel)) traceSkipped(f, "Nom déjà utilisé par une autre photo", `non importée ; photo déjà présente : ${keptIn ? keptIn + "/" : ""}${f.name}`);
       return false;
     }
-    if(restrictionActive){
+    if(catalogRestrict){
       const row = csvRowByFileName.get(f.name);
-      const keep = !!row && catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
-      if(!keep) traceSkipped(f, "Exclu par le filtre Critère/Personnage", row ? "ne correspond pas aux critères choisis" : describeMissingCatalogRow(f.name, csvRowByFileName, chosen));
+      const keep = !!row && (!restrictionActive || catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode));
+      if(!keep) traceSkipped(f, row ? "Exclu par le filtre Critère/Personnage" : "Absent du catalogue", row ? "ne correspond pas aux critères choisis" : describeMissingCatalogRow(f.name, csvRowByFileName, chosen));
       return keep;
     }
     return true;
   });
-  if(restrictionActive && !existingFileNames && filesToImport.length === 0){
-    toast("Aucune photo/vidéo du dossier ne correspond aux filtres Critère/Personnage choisis — rien à charger.");
+  if(catalogRestrict && !existingFileNames && filesToImport.length === 0){
+    toast(restrictionActive
+      ? "Aucune photo/vidéo du dossier ne correspond aux filtres Critère/Personnage choisis — rien à charger."
+      : "Aucune photo/vidéo du dossier ne correspond aux lignes du catalogue choisi — rien à charger (vérifiez le dossier pointé).");
     return;
   }
   if(existingFileNames && filesToImport.length === 0){
@@ -9355,12 +9360,12 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     importTotalCount = 0; importDoneCount = 0; updateGalleryCounter();
     return;
   }
-  if(restrictionActive || existingFileNames){
+  if(catalogRestrict || restrictionActive || existingFileNames){
     importTotalCount = filesToImport.length;
     updateGalleryCounter();
     document.getElementById("folderStatus").textContent = existingFileNames
       ? `Reprise de l'import : "${folderName}" — ${skippedAlreadyPresentCount} fichier(s) déjà présent(s) ignoré(s) d'emblée, ${filesToImport.length} restant(s) à traiter…`
-      : `Import filtré en cours : "${folderName}" (${filesToImport.length}/${files.length} fichier(s) retenu(s))…`;
+      : `Import du catalogue en cours : "${folderName}" (${filesToImport.length} fichier(s) du catalogue retrouvé(s) sur ${files.length} dans le dossier)…`;
   }
 
   // ---- 2) Tri par date estimée, ou par nom de fichier si "🔤 Tri par nom
