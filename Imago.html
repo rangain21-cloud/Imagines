@@ -6982,6 +6982,15 @@ hofGenerateFolderInput.addEventListener("change", async ()=>{
 function nextFrame(){ return new Promise(r=> requestAnimationFrame(r)); }
 function sleep(ms){ return new Promise(r=> setTimeout(r, ms)); }
 
+/* Colonne ajoutée en fin de ligne dans les fichiers Album-*.csv : année/nom du Catalogue-AAAA.csv d'origine. */
+const ALBUM_SOURCE_COLUMN = "catalogue";
+/* Chemin « sousDossier » d'une ligne d'Album, désambiguïsé par l'année du catalogue d'origine (colonne « catalogue ») sans
+   double préfixage (ex. « 2022/2022/Été ») quand le sous-dossier la contient déjà. Colonne vide (ancien Album) : inchangé. */
+function albumSousDossierWithCatalogue(sousDossier, catalogue){
+  const sd = String(sousDossier || ""), cat = String(catalogue || "").trim();
+  if(!cat) return sd;
+  return (sd === cat || sd.startsWith(cat + "/")) ? sd : (sd ? `${cat}/${sd}` : cat);
+}
 /* ---- Enregistrement direct de l'Album dans le dossier des photos (File System Access API, Chrome/Edge) ----
    Le dossier choisi est MÉMORISÉ (IndexedDB, store « meta ») : aux générations suivantes l'Album y est écrit tout seul si
    l'autorisation est encore valable, sinon un clic sur le bouton suffit (le navigateur redemande simplement l'accès). */
@@ -7099,18 +7108,19 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   // valeurs pour les lignes venant d'un catalogue à l'ancien format.
   // COLUMN_ALIASES permet de reconnaître ces anciens intitulés.
   const normalizeCols = normalizeColNames;
-  const supportOutIdx = CSV_COLUMNS.indexOf("support"), fileNameOutIdx = CSV_COLUMNS.indexOf("fileName");
+  // Contenu des rubriques repris À L'IDENTIQUE depuis les catalogues choisis : aucune normalisation (ni « support », ni
+  // « sousDossier »…). La seule colonne ajoutée, « catalogue » (année du Catalogue-AAAA.csv d'origine), en fin de ligne,
+  // conserve l'information qui servait auparavant à préfixer « sousDossier » : « Afficher » l'utilise pour distinguer deux
+  // photos de même nom d'années différentes, sans qu'aucune rubrique d'origine ne soit modifiée.
+  const ALBUM_COLUMNS = [...CSV_COLUMNS, ALBUM_SOURCE_COLUMN];
+  const catalogueOutIdx = ALBUM_COLUMNS.indexOf(ALBUM_SOURCE_COLUMN);
   const remapRowToCanonical = (cells, normalizedCols) => {
-    const out = CSV_COLUMNS.map(name=>{
+    return ALBUM_COLUMNS.map(name=>{
       const idx = normalizedCols.indexOf(name);
       return idx >= 0 ? (cells[idx] ?? "") : "";
     });
-    // rubrique « support » : suffixe du fileName (jpg, mp4…) à la place de « Numérique »
-    if(supportOutIdx >= 0 && fileNameOutIdx >= 0) out[supportOutIdx] = normalizeSupport(out[supportOutIdx], out[fileNameOutIdx]);
-    return out;
   };
-  const sousDossierOutIdx = CSV_COLUMNS.indexOf("sousDossier");
-  const header = CSV_COLUMNS.join(";");
+  const header = ALBUM_COLUMNS.join(";");
 
   const rowsById = new Map();
   let recoveredCount = 0;
@@ -7119,7 +7129,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   if(existingAlbumFile){
     try{
       const text = await existingAlbumFile.text();
-      const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+      const lines = splitCsvRecords(text);
       if(lines.length){
         const albumDelim = detectCsvDelimiter(lines[0]);
         const normalizedCols = normalizeCols(parseCsvLine(lines[0], albumDelim));
@@ -7145,7 +7155,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
   for(const file of files){
     try{
       const text = await file.text();
-      const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+      const lines = splitCsvRecords(text); // une cellule multi-lignes (entre guillemets) reste intacte
       if(lines.length < 1) continue;
       const sourceDelim = detectCsvDelimiter(lines[0]);
       const normalizedCols = normalizeCols(parseCsvLine(lines[0], sourceDelim));
@@ -7180,15 +7190,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
           : cells[favIdx] === "true";
         if(included){
           const outCells = remapRowToCanonical(cells, normalizedCols);
-          if(sousDossierOutIdx >= 0 && yearLabel){
-            const orig = outCells[sousDossierOutIdx] || "";
-            // Évite le double préfixage (ex. "2022/2022/Été") quand le
-            // dossier racine utilisé pour importer CE catalogue à l'époque
-            // portait déjà le nom de l'année (cas le plus courant) : "orig"
-            // commence alors déjà par yearLabel, inutile de le rajouter.
-            const alreadyPrefixed = orig === yearLabel || orig.startsWith(`${yearLabel}/`);
-            outCells[sousDossierOutIdx] = alreadyPrefixed ? orig : (orig ? `${yearLabel}/${orig}` : yearLabel);
-          }
+          if(yearLabel) outCells[catalogueOutIdx] = yearLabel; // « sousDossier » reste celui du catalogue, tel quel
           rowsById.set(id, outCells.map(csvEscape).join(";")); // ajoute, ou met à jour si déjà présent depuis l'Album.csv existant
           totalFav++;
         } else if(rowsById.has(id)){
@@ -7313,12 +7315,13 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   let wantedPathsByName, wantedNamesOnly, hasSousDossier, csvRows;
   try{
     const text = await albumFile.text();
-    const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+    const lines = splitCsvRecords(text);
     if(lines.length < 2){ statusEl.textContent = `« ${albumFile.name} » ne contient aucune entrée.`; return; }
     const albumReadDelim = detectCsvDelimiter(lines[0]);
     const header = normalizeColNames(parseCsvLine(lines[0], albumReadDelim));
     const fileNameIdx = header.indexOf("fileName");
     const sousDossierIdx = header.indexOf("sousDossier");
+    const catalogueIdx = header.indexOf(ALBUM_SOURCE_COLUMN); // année du catalogue d'origine (Album récent) — absente d'un ancien Album
     // Colonnes de métadonnées à réinjecter dans les JPEG à l'étape 3 (voir
     // buildJpegWithCatalogExif plus bas) — absentes sans conséquence si le
     // fichier Album est ancien, ces infos ne seront simplement pas ajoutées.
@@ -7350,7 +7353,8 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
       const name = cells[fileNameIdx];
       if(!name) continue;
       wantedNamesOnly.add(name);
-      const sousDossier = hasSousDossier ? (cells[sousDossierIdx]||"").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"") : "";
+      const sousDossierRaw = hasSousDossier ? (cells[sousDossierIdx]||"").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"") : "";
+      const sousDossier = hasSousDossier ? albumSousDossierWithCatalogue(sousDossierRaw, catalogueIdx >= 0 ? cells[catalogueIdx] : "") : "";
       const fullPath = sousDossier ? `${sousDossier}/${name}` : name;
       if(hasSousDossier){
         if(!wantedPathsByName.has(name)) wantedPathsByName.set(name, []);
