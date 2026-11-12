@@ -529,12 +529,12 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   scrollbar-width:thin;
 }
 .strip-tile{
-  position:relative; flex:0 0 auto; width:124px; height:88px; overflow:hidden;
+  position:relative; flex:0 0 auto; width:186px; height:124px; overflow:hidden; /* 124→186 px de large : un tiers de miniatures en moins sur la même largeur ; même boîte pour paysage ET portrait */
   border-radius:4px; border:1px solid var(--line); background:var(--bg-panel-2); cursor:pointer;
 }
 .strip-tile:hover{border-color:var(--copper);}
 .strip-tile.current{border-color:var(--copper); box-shadow:0 0 0 2px var(--copper) inset;}
-.strip-tile img{width:100%; height:100%; object-fit:cover; display:block; -webkit-user-drag:none; user-select:none;}
+.strip-tile img{width:100%; height:100%; object-fit:cover; object-position:center 25%; display:block; /* portrait recadré à la hauteur des paysages, en gardant le haut (visages) */ -webkit-user-drag:none; user-select:none;}
 .strip-tile .gallery-fav{position:absolute; bottom:3px; right:5px; color:var(--copper); font-size:13px; text-shadow:0 1px 4px rgba(0,0,0,.8);}
 .strip-tile .gallery-flags{position:absolute; left:4px; bottom:3px; display:flex; gap:2px; font-size:11px; text-shadow:0 1px 3px rgba(0,0,0,.9); pointer-events:none;}
 .strip-tile .gallery-video-mini{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:18px; color:#fff; text-shadow:0 1px 4px rgba(0,0,0,.8); pointer-events:none;}
@@ -5429,7 +5429,7 @@ State.galleryQuickMode = false;
    (jamais les 30 000 d'un coup). Réutilise l'unique barre de marquage rapide
    (getQuickBar) : marquer une miniature ne charge NI l'image NI la vidéo, et
    n'appelle pas renderGrid(). Cliquer une miniature (hors mode ⚡) ouvre la photo. */
-const STRIP_WINDOW = 40;
+const STRIP_WINDOW = 27; // 40 → 27 : un tiers de miniatures en moins par page
 State.stripOpen = localStorage.getItem("imago_strip_open") === "1";
 State.stripQuickMode = false;
 State.stripStart = 0;
