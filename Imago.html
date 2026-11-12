@@ -468,7 +468,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .gallery-scroll{scrollbar-width:thin; scrollbar-color:var(--copper) #2a3f33;}
 .gallery-grid{
   display:grid;
-  grid-template-columns:repeat(auto-fill, minmax(var(--thumb-min), 1fr));
+  grid-template-columns:repeat(auto-fill, minmax(calc(var(--thumb-min) * var(--thumb-factor, 1)), 1fr)); /* --thumb-factor : combo « Miniatures » de l'accueil */
   gap:14px;
 }
 .gallery-tile{
@@ -485,6 +485,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   contain-intrinsic-size:220px 220px;
 }
 .gallery-tile:hover{border-color:var(--copper); box-shadow:0 6px 16px rgba(0,0,0,.5);}
+.gallery-tile.portrait img{object-position:center 25%;} /* portrait recadré dans une boîte paysage : on garde le haut (visages) */
 .gallery-tile img{
   width:100%; height:100%; object-fit:cover; display:block;
   -webkit-user-drag:none; user-select:none;
@@ -529,12 +530,12 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   scrollbar-width:thin;
 }
 .strip-tile{
-  position:relative; flex:0 0 auto; width:186px; height:124px; overflow:hidden; /* 124→186 px de large : un tiers de miniatures en moins sur la même largeur ; même boîte pour paysage ET portrait */
+  position:relative; flex:0 0 auto; width:124px; height:88px; overflow:hidden;
   border-radius:4px; border:1px solid var(--line); background:var(--bg-panel-2); cursor:pointer;
 }
 .strip-tile:hover{border-color:var(--copper);}
 .strip-tile.current{border-color:var(--copper); box-shadow:0 0 0 2px var(--copper) inset;}
-.strip-tile img{width:100%; height:100%; object-fit:cover; object-position:center 25%; display:block; /* portrait recadré à la hauteur des paysages, en gardant le haut (visages) */ -webkit-user-drag:none; user-select:none;}
+.strip-tile img{width:100%; height:100%; object-fit:cover; display:block; -webkit-user-drag:none; user-select:none;}
 .strip-tile .gallery-fav{position:absolute; bottom:3px; right:5px; color:var(--copper); font-size:13px; text-shadow:0 1px 4px rgba(0,0,0,.8);}
 .strip-tile .gallery-flags{position:absolute; left:4px; bottom:3px; display:flex; gap:2px; font-size:11px; text-shadow:0 1px 3px rgba(0,0,0,.9); pointer-events:none;}
 .strip-tile .gallery-video-mini{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:18px; color:#fff; text-shadow:0 1px 4px rgba(0,0,0,.8); pointer-events:none;}
@@ -1117,6 +1118,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div class="gallery-head-actions">
       <span class="gallery-select-count hidden" id="gallerySelectCount"></span>
       <button class="btn hidden" id="btnGalleryShareSelection" title="Partager les images sélectionnées (Drive ou e-mail)" disabled>⇪ Partager</button>
+      <select id="gallerySizeSelect" class="btn" title="Taille des miniatures de la planche-contact" aria-label="Taille des miniatures" style="width:auto;">
+        <option value="0.75">Miniatures : très petites</option>
+        <option value="1">Miniatures : petites</option>
+        <option value="1.5">Miniatures : moyennes</option>
+        <option value="2">Miniatures : grandes</option>
+        <option value="2.5">Miniatures : très grandes</option>
+        <option value="3">Miniatures : énormes</option>
+      </select>
       <button class="btn" id="btnSortOrderGallery" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
       <button class="btn" id="btnSortByFileName" title="Trier les images et vidéos par nom de fichier">🔤 Tri par Nom de fichier</button>
       <button class="btn" id="btnGalleryQuickMode" title="Marquer Favori / Art / Concert / Culture / Partition directement sur les miniatures, sans ouvrir les photos (au survol à la souris ; ce bouton sert surtout sur écran tactile)">⚡ Marquage rapide</button>
@@ -5429,7 +5438,7 @@ State.galleryQuickMode = false;
    (jamais les 30 000 d'un coup). Réutilise l'unique barre de marquage rapide
    (getQuickBar) : marquer une miniature ne charge NI l'image NI la vidéo, et
    n'appelle pas renderGrid(). Cliquer une miniature (hors mode ⚡) ouvre la photo. */
-const STRIP_WINDOW = 27; // 40 → 27 : un tiers de miniatures en moins par page
+const STRIP_WINDOW = 40;
 State.stripOpen = localStorage.getItem("imago_strip_open") === "1";
 State.stripQuickMode = false;
 State.stripStart = 0;
@@ -5541,7 +5550,9 @@ function buildGalleryTile(p){
   tile.className = "gallery-tile";
   tile.dataset.id = p.id;
   tile.title = p.fileName || "";
-  tile.style.aspectRatio = String(effectiveAspectRatio(p)); // respecte le mode portrait/paysage de la photo
+  // Paysage : ratio propre à la photo. Portrait/carré : boîte paysage 3:2 (même hauteur que les paysages), image recadrée (cover).
+  const ar = effectiveAspectRatio(p);
+  if(ar < 1.2){ tile.style.aspectRatio = "3 / 2"; tile.classList.add("portrait"); } else tile.style.aspectRatio = String(ar);
   if(State.gallerySelection.has(p.id)) tile.classList.add("selected");
   const mark = document.createElement("span");
   mark.className = "gallery-select-mark";
@@ -6195,6 +6206,20 @@ function applyAgencement(key, persist){
   localStorage.setItem("imago_ui_scale", preset.uiScale);
   if(persist) localStorage.setItem(AGENCEMENT_KEY, key);
 }
+(function initGallerySize(){
+  const sel = document.getElementById("gallerySizeSelect");
+  if(!sel) return;
+  let v = null;
+  try{ v = localStorage.getItem("imago_gallery_size"); }catch(e){}
+  // Par défaut : PC = moyennes (un tiers de miniatures en moins par ligne), mobile = petites (sinon 1 seule colonne).
+  if(!v || ![...sel.options].some(o=>o.value===v)) v = window.matchMedia("(min-width: 761px)").matches ? "1.5" : "1";
+  sel.value = v;
+  document.documentElement.style.setProperty("--thumb-factor", v);
+  sel.addEventListener("change", ()=>{
+    document.documentElement.style.setProperty("--thumb-factor", sel.value);
+    try{ localStorage.setItem("imago_gallery_size", sel.value); }catch(e){}
+  });
+})();
 (function initAgencement(){
   const saved = localStorage.getItem(AGENCEMENT_KEY) || "bureau1920";
   const select = document.getElementById("agencementSelect");
