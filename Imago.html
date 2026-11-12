@@ -1172,6 +1172,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div class="hof-chips"><label><input type="radio" name="hofCriterion" value="favori" checked><span>★ Favori</span></label><label><input type="radio" name="hofCriterion" value="art"><span>🎨 Art</span></label><label><input type="radio" name="hofCriterion" value="concert"><span>🎤 Concert</span></label><label><input type="radio" name="hofCriterion" value="histoire"><span>📜 Culture</span></label><label><input type="radio" name="hofCriterion" value="partition"><span>🎼 Partition</span></label><label><input type="radio" name="hofCriterion" value="animaux"><span>🐾 Animaux</span></label></div>
     <div id="hofAnimauxPrefixWrap" class="hidden" style="display:flex; align-items:center; gap:6px; margin:-4px 0 10px; font-size:12px;">Titre commençant par <input type="text" id="hofAnimauxPrefix" value="Anima" style="width:90px; font-size:12px; padding:2px 6px;"></div>
     <div class="hof-step"><b>1</b><button class="btn" id="btnHOFGenerate" title="Construit (ou récupère) le fichier Album-….csv de la rubrique choisie à partir des catalogues. Déplacez-le ensuite dans le dossier de vos photos avant l'étape 2.">Générer l'album</button></div>
+    <div class="hof-step"><b>＋</b><button class="btn" id="btnHOFMerge" title="Fusionne plusieurs fichiers .csv (par ex. un catalogue de Hall of fame que vous avez épuré à la main + un Album généré pour d'autres années) en UN seul Album, SANS relire les catalogues d'année : vos retouches (Favoris décochés…) sont conservées à l'identique. Le fichier produit porte le nom de l'album de la rubrique choisie ci-dessus (ex. Album-Favori.csv).">🔗 Fusionner des fichiers .csv en un seul album…</button></div>
     <div class="hof-step"><b>2</b><button class="btn" id="btnHOFPickFolder" title="Choisissez le dossier de vos photos : seules les images de l'album sont chargées.">📁 Afficher : choisir le dossier…</button></div>
     <div class="hof-step"><b>3</b><div>
       <div class="hof-opts"><label><input type="radio" name="hofShareDest" value="drive" checked> ☁️ Drive</label><label><input type="radio" name="hofShareDest" value="local"> 💾 Local / USB</label></div>
@@ -7145,6 +7146,78 @@ async function hofAlbumSaveClick(forcePick){
 }
 document.getElementById("btnHOFAlbumSave").addEventListener("click", ()=> hofAlbumSaveClick(false));
 document.getElementById("btnHOFAlbumSaveOther").addEventListener("click", ()=> hofAlbumSaveClick(true));
+/* ---- Fusion de plusieurs .csv (catalogue de Hall of fame retravaillé, Album généré pour d'autres années…) en UN album ----
+   Aucune relecture des catalogues d'année : les lignes sont reprises À L'IDENTIQUE (aucune rubrique modifiée, aucune ligne retirée),
+   donc le travail fait à la main (Favoris décochés dans « Main 90% »…) n'est jamais écrasé. Clé = « id » (unique par photo) :
+   si le même id figure dans plusieurs fichiers, c'est la ligne du fichier modifié le plus récemment qui est gardée. */
+const hofMergeInput = document.createElement("input");
+hofMergeInput.type = "file"; hofMergeInput.accept = ".csv"; hofMergeInput.multiple = true; hofMergeInput.style.display = "none";
+document.body.appendChild(hofMergeInput);
+document.getElementById("btnHOFMerge").addEventListener("click", ()=> hofMergeInput.click());
+hofMergeInput.addEventListener("change", async ()=>{
+  const files = [...hofMergeInput.files];
+  hofMergeInput.value = "";
+  const statusEl = document.getElementById("hofStatus");
+  if(files.length < 2){
+    statusEl.textContent = "Choisissez au moins DEUX fichiers .csv à fusionner (Ctrl ou Maj + clic pour en sélectionner plusieurs dans la même fenêtre).";
+    return;
+  }
+  const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
+  const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "Anima").trim() || "Anima";
+  const targetName = hofAlbumFileName(criterion, animauxPrefix);
+  statusEl.textContent = `Fusion de ${files.length} fichier(s)…`;
+  await nextFrame();
+  files.sort((a,b)=> (b.lastModified||0) - (a.lastModified||0)); // le plus récemment modifié d'abord : il l'emporte sur un id en double
+  const ALBUM_COLS = [...CSV_COLUMNS, ALBUM_SOURCE_COLUMN];
+  const rowsById = new Map(), nameCount = new Map(), details = [], ignored = [];
+  let dupIds = 0;
+  try{
+    for(const file of files){
+      const lines = splitCsvRecords(await file.text());
+      if(lines.length < 2){ ignored.push(`${file.name} (vide)`); continue; }
+      const delim = detectCsvDelimiter(lines[0]);
+      const cols = parseCsvLine(lines[0], delim).map(canonicalCatalogColumn);
+      const idIdx = cols.indexOf("id"), fnIdx = cols.indexOf("fileName");
+      if(idIdx < 0 || fnIdx < 0){ ignored.push(`${file.name} (colonne « ${idIdx < 0 ? "id" : "fileName"} » introuvable)`); continue; }
+      let added = 0;
+      for(let i=1;i<lines.length;i++){
+        const cells = parseCsvLine(lines[i], delim);
+        const id = cells[idIdx];
+        if(!id) continue;
+        if(rowsById.has(id)){ dupIds++; continue; }
+        rowsById.set(id, ALBUM_COLS.map(name=>{ const idx = cols.indexOf(name); return idx >= 0 ? (cells[idx] ?? "") : ""; }).map(csvEscape).join(";"));
+        const fn = cells[fnIdx] || "";
+        nameCount.set(fn, (nameCount.get(fn)||0) + 1);
+        added++;
+      }
+      details.push(`${file.name} : ${added} ligne(s)`);
+    }
+  }catch(e){
+    statusEl.textContent = `Fusion impossible : ${e && e.message ? e.message : e}`;
+    return;
+  }
+  if(!rowsById.size){ statusEl.textContent = "Fusion impossible : aucune ligne exploitable (fichiers sans colonnes « id » et « fileName » ?)."; return; }
+  const sameNames = [...nameCount.entries()].filter(([,n])=>n>1);
+  hofLastAlbum = { name: targetName, text: [ALBUM_COLS.join(";"), ...rowsById.values()].join("\r\n") };
+  let savedTo = "";
+  if(hofCanSaveAlbumDirectly()){
+    try{ savedTo = await hofSaveAlbumDirect(false) || ""; }catch(e){ console.warn("[Imago/HOF] Enregistrement direct automatique impossible :", e); }
+    await hofRefreshAlbumSaveRow();
+  } else {
+    downloadCsvFile(hofLastAlbum.text, targetName);
+  }
+  statusEl.textContent =
+    `« ${targetName} » fusionné : ${rowsById.size} entrée(s) au total (${details.join(" + ")}).` +
+    (dupIds ? ` ${dupIds} ligne(s) en double (même id) ignorée(s) : celle du fichier le plus récent est gardée.` : "") +
+    (ignored.length ? ` ⚠️ Fichier(s) ignoré(s) : ${ignored.join(", ")}.` : "") +
+    (sameNames.length ? ` ⚠️ ${sameNames.length} nom(s) de fichier présent(s) plusieurs fois (ex. ${sameNames.slice(0,3).map(([n,c])=>`${n} ×${c}`).join(", ")}) : copiés dans un dossier unique, ces fichiers se remplaceraient ou seraient ignorés.` : "") +
+    (savedTo
+      ? ` — enregistré dans « ${savedTo} » : vous pouvez enchaîner avec « Afficher » (dossier racine de vos photos), puis la copie en mode « Passer ».`
+      : (hofCanSaveAlbumDirectly()
+          ? " — cliquez sur « 💾 Enregistrer l'Album… » (dossier racine de vos photos), puis « Afficher », puis la copie en mode « Passer »."
+          : " — déposez ce fichier dans le dossier de vos photos, puis « Afficher »."));
+  toast(`✅ ${statusEl.textContent}`);
+});
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates, animauxPrefix){
   // "animaux" est différent des autres rubriques : ce n'est pas une case à
   // cocher par photo (colonne booléenne "true"/"false" dans le catalogue),
@@ -7778,6 +7851,8 @@ async function writeFileToLocalDirectory(dirHandle, name, content){
 // que côté Drive (HOF_MEDIA_EXT_RE) pour ne jamais toucher un fichier qui ne
 // serait pas un média envoyé par ce flux.
 async function offerDeleteLocalOrphans(dirHandle, mediaFiles, albumFileName, statusEl){
+  // Garde-fou : sans aucun fichier retrouvé à l'étape « Afficher », TOUT le dossier de destination passerait pour « obsolète ».
+  if(!mediaFiles.length) return;
   const currentNames = new Set(mediaFiles.map(f=> f.name));
   const orphanNames = [];
   for await (const [name, handle] of dirHandle.entries()){
@@ -7788,10 +7863,14 @@ async function offerDeleteLocalOrphans(dirHandle, mediaFiles, albumFileName, sta
     orphanNames.push(name);
   }
   if(!orphanNames.length) return;
+  // Liste plafonnée : avec plusieurs milliers de fichiers, une boîte de dialogue contenant tous les noms est illisible (et tronquée).
+  const SHOWN = 25;
+  const listing = orphanNames.slice(0, SHOWN).join("\n") + (orphanNames.length > SHOWN ? `\n… et ${orphanNames.length - SHOWN} autre(s)` : "");
   const doDelete = confirm(
     `🗑️ ${orphanNames.length} fichier(s) présent(s) dans « ${dirHandle.name} » ne sont plus référencés par « ${albumFileName} » ` +
-    `(retirés des Favoris/Art/Concert/Histoire/Partition depuis le dernier partage, ou renommés) :\n\n${orphanNames.join("\n")}\n\n` +
-    `Les supprimer de ce dossier ? (définitif — pas de corbeille locale, contrairement à Drive)`
+    `(retirés des Favoris/Art/Concert/Histoire/Partition depuis le dernier partage, ou renommés) :\n\n${listing}\n\n` +
+    `Les supprimer du dossier « ${dirHandle.name} » UNIQUEMENT (le dossier source de vos photos n'est pas touché) ? ` +
+    `Définitif — pas de corbeille locale, contrairement à Drive.`
   );
   if(!doDelete) return;
   let deleted = 0;
