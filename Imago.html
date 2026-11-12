@@ -7470,12 +7470,20 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // retrouver le bon fichier "Album-<motClé>.csv" (voir hofAlbumFileName).
   const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "Anima").trim() || "Anima";
   const targetName = hofAlbumFileName(criterion, animauxPrefix);
+  // Le .csv qui DÉTERMINE les photos à charger est choisi ici, dans la modale « Quel fichier est le catalogue ? »
+  // (tous les .csv situés directement dans le dossier). Présélection : l'Album de la rubrique (nom habituel).
   const match = findLatestAlbumCandidate(allFiles, targetName, criterion);
-  if(!match){
+  const rootCsvs = allFiles.filter(f=> /\.csv$/i.test(f.name) && String(f.webkitRelativePath || "").split("/").filter(Boolean).length <= 2);
+  let hofPick = null, albumFile, staleDuplicates = [];
+  if(rootCsvs.length){
+    hofPick = await pickCatalogFromCandidates(rootCsvs, match ? match.file : null);
+    if(hofPick.file){ albumFile = hofPick.file; }
+    else if(match){ albumFile = match.file; hofPick = null; staleDuplicates = match.staleDuplicates; } // « Aucun » : repli sur l'Album habituel
+  } else if(match){ albumFile = match.file; staleDuplicates = match.staleDuplicates; }
+  if(!albumFile){
     statusEl.textContent = `Aucun fichier « ${targetName} » trouvé dans ce dossier — générez-le d'abord (bouton « Générer » ci-dessus, rubrique « ${criterionLabel} »), déposez-le dans ce dossier, puis réessayez.`;
     return;
   }
-  const { file: albumFile, staleDuplicates } = match;
   statusEl.textContent = `Lecture de « ${albumFile.name} »…`;
   let wantedPathsByName, wantedNamesOnly, hasSousDossier, csvRows;
   try{
@@ -7642,12 +7650,8 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // branche "non cataloguée" de importOneFile : lieu vidé (donc jamais
   // affiché en pied de diaporama) et titre réduit au seul personnage
   // (faute de lieu pour le compléter) au lieu du vrai titre enregistré.
-  // Les autres .csv situés directement dans le dossier choisi sont aussi transmis, pour que la modale
-  // « Quel fichier est le catalogue ? » permette de CHOISIR le csv (l'Album reste présélectionné).
-  // Seuls les médias référencés par l'Album sont chargés : le csv choisi ne fournit que les métadonnées.
-  const otherCsvs = allFiles.filter(f=> /\.csv$/i.test(f.name) && f !== albumFile && String(f.webkitRelativePath || "").split("/").filter(Boolean).length <= 2);
-  pendingPreferredCatalog = albumFile;
-  await runHofImportWithProgress([...matchedFiles, albumFile, ...otherCsvs], statusEl);
+  // Le choix fait dans la modale est transmis tel quel (tri, critère, personnages) : handleFilesSelected ne reposera pas la question.
+  await runHofImportWithProgress([...matchedFiles, albumFile], statusEl, hofPick);
   toggleBurger(false);
   toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`
     + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : "")
@@ -7663,7 +7667,7 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
    alors en arrière-plan, voir importRestInBackground), on continue à sonder
    ces compteurs après son retour jusqu'à ce qu'ils repassent à 0 (convention
    du pipeline pour signaler un import totalement terminé). */
-async function runHofImportWithProgress(matchedFiles, statusEl){
+async function runHofImportWithProgress(matchedFiles, statusEl, presetPick){
   const progressWrap = document.getElementById("hofProgressWrap");
   const progressBar = document.getElementById("hofProgressBar");
   const pickBtn = document.getElementById("btnHOFPickFolder");
@@ -7680,7 +7684,7 @@ async function runHofImportWithProgress(matchedFiles, statusEl){
   };
   const interval = setInterval(tick, 150);
   try{
-    await handleFilesSelected(matchedFiles, "Hall of fame", true); // même pipeline d'import que d'habitude, restreint à cette seule liste
+    await handleFilesSelected(matchedFiles, "Hall of fame", presetPick || true); // même pipeline d'import que d'habitude, restreint à cette seule liste
     // Le lot prioritaire est affiché dès ce retour, mais le reste (s'il y en
     // a) continue en arrière-plan : on attend sa fin réelle avant de conclure.
     while(importTotalCount > 0){
