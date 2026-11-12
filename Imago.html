@@ -7558,7 +7558,19 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // fichier) reste identique — c'est cette fin qui est comparée ici.
   // Comparaison insensible à la casse et aux différences d'encodage des accents (NFC/NFD : « é » en 1 ou 2 caractères,
   // fréquent entre Windows, macOS, Drive et les clés USB) — sinon un dossier « Été » ou un nom accentué paraît « introuvable ».
-  const pathsLooselyMatch = (a, b)=>{ a = hofNorm(a); b = hofNorm(b); return a===b || a.endsWith("/"+b) || b.endsWith("/"+a); };
+  // Comparaison par SEGMENTS depuis la fin : il suffit que les derniers segments (au moins « dossier parent + nom de fichier »,
+  // ou tout le chemin s'il est plus court) coïncident. Tolère un préfixe différent des DEUX côtés, ex. catalogue « 1940/1940's/x.jpg »
+  // (année du catalogue ajoutée devant le sous-dossier) face à « 1900's jusqu'à 1994/1940's/x.jpg » (dossier racine choisi plus haut).
+  const pathsLooselyMatch = (a, b)=>{
+    a = hofNorm(a); b = hofNorm(b);
+    if(a === b) return true;
+    const sa = a.split("/").filter(Boolean), sb = b.split("/").filter(Boolean);
+    const need = Math.min(2, sa.length, sb.length);
+    if(need < 1) return false;
+    let n = 0;
+    while(n < sa.length && n < sb.length && sa[sa.length-1-n] === sb[sb.length-1-n]) n++;
+    return n >= need;
+  };
   const matchedFiles = allFiles.filter(f=>{
     if(!hasSousDossier) return wantedNamesOnly.has(hofNorm(f.name));
     const candidates = wantedPathsByName.get(hofNorm(f.name));
