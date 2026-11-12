@@ -7454,6 +7454,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
 // Rempli à la fin de cette étape ; réutilisé par l'étape 3) Partager plus bas
 // ({albumFile, mediaFiles}). Vidé au rechargement de la page.
 let hofShareData = null;
+const hofNorm = s => String(s == null ? "" : s).normalize("NFC").toLowerCase();
 let pendingPreferredCatalog = null; // fichier .csv à présélectionner dans « Quel fichier est le catalogue ? » (voir pickCatalogFromCandidates)
 hofDisplayFolderInput.addEventListener("change", async ()=>{
   const allFiles = [...hofDisplayFolderInput.files];
@@ -7525,13 +7526,13 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
       const cells = parseCsvLine(lines[i], albumReadDelim);
       const name = cells[fileNameIdx];
       if(!name) continue;
-      wantedNamesOnly.add(name);
+      wantedNamesOnly.add(hofNorm(name));
       const sousDossierRaw = hasSousDossier ? (cells[sousDossierIdx]||"").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"") : "";
       const sousDossier = hasSousDossier ? albumSousDossierWithCatalogue(sousDossierRaw, catalogueIdx >= 0 ? cells[catalogueIdx] : "") : "";
       const fullPath = sousDossier ? `${sousDossier}/${name}` : name;
       if(hasSousDossier){
-        if(!wantedPathsByName.has(name)) wantedPathsByName.set(name, []);
-        wantedPathsByName.get(name).push(fullPath);
+        if(!wantedPathsByName.has(hofNorm(name))) wantedPathsByName.set(hofNorm(name), []);
+        wantedPathsByName.get(hofNorm(name)).push(hofNorm(fullPath));
       }
       csvRows.push({
         fileName: name,
@@ -7555,10 +7556,12 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // double dans le chemin stocké), les deux chemins ne coïncident plus
   // exactement bout à bout, mais leur fin (sous-dossiers réels + nom de
   // fichier) reste identique — c'est cette fin qui est comparée ici.
-  const pathsLooselyMatch = (a, b)=> a===b || a.endsWith("/"+b) || b.endsWith("/"+a);
+  // Comparaison insensible à la casse et aux différences d'encodage des accents (NFC/NFD : « é » en 1 ou 2 caractères,
+  // fréquent entre Windows, macOS, Drive et les clés USB) — sinon un dossier « Été » ou un nom accentué paraît « introuvable ».
+  const pathsLooselyMatch = (a, b)=>{ a = hofNorm(a); b = hofNorm(b); return a===b || a.endsWith("/"+b) || b.endsWith("/"+a); };
   const matchedFiles = allFiles.filter(f=>{
-    if(!hasSousDossier) return wantedNamesOnly.has(f.name);
-    const candidates = wantedPathsByName.get(f.name);
+    if(!hasSousDossier) return wantedNamesOnly.has(hofNorm(f.name));
+    const candidates = wantedPathsByName.get(hofNorm(f.name));
     if(!candidates) return false;
     const relPath = f.webkitRelativePath
       ? f.webkitRelativePath.split("/").slice(1).join("/") // retire le nom du dossier racine choisi (ex. "PHOTO/2022/x.jpg" -> "2022/x.jpg")
@@ -7591,9 +7594,14 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
         });
       }
     } else {
-      const foundNames = new Set(allFiles.map(f=>f.name));
+      const foundNames = new Set(allFiles.map(f=>hofNorm(f.name)));
       missing = [...wantedNamesOnly].filter(n=> !foundNames.has(n));
     }
+    // Les 15 premiers chemins manquants, lisibles d'un coup d'œil (sans devoir déplier le tableau), + nombre de ceux dont le NOM existe ailleurs dans le dossier choisi
+    const namesInFolder = new Set(allFiles.map(f=> hofNorm(f.name)));
+    const nameExists = missing.filter(p=> namesInFolder.has(hofNorm(p.split("/").pop())));
+    console.warn(`[Imago/HOF] Exemples de chemins manquants :\n` + missing.slice(0,15).join("\n") +
+      `\n→ ${nameExists.length}/${missing.length} ont pourtant un fichier de MÊME NOM dans le dossier choisi (sous-dossier différent) ; ${missing.length - nameExists.length} n'existent nulle part dans ce dossier.`);
     const byPrefix = {};
     missing.forEach(p=>{
       const prefix = p.includes("/") ? p.split("/")[0] : "(racine, sans sous-dossier)";
