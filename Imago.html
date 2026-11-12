@@ -1071,6 +1071,12 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .vob-export-bar{ height:100%; width:0%; background:var(--copper); transition:width .2s linear; }
 .vob-export-status{ font-size:12px; color:var(--ink-dim); margin-bottom:14px; }
 
+.gallery-scroll-tip{
+  position:fixed; z-index:9000; display:none; pointer-events:none;
+  background:var(--copper); color:#1a1208; font-weight:700; font-size:13px; letter-spacing:.3px;
+  padding:4px 10px; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,.45); white-space:nowrap;
+}
+.gallery-scroll-tip::after{ content:""; position:absolute; right:-5px; top:50%; margin-top:-5px; border:5px solid transparent; border-left-color:var(--copper); border-right:0; }
 .hof-save-row{ display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 10px; }
 .hidden{display:none !important;}
 </style>
@@ -4675,7 +4681,7 @@ const State = {
   auteurs: [],         // {id, name, note}
   filters: loadSavedFilters(), // filtres du panneau Recherches mémorisés d'une session à l'autre (voir saveFilters)
   userNavigated: false, // true dès que l'utilisateur choisit/parcourt une image : on ne le repositionne alors plus automatiquement
-  sortOrder: localStorage.getItem("imago_sort_order") || "antichrono", // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien) — "antichrono" par défaut pour rester cohérent avec le tri historique de l'écran d'accueil (planche-contact triée du plus récent au plus ancien)
+  sortOrder: "antichrono", /* TOUJOURS le plus récent en premier à l'ouverture (l'ancien choix mémorisé n'est plus relu) ; les boutons ⇅ et le sélecteur « Tri » de la modale catalogue permettent de changer pour la session en cours */ // "chrono" (plus ancien → plus récent) | "antichrono" (plus récent → plus ancien) — "antichrono" par défaut pour rester cohérent avec le tri historique de l'écran d'accueil (planche-contact triée du plus récent au plus ancien)
   sortByFileName: localStorage.getItem("imago_sort_by_filename") === "1", // true : le visualiseur principal ("Main 90%") trie images/vidéos par ordre alphabétique du nom de fichier plutôt que par date (bouton "🔤 Tri par Nom de fichier")
   selectedId: null,
   viewIndex: 0,
@@ -5606,6 +5612,23 @@ function appendImportedPhotosToGallery(newRecords){
   appendGalleryTiles(grid, visible);
   updateGalleryCounter();
 }
+/* Les vignettes arrivent PAR PAQUETS, ajoutées à la suite dans l'ordre où les fichiers ont été traités (estimation rapide de leur
+   date, avant lecture), alors que l'ordre d'affichage définitif suit dateAchat (galleryPhotos). Quand les deux divergent
+   (ligne de catalogue sans date, date ajustée à la lecture, égalités de date…), la planche-contact paraît « mélangée » sur un gros
+   catalogue. En fin d'import, on compare l'ordre affiché à l'ordre attendu et on ne reconstruit que s'ils diffèrent. */
+function fixGalleryOrderIfNeeded(){
+  const galleryScreen = document.getElementById("galleryScreen");
+  if(!galleryScreen || galleryScreen.classList.contains("hidden")) return; // galerie fermée : elle sera dessinée dans le bon ordre à son ouverture
+  const grid = document.getElementById("galleryGrid");
+  const expected = galleryPhotos();
+  const tiles = grid.children;
+  let same = tiles.length === expected.length;
+  for(let i=0; same && i<tiles.length; i++){ if(tiles[i].dataset.id !== expected[i].id) same = false; }
+  if(!same){
+    console.info("[Imago] Fin d'import : ordre des vignettes différent du tri demandé — planche-contact reclassée.");
+    renderGallery(State.selectedId || undefined);
+  }
+}
 function scheduleGalleryBackgroundFill(grid, rest, offset, token){
   const step = ()=>{
     if(token !== galleryRenderToken) return; // la galerie a été redessinée entre-temps : on abandonne ce remplissage périmé
@@ -5677,6 +5700,71 @@ function scrollGalleryToTile(id){
     setTimeout(()=> tile.classList.remove("just-focused"), 1700);
   });
 }
+/* Ascenseur de la galerie : au survol (ou pendant le glissement), une infobulle indique le mois (AAAA-MM, d'après dateAchat)
+   des vignettes situées à cet endroit de la planche-contact. Avec le tri chronologique, c'est l'« avancement dans le temps ». */
+(function(){
+  const scroller = document.getElementById("galleryScroll");
+  const grid = document.getElementById("galleryGrid");
+  const tip = document.createElement("div");
+  tip.className = "gallery-scroll-tip";
+  document.body.appendChild(tip);
+  let onBar = false, lastY = 0, hideTimer = null, raf = 0;
+  let byId = null, byIdSize = -1;
+  const photoById = id=>{
+    if(!byId || byIdSize !== State.photos.length){ byId = new Map(State.photos.map(p=>[p.id,p])); byIdSize = State.photos.length; }
+    return byId.get(id);
+  };
+  // Première vignette dont le haut (par rapport au haut de la grille) est ≥ y : recherche dichotomique (30 000 vignettes possibles).
+  const tileAt = y=>{
+    const tiles = grid.children, n = tiles.length;
+    if(!n) return null;
+    const base = grid.getBoundingClientRect().top;
+    let lo = 0, hi = n - 1;
+    while(lo < hi){
+      const mid = (lo + hi) >> 1;
+      if(tiles[mid].getBoundingClientRect().top - base < y) lo = mid + 1; else hi = mid;
+    }
+    return tiles[lo];
+  };
+  const monthLabel = tile=>{
+    const p = tile && photoById(tile.dataset.id);
+    const d = p && String(p.dateAchat || "");
+    return /^\d{4}-\d{2}/.test(d || "") ? d.slice(0, 7) : "—";
+  };
+  const show = (label, y)=>{
+    tip.textContent = label;
+    const r = scroller.getBoundingClientRect();
+    const sb = Math.max(0, scroller.offsetWidth - scroller.clientWidth);
+    tip.style.display = "block";
+    const h = tip.offsetHeight, w = tip.offsetWidth;
+    tip.style.left = Math.max(4, r.right - sb - w - 10) + "px";
+    tip.style.top = Math.max(r.top + 2, Math.min(r.bottom - h - 2, y - h/2)) + "px";
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(hide, 1200); // filet de sécurité : pendant un glissement la souris ne notifie plus la page
+  };
+  const hide = ()=>{ tip.style.display = "none"; onBar = false; clearTimeout(hideTimer); };
+  const max = ()=> Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  scroller.addEventListener("mousemove", e=>{
+    const r = scroller.getBoundingClientRect();
+    const sb = scroller.offsetWidth - scroller.clientWidth;
+    onBar = sb > 0 && e.clientX >= r.left + scroller.clientWidth && e.clientX <= r.right;
+    if(!onBar){ if(tip.style.display !== "none") hide(); return; }
+    lastY = e.clientY;
+    if(raf) return;
+    raf = requestAnimationFrame(()=>{
+      raf = 0;
+      const f = Math.max(0, Math.min(1, (lastY - r.top) / (r.height || 1)));
+      show(monthLabel(tileAt(f * max())), lastY); // mois à l'endroit survolé de l'ascenseur
+    });
+  });
+  // Glissement du curseur de l'ascenseur : on suit la position réelle du défilement.
+  scroller.addEventListener("scroll", ()=>{
+    if(!onBar) return;
+    show(monthLabel(tileAt(scroller.scrollTop)), lastY);
+  }, {passive:true});
+  scroller.addEventListener("mouseleave", hide);
+  document.addEventListener("mouseup", ()=>{ if(onBar) setTimeout(hide, 600); });
+})();
 document.getElementById("galleryGrid").addEventListener("click", (e)=>{
   if(e.target.closest(".tile-quickbar")) return;
   const tile = e.target.closest(".gallery-tile");
@@ -9092,6 +9180,7 @@ function importRestInBackground(restFiles, csvRowByFileName, stats, token, folde
     } else {
       importTotalCount = 0; importDoneCount = 0; updateGalleryCounter(); // import terminé : le compteur revient à l'affichage simple du total
       goToFirstMatchUnlessNavigated(); // toutes les photos sont là : le vrai 1er fichier du filtre peut être arrivé après le lot prioritaire
+      fixGalleryOrderIfNeeded(); // reclasse la planche-contact si l'ordre d'arrivée des vignettes diffère du tri par date
       const recovered = await retryFailedFilesOnce(stats, csvRowByFileName);
       if(recovered){ populateFilterOptions(); renderGallery(); }
       const recoveredNote = recovered ? ` ✅ ${recovered} fichier(s) récupéré(s) au 2e essai.` : "";
