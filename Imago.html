@@ -8914,6 +8914,35 @@ function estimateFileDate(file, existingRow){
   return "";
 }
 
+/* Propriétés « Windows » des fichiers image : elles PRIMENT sur les règles de construction automatiques
+   (nom de fichier, valeurs par défaut) ; ces règles ne servent que si la propriété est vide.
+   Titre -> personnage | Objet -> lieu | Notation -> favori | Commentaires -> map | Copyright -> auteur |
+   Modèle d'appareil photo -> optique | Prise de vue -> dateAchat (déjà prioritaire : resolveDateAchat).
+   Pour une ligne déjà présente dans le catalogue (row), une valeur non vide du CSV n'est jamais écrasée. */
+const WIN_FAVORI_MIN_STARS = 4; // Notation (1 à 5 étoiles) à partir de laquelle l'image devient « favori »
+function winRatingStars(exif){
+  if(exif.winRating>0) return exif.winRating;
+  const p = exif.winRatingPct||0;
+  return p>=88?5 : p>=63?4 : p>=38?3 : p>=13?2 : p>=1?1 : 0;
+}
+function winCommentToMapUrl(txt){
+  const t = txt.trim();
+  if(isValidMapUrl(t)) return t;
+  const m = t.match(/^(-?\d{1,2}(?:\.\d+)?)\s*[,;]\s*(-?\d{1,3}(?:\.\d+)?)$/);
+  return m ? mapUrlFromCoords(parseFloat(m[1]), parseFloat(m[2])) : mapUrlFromLieu(t);
+}
+function applyWindowsProps(rec, exif, row){
+  if(!exif) return;
+  const has = k => !!(row && row[k]);
+  if(exif.winTitre && !has("personnage")) rec.personnage = exif.winTitre;
+  if(exif.winObjet && !has("lieu")){ rec.lieu = exif.winObjet; rec.lieuCandidate = ""; }
+  if(exif.copyright && !has("auteur")) rec.auteur = exif.copyright;
+  if(exif.model && !has("optique")) rec.optique = exif.model;
+  if(winRatingStars(exif) >= WIN_FAVORI_MIN_STARS) rec.favori = true;
+  if(!(row && isValidMapUrl(row.map))){
+    rec.map = exif.winCommentaire ? winCommentToMapUrl(exif.winCommentaire) : mapUrl(exif, rec.lieu);
+  }
+}
 /* Traite un seul fichier (lecture, dimensions, EXIF, construction de la
    fiche photo, sauvegarde best-effort en IndexedDB) et met à jour les
    compteurs partagés `stats`. Ne touche à AUCUN élément d'écran : c'est à
@@ -9001,7 +9030,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         lieuCandidate: "",
         support: normalizeSupport(existingRow.support, file.name),
         etiquette: existingRow.etiquette || "",
-        auteur: existingRow.auteur || "Philippe",
+        auteur: existingRow.auteur || defaultAuteur(),
         favori: existingRow.favori === "true",
         visagesValides: existingRow.visagesValides === "true" ? true : undefined, // validé dans « Infos » (voir infoFaceEligibility)
         art: existingRow.art === "true",
@@ -9037,7 +9066,7 @@ async function importOneFile(file, csvRowByFileName, stats){
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         personnage, fromCatalog: catalogReused, // catalogue utilisé : aucune règle d'affectation du personnage (ni nom de fichier, ni reconnaissance des visages) ; contenu du CSV seul
-        lieu, lieuCandidate: meta.lieuCandidate || "", support: supportFromFileName(file.name), etiquette: "", auteur:"Philippe",
+        lieu, lieuCandidate: meta.lieuCandidate || "", support: supportFromFileName(file.name), etiquette: "", auteur: defaultAuteur(),
         favori:false, art:false, corbeille:false, rotation:0, albums:[], sharedWith:[],
         sizeBytes: encodedSize, width:dims.width, height:dims.height, exif,
         optique: exifCameraName(exif), poids: Math.round(encodedSize/1024),
@@ -9047,6 +9076,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       };
       stats.added++;
     }
+    applyWindowsProps(rec, exif, existingRow || null); // propriétés Windows prioritaires, règles automatiques en repli
     // La photo est ajoutée à l'affichage (mémoire) même si sa sauvegarde
     // persistante échoue : sur certains navigateurs/WebViews Android, le
     // stockage IndexedDB est restreint ou indisponible (navigation privée,
@@ -12532,6 +12562,22 @@ function readExifFromTiffStart(view, tiffStart){
       if(tag===0x010F && type===2) exif.make = readAscii(view, tiffStart+get32(valOffset), count);
       if(tag===0x0110 && type===2) exif.model = readAscii(view, tiffStart+get32(valOffset), count);
       if(tag===0x0132 && type===2) exif.dateTime = readAscii(view, tiffStart+get32(valOffset), count);
+      // Propriétés « Windows » (Explorateur > Propriétés > Détails) : Titre/Objet/Commentaires = tags XP* (UTF-16LE),
+      // Notation = Rating (0x4746) ou RatingPercent (0x4749), Copyright = 0x8298.
+      const dataAt = count>4 ? tiffStart+get32(valOffset) : valOffset;
+      if(dataAt+count <= view.byteLength){
+        if(type===1 && (tag===0x9C9B||tag===0x9C9C||tag===0x9C9F)){
+          let s=""; for(let k=0;k+1<count;k+=2){ const c=view.getUint16(dataAt+k,true); if(!c) break; s+=String.fromCharCode(c); }
+          s=s.trim();
+          if(s) exif[tag===0x9C9B?"winTitre":tag===0x9C9C?"winCommentaire":"winObjet"]=s;
+        }
+        if(tag===0x8298 && type===2 && count>1){
+          let s=""; for(let k=0;k<count;k++){ const c=view.getUint8(dataAt+k); if(!c) break; s+=String.fromCharCode(c); }
+          s=s.trim(); if(s) exif.copyright=s;
+        }
+      }
+      if(tag===0x4746 && type===3) exif.winRating = get16(valOffset);
+      if(tag===0x4749 && type===3) exif.winRatingPct = get16(valOffset);
       if(tag===0x8769) exifPointer = tiffStart + get32(valOffset);
       if(tag===0x8825) gpsPointer = tiffStart + get32(valOffset);
     }
@@ -17405,6 +17451,7 @@ document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
           return;
         }
         State.drive.token = resp.access_token;
+        fetchGoogleUserName(); // nom du compte Google, utilisé comme auteur par défaut à l'import
         setDriveBtnState("btnDriveConnect","lblDriveConnect", true, "Connecté");
         toast("Connecté à Google Drive.");
       }
@@ -17416,6 +17463,21 @@ document.getElementById("btnDriveConnect").addEventListener("click", async ()=>{
   }
 });
 
+/* Auteur par défaut d'une image importée sans propriété Copyright : nom du compte Google connecté
+   (mémorisé sur l'appareil après la 1re connexion Drive), à défaut « Philippe ». */
+const GOOGLE_USER_NAME_KEY = "imago_google_user_name";
+function defaultAuteur(){
+  let n = State.drive.userName;
+  if(!n){ try{ n = localStorage.getItem(GOOGLE_USER_NAME_KEY); }catch(e){} }
+  return n || "Philippe";
+}
+async function fetchGoogleUserName(){
+  try{
+    const j = await (await driveApiFetch("https://www.googleapis.com/drive/v3/about?fields=user(displayName)")).json();
+    const n = j && j.user && j.user.displayName;
+    if(n){ State.drive.userName = n; try{ localStorage.setItem(GOOGLE_USER_NAME_KEY, n); }catch(e){} }
+  }catch(e){ console.warn("Nom du compte Google indisponible :", e); }
+}
 async function driveApiFetch(url, opts={}){
   if(!State.drive.token) throw new Error("Non connecté à Drive.");
   opts.headers = Object.assign({}, opts.headers, {Authorization: "Bearer " + State.drive.token});
