@@ -6545,7 +6545,7 @@ function catalogRowMatchesFilters(row, critere, personnages, mode){
    - tri : "chrono" | "antichrono" | "filename"
    - critere : "" (tous) | "favori" | "nonfavori" | "art" | "concert" | "histoire" | "partition"
    - personnages : Set de personnages cochés, ou null si tous cochés (aucune restriction) */
-function pickCatalogFromCandidates(csvFiles){
+function pickCatalogFromCandidates(csvFiles, preferredFile){
   return new Promise(resolve=>{
     if(csvFiles.length === 0){ resolve({file:null, tri:catalogPickDefaultTri(), critere:"", personnages:null, combineMode:"ou"}); return; }
     const list = document.getElementById("catalogPickList");
@@ -6582,7 +6582,10 @@ function pickCatalogFromCandidates(csvFiles){
       btn.addEventListener("click", ()=> selectFile(f, btn));
       list.appendChild(btn);
     });
-    selectFile(sorted[0], list.children[0]); // présélection du plus récent (ou de l'unique fichier trouvé)
+    // Présélection : le fichier « préféré » s'il est fourni (ex. l'Album du Hall of fame), sinon le plus récent.
+    let preIdx = preferredFile ? sorted.findIndex(f=> f === preferredFile || (f.name === preferredFile.name && f.size === preferredFile.size && f.lastModified === preferredFile.lastModified)) : -1;
+    if(preIdx < 0) preIdx = 0;
+    selectFile(sorted[preIdx], list.children[preIdx]); // présélection du fichier préféré, du plus récent, ou de l'unique fichier trouvé
     document.getElementById("btnCatalogPickNone").onclick = ()=>{
       closeModal("modalCatalogPick");
       resolve({file:null, tri:triSelect.value, critere:"", personnages:null, combineMode:"ou"});
@@ -7451,6 +7454,7 @@ async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, st
 // Rempli à la fin de cette étape ; réutilisé par l'étape 3) Partager plus bas
 // ({albumFile, mediaFiles}). Vidé au rechargement de la page.
 let hofShareData = null;
+let pendingPreferredCatalog = null; // fichier .csv à présélectionner dans « Quel fichier est le catalogue ? » (voir pickCatalogFromCandidates)
 hofDisplayFolderInput.addEventListener("change", async ()=>{
   const allFiles = [...hofDisplayFolderInput.files];
   hofDisplayFolderInput.value = "";
@@ -7638,7 +7642,12 @@ hofDisplayFolderInput.addEventListener("change", async ()=>{
   // branche "non cataloguée" de importOneFile : lieu vidé (donc jamais
   // affiché en pied de diaporama) et titre réduit au seul personnage
   // (faute de lieu pour le compléter) au lieu du vrai titre enregistré.
-  await runHofImportWithProgress([...matchedFiles, albumFile], statusEl);
+  // Les autres .csv situés directement dans le dossier choisi sont aussi transmis, pour que la modale
+  // « Quel fichier est le catalogue ? » permette de CHOISIR le csv (l'Album reste présélectionné).
+  // Seuls les médias référencés par l'Album sont chargés : le csv choisi ne fournit que les métadonnées.
+  const otherCsvs = allFiles.filter(f=> /\.csv$/i.test(f.name) && f !== albumFile && String(f.webkitRelativePath || "").split("/").filter(Boolean).length <= 2);
+  pendingPreferredCatalog = albumFile;
+  await runHofImportWithProgress([...matchedFiles, albumFile, ...otherCsvs], statusEl);
   toggleBurger(false);
   toast(`🏆 Hall of fame : ${matchedFiles.length} fichier(s) chargé(s) sur ${wantedCount} référencé(s) dans « ${albumFile.name} ».`
     + (matchedFiles.length < wantedCount ? ` ${wantedCount - matchedFiles.length} introuvable(s) — détail (liste + regroupement par dossier) dans la console (F12).` : "")
@@ -9429,7 +9438,8 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // Import Google Drive : le catalogue a déjà été choisi (modale + filtres) AVANT le téléchargement des médias,
   // pour ne télécharger que les fichiers retenus — on réutilise ce choix au lieu de reposer la question.
   const presetPick = (skipCatalogPrompt && typeof skipCatalogPrompt === "object") ? skipCatalogPrompt : null;
-  const pick = presetPick || await pickCatalogFromCandidates(csvFiles);
+  const preferredCatalog = pendingPreferredCatalog; pendingPreferredCatalog = null; // usage unique
+  const pick = presetPick || await pickCatalogFromCandidates(csvFiles, preferredCatalog);
   if(myImportToken !== importToken) return; // un import plus récent a été lancé pendant le choix du catalogue
   applyCatalogPickTri(pick.tri); // "Tri" de la modale : appliqué tout de suite, avant le tri prioritaire ci-dessous qui en dépend
   const chosen = pick.file;
