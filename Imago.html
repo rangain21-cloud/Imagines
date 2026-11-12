@@ -485,7 +485,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   contain-intrinsic-size:220px 220px;
 }
 .gallery-tile:hover{border-color:var(--copper); box-shadow:0 6px 16px rgba(0,0,0,.5);}
-.gallery-tile.portrait img{object-position:center 25%;} /* portrait recadré dans une boîte paysage : on garde le haut (visages) */
+/* Combo « Cadrage » : grille .crop-portrait = portraits/carrés recadrés dans une boîte paysage 3:2 (même hauteur que les paysages), on garde le haut (visages) ; sinon image entière */
+.gallery-grid.crop-portrait .gallery-tile.portrait{aspect-ratio:3 / 2 !important;}
+.gallery-grid.crop-portrait .gallery-tile.portrait img{object-position:center 25%;}
 .gallery-tile img{
   width:100%; height:100%; object-fit:cover; display:block;
   -webkit-user-drag:none; user-select:none;
@@ -1125,6 +1127,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <option value="2">Miniatures : grandes</option>
         <option value="2.5">Miniatures : très grandes</option>
         <option value="3">Miniatures : énormes</option>
+      </select>
+      <select id="galleryCropSelect" class="btn" title="Portraits : recadrés à la hauteur des paysages, ou images entières" aria-label="Cadrage des miniatures" style="width:auto;">
+        <option value="crop">Cadrage : recadré</option>
+        <option value="full">Cadrage : image entière</option>
       </select>
       <button class="btn" id="btnSortOrderGallery" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
       <button class="btn" id="btnSortByFileName" title="Trier les images et vidéos par nom de fichier">🔤 Tri par Nom de fichier</button>
@@ -5550,9 +5556,9 @@ function buildGalleryTile(p){
   tile.className = "gallery-tile";
   tile.dataset.id = p.id;
   tile.title = p.fileName || "";
-  // Paysage : ratio propre à la photo. Portrait/carré : boîte paysage 3:2 (même hauteur que les paysages), image recadrée (cover).
   const ar = effectiveAspectRatio(p);
-  if(ar < 1.2){ tile.style.aspectRatio = "3 / 2"; tile.classList.add("portrait"); } else tile.style.aspectRatio = String(ar);
+  tile.style.aspectRatio = String(ar);
+  if(ar < 1.2) tile.classList.add("portrait"); // recadré (ou non) selon la combo « Cadrage » (classe .crop-portrait sur la grille)
   if(State.gallerySelection.has(p.id)) tile.classList.add("selected");
   const mark = document.createElement("span");
   mark.className = "gallery-select-mark";
@@ -6219,6 +6225,16 @@ function applyAgencement(key, persist){
     document.documentElement.style.setProperty("--thumb-factor", sel.value);
     try{ localStorage.setItem("imago_gallery_size", sel.value); }catch(e){}
   });
+})();
+(function initGalleryCrop(){
+  const sel = document.getElementById("galleryCropSelect"), grid = document.getElementById("galleryGrid");
+  if(!sel || !grid) return;
+  let v = null;
+  try{ v = localStorage.getItem("imago_gallery_crop"); }catch(e){}
+  sel.value = v === "full" ? "full" : "crop";
+  const apply = ()=> grid.classList.toggle("crop-portrait", sel.value === "crop");
+  apply();
+  sel.addEventListener("change", ()=>{ apply(); try{ localStorage.setItem("imago_gallery_crop", sel.value); }catch(e){} });
 })();
 (function initAgencement(){
   const saved = localStorage.getItem(AGENCEMENT_KEY) || "bureau1920";
