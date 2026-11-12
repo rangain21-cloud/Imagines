@@ -8937,11 +8937,102 @@ function applyWindowsProps(rec, exif, row){
   if(exif.winTitre && !has("personnage")) rec.personnage = exif.winTitre;
   if(exif.winObjet && !has("lieu")){ rec.lieu = exif.winObjet; rec.lieuCandidate = ""; }
   if(exif.copyright && !has("auteur")) rec.auteur = exif.copyright;
-  if(exif.model && !has("optique")) rec.optique = exif.model;
+  const winModel = winClean(exif.model);
+  if(winModel && !has("optique")) rec.optique = winModel;
   if(winRatingStars(exif) >= WIN_FAVORI_MIN_STARS) rec.favori = true;
   if(!(row && isValidMapUrl(row.map))){
     rec.map = exif.winCommentaire ? winCommentToMapUrl(exif.winCommentaire) : mapUrl(exif, rec.lieu);
   }
+}
+/* Propriétés « Windows » des VIDÉOS (mêmes rubriques que pour les photos) :
+   MP4/MOV : moov/udta (©nam, ©cmt, cprt…) et moov/meta/ilst ; date de création du média = mvhd.
+   AVI : liste RIFF INFO (INAM = Titre, ISBJ = Objet, ICMT = Commentaires, ICOP = Copyright).
+   Renvoie un objet de même forme que readBasicExif (winTitre, winObjet, winCommentaire, copyright, dateTimeOriginal) ou null. */
+async function readVideoWindowsProps(file){
+  try{
+    if(/\.(mp4|mov)$/i.test(file.name)) return await readMp4WindowsProps(file);
+    if(/\.avi$/i.test(file.name)) return await readAviWindowsProps(file);
+  }catch(e){ /* métadonnées illisibles : les règles automatiques s'appliquent */ }
+  return null;
+}
+async function readMp4WindowsProps(file){
+  const size = file.size;
+  let pos = 0, moov = null;
+  while(pos+8 <= size){
+    const hdr = new DataView(await file.slice(pos, pos+16).arrayBuffer());
+    let len = hdr.getUint32(0), hlen = 8;
+    const type = String.fromCharCode(hdr.getUint8(4),hdr.getUint8(5),hdr.getUint8(6),hdr.getUint8(7));
+    if(len===1){ if(hdr.byteLength<16) break; len = hdr.getUint32(8)*4294967296 + hdr.getUint32(12); hlen = 16; }
+    else if(len===0) len = size-pos;
+    if(len<hlen) break;
+    if(type==="moov"){ if(len-hlen > 32*1024*1024) break; moov = new DataView(await file.slice(pos+hlen, pos+len).arrayBuffer()); break; }
+    pos += len;
+  }
+  if(!moov) return null;
+  const T = o => String.fromCharCode(moov.getUint8(o),moov.getUint8(o+1),moov.getUint8(o+2),moov.getUint8(o+3));
+  const txt = (a,b) => b>a ? new TextDecoder("utf-8").decode(new Uint8Array(moov.buffer, moov.byteOffset+a, b-a)) : "";
+  const out = {};
+  const set = (k,v) => { v = winClean(v); if(v && !out[k]) out[k]=v; };
+  const FIELD = {"\u00A9nam":"winTitre", titl:"winTitre", "\u00A9cmt":"winCommentaire", dscp:"winCommentaire", cprt:"copyright", "\u00A9cpy":"copyright"};
+  function item(type, bs, be, inIlst){
+    const k = FIELD[type]; if(!k) return;
+    if(inIlst){ // ilst : [taille]['data'][version+type 4][locale 4][texte]
+      const len = moov.getUint32(bs);
+      if(bs+16<=be && T(bs+4)==="data") set(k, txt(bs+16, Math.min(be, bs+len)));
+    } else if(type==="cprt"||type==="titl"||type==="dscp") set(k, txt(bs+6, be)); // boîte complète + langue
+    else set(k, txt(bs+4, be)); // QuickTime : taille 2 + langue 2
+  }
+  function walk(start, end, path){
+    let p = start;
+    while(p+8 <= end){
+      const len = moov.getUint32(p), type = T(p+4);
+      if(len<8 || p+len>end) break;
+      const bs = p+8, be = p+len;
+      if(type==="udta"||type==="ilst") walk(bs, be, type);
+      else if(type==="meta"){ const t4 = bs+8<=be ? T(bs+4) : ""; walk((t4==="hdlr"||t4==="ilst") ? bs : bs+4, be, "meta"); }
+      else if(path==="ilst") item(type, bs, be, true);
+      else if(path==="udta") item(type, bs, be, false);
+      else if(path==="moov" && type==="mvhd"){
+        const v = moov.getUint8(bs);
+        const secs = v===1 ? moov.getUint32(bs+4)*4294967296 + moov.getUint32(bs+8) : moov.getUint32(bs+4);
+        const unix = secs - 2082844800; // 1904 -> 1970
+        if(unix > 315532800){ // après 1980 : sinon valeur vide/factice
+          const d = new Date(unix*1000), pad = n=>String(n).padStart(2,"0");
+          out.dateTimeOriginal = `${d.getFullYear()}:${pad(d.getMonth()+1)}:${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        }
+      }
+      p += len;
+    }
+  }
+  walk(0, moov.byteLength, "moov");
+  return Object.keys(out).length ? out : null;
+}
+async function readAviWindowsProps(file){
+  const size = file.size;
+  let pos = 12; // après « RIFF xxxx AVI  »
+  while(pos+12 <= size){
+    const dv = new DataView(await file.slice(pos, pos+12).arrayBuffer());
+    const id = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+    const len = dv.getUint32(4, true);
+    const sub = String.fromCharCode(dv.getUint8(8),dv.getUint8(9),dv.getUint8(10),dv.getUint8(11));
+    if(id==="LIST" && sub==="INFO"){
+      if(len > 1024*1024) return null;
+      const body = new DataView(await file.slice(pos+12, pos+8+len).arrayBuffer());
+      const out = {}, MAP = {INAM:"winTitre", ISBJ:"winObjet", ICMT:"winCommentaire", ICOP:"copyright"};
+      let p = 0;
+      while(p+8 <= body.byteLength){
+        const cid = String.fromCharCode(body.getUint8(p),body.getUint8(p+1),body.getUint8(p+2),body.getUint8(p+3));
+        const clen = body.getUint32(p+4, true);
+        if(MAP[cid] && p+8+clen <= body.byteLength){
+          const s = winClean(readTextTag(body, p+8, clen)); if(s) out[MAP[cid]] = s;
+        }
+        p += 8 + clen + (clen&1);
+      }
+      return Object.keys(out).length ? out : null;
+    }
+    pos += 8 + len + (len&1);
+  }
+  return null;
 }
 /* Traite un seul fichier (lecture, dimensions, EXIF, construction de la
    fiche photo, sauvegarde best-effort en IndexedDB) et met à jour les
@@ -9006,6 +9097,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       dims = {width: resized.width, height: resized.height};
       encodedSize = Math.round(finalDataUrl.length * 0.75); // taille réellement conservée (proche de l'originale si aucun redimensionnement n'a eu lieu)
     }
+    if(isVideo) exif = await readVideoWindowsProps(file); // vidéos : mêmes propriétés Windows que les photos (Titre, Objet, Commentaires, Copyright, date de création)
     // Miniature (~320 px) systématiquement générée pour les photos ET les
     // petites vidéos inline (à partir de finalDataUrl, donc déjà
     // redimensionné) — c'est elle qui restera en mémoire en permanence dans
@@ -9868,7 +9960,7 @@ function ensureDateAchatHasTime(dateAchat, file){
 // de fichier (heuristique, jour seul — complétée ci-dessous avec l'heure du
 // fichier) > date de dernière modification du fichier (heure locale) > maintenant.
 function resolveDateAchat(file, exif, meta){
-  const fromExif = exif && exifDateTimeToDateAchat(exif.dateTimeOriginal || exif.dateTime);
+  const fromExif = exif && exifDateTimeToDateAchat(exif.dateTimeOriginal || exif.dateTimeDigitized || exif.dateTime);
   if(fromExif) return fromExif;
   if(meta && meta.dateAchat) return ensureDateAchatHasTime(meta.dateAchat, file);
   if(file && file.lastModified) return localDateTimeFromTimestamp(file.lastModified);
@@ -12530,6 +12622,25 @@ document.getElementById("btnLieux").addEventListener("click", ()=>{
    `tiffStart` dans `view` — logique commune à tous les formats une fois
    localisé le début du bloc TIFF, qui suit toujours la même structure
    (JPEG comme HEIC). */
+/* ---- Propriétés « Windows » : nettoyage (« significatif » ?) et lecture de texte ---- */
+// Une propriété vide, ne contenant que des signes (« - », « . »…), un texte « bouche-trou » (Unknown, Sans titre…) ou
+// un simple nom de fichier d'appareil (IMG_1234, DSC00012…) n'est PAS significative : la règle de construction s'applique alors.
+const WIN_PLACEHOLDER_RE = /^(?:[\s\-–—_.*?\/\\]+|n\/?a|none|null|undefined|unknown|inconnu|untitled|sans[ _]titre|default|défaut|aucune?|\(?(?:vide|empty)\)?|.*digital camera|sony dsc|dcim|(?:img|dsc|dscn|dscf|pxl|mvimg|vid)[ _-]?\d{3,}(?:[ _-]\d+)*)$/i;
+function winClean(s){
+  if(s==null) return "";
+  s = String(s).replace(/[\u0000-\u001F\u007F]+/g," ").replace(/\s+/g," ").trim();
+  return (!s || WIN_PLACEHOLDER_RE.test(s)) ? "" : s;
+}
+function readUtf16Bytes(view, at, count){ // tags XP* : UTF-16LE terminé par un nul
+  let s=""; for(let k=0;k+1<count;k+=2){ const c=view.getUint16(at+k,true); if(!c) break; s+=String.fromCharCode(c); }
+  return s;
+}
+function readTextTag(view, at, count){ // tags ASCII EXIF : UTF-8 si valide (accents), sinon Latin-1/Windows-1252
+  const bytes=[]; for(let k=0;k<count;k++){ const b=view.getUint8(at+k); if(!b) break; bytes.push(b); }
+  const u8 = new Uint8Array(bytes);
+  try{ return new TextDecoder("utf-8",{fatal:true}).decode(u8); }
+  catch(e){ try{ return new TextDecoder("windows-1252").decode(u8); }catch(e2){ return Array.from(u8,b=>String.fromCharCode(b)).join(""); } }
+}
 function readExifFromTiffStart(view, tiffStart){
   const little = view.getUint16(tiffStart) === 0x4949;
   const get16 = (o)=> view.getUint16(o, little);
@@ -12562,19 +12673,17 @@ function readExifFromTiffStart(view, tiffStart){
       if(tag===0x010F && type===2) exif.make = readAscii(view, tiffStart+get32(valOffset), count);
       if(tag===0x0110 && type===2) exif.model = readAscii(view, tiffStart+get32(valOffset), count);
       if(tag===0x0132 && type===2) exif.dateTime = readAscii(view, tiffStart+get32(valOffset), count);
-      // Propriétés « Windows » (Explorateur > Propriétés > Détails) : Titre/Objet/Commentaires = tags XP* (UTF-16LE),
-      // Notation = Rating (0x4746) ou RatingPercent (0x4749), Copyright = 0x8298.
+      // Propriétés « Windows » (Explorateur > Propriétés > Détails) :
+      //  Titre = ImageDescription (0x010E) — l'Explorateur ignore XPTitle (0x9C9B) dès qu'ImageDescription existe — sinon XPTitle ;
+      //  Objet/Commentaires = XPSubject/XPComment (UTF-16LE) ; Copyright = 0x8298 ; Notation = Rating (0x4746) ou RatingPercent (0x4749).
       const dataAt = count>4 ? tiffStart+get32(valOffset) : valOffset;
-      if(dataAt+count <= view.byteLength){
+      if(dataAt>=0 && dataAt+count <= view.byteLength){
         if(type===1 && (tag===0x9C9B||tag===0x9C9C||tag===0x9C9F)){
-          let s=""; for(let k=0;k+1<count;k+=2){ const c=view.getUint16(dataAt+k,true); if(!c) break; s+=String.fromCharCode(c); }
-          s=s.trim();
-          if(s) exif[tag===0x9C9B?"winTitre":tag===0x9C9C?"winCommentaire":"winObjet"]=s;
+          const s = winClean(readUtf16Bytes(view, dataAt, count));
+          if(s) exif[tag===0x9C9B?"winXPTitre":tag===0x9C9C?"winCommentaire":"winObjet"]=s;
         }
-        if(tag===0x8298 && type===2 && count>1){
-          let s=""; for(let k=0;k<count;k++){ const c=view.getUint8(dataAt+k); if(!c) break; s+=String.fromCharCode(c); }
-          s=s.trim(); if(s) exif.copyright=s;
-        }
+        if(tag===0x010E && type===2){ const s = winClean(readTextTag(view, dataAt, count)); if(s) exif.winDescription=s; }
+        if(tag===0x8298 && type===2 && count>1){ const s = winClean(readTextTag(view, dataAt, count)); if(s) exif.copyright=s; }
       }
       if(tag===0x4746 && type===3) exif.winRating = get16(valOffset);
       if(tag===0x4749 && type===3) exif.winRatingPct = get16(valOffset);
@@ -12594,6 +12703,7 @@ function readExifFromTiffStart(view, tiffStart){
       if(tag===0x920A) exif.focalLength = readRationalAt(valOffset);
       if(tag===0x8827) exif.iso = type===3 ? get16(valOffset) : get32(valOffset);
       if(tag===0x9003 && type===2) exif.dateTimeOriginal = readAscii(view, tiffStart+get32(valOffset), get32(entry+4));
+      if(tag===0x9004 && type===2) exif.dateTimeDigitized = readAscii(view, tiffStart+get32(valOffset), get32(entry+4));
     }
   }
   function readGpsIFD(ifdOffset){
@@ -12615,6 +12725,7 @@ function readExifFromTiffStart(view, tiffStart){
   }
 
   readMainIFD(firstIFD);
+  { const t = exif.winDescription || exif.winXPTitre; if(t) exif.winTitre = t; delete exif.winDescription; delete exif.winXPTitre; }
   if(exifPointer) readExifSubIFD(exifPointer);
   if(gpsPointer) readGpsIFD(gpsPointer);
   return Object.keys(exif).length ? exif : null;
