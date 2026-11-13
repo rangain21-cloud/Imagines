@@ -489,8 +489,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .gallery-grid.crop-portrait .gallery-tile.portrait{aspect-ratio:3 / 2 !important;}
 .gallery-grid.crop-portrait .gallery-tile.portrait img{object-position:center 25%;}
 /* « Portrait demi entier » : hauteur à mi-chemin entre la boîte paysage 3:2 et l'image entière (ratio calculé par vignette dans --ar-half) */
-/* Largeur réduite d'un tiers (×2/3), hauteur inchangée : le ratio est donc multiplié par 2/3 ; la vignette est centrée dans sa cellule. */
-.gallery-grid.crop-half .gallery-tile.portrait{width:66.667%; justify-self:center; aspect-ratio:calc(var(--ar-half, 1) * 2 / 3) !important;}
+/* Les portraits sont réduits dans les deux dimensions (échelle --half-portrait-scale, ici 2/3) et centrés dans leur cellule :
+   les paysages, qui remplissent toute la cellule, apparaissent ainsi plus grands. Pour un écart plus ou moins marqué, changer cette valeur (0.5 = très petits, 0.85 = presque pareils). */
+.gallery-grid.crop-half{--half-portrait-scale:.667;}
+.gallery-grid.crop-half .gallery-tile.portrait{width:calc(var(--half-portrait-scale) * 100%); justify-self:center; align-self:center; aspect-ratio:var(--ar-half, 1) !important;}
 .gallery-grid.crop-half .gallery-tile.portrait img{object-position:center 20%;}
 .gallery-tile img{
   width:100%; height:100%; object-fit:cover; display:block;
