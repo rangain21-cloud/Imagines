@@ -488,6 +488,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 /* Combo « Cadrage » : grille .crop-portrait = portraits/carrés recadrés dans une boîte paysage 3:2 (même hauteur que les paysages), on garde le haut (visages) ; sinon image entière */
 .gallery-grid.crop-portrait .gallery-tile.portrait{aspect-ratio:3 / 2 !important;}
 .gallery-grid.crop-portrait .gallery-tile.portrait img{object-position:center 25%;}
+/* « Portrait demi entier » : hauteur à mi-chemin entre la boîte paysage 3:2 et l'image entière (ratio calculé par vignette dans --ar-half) */
+.gallery-grid.crop-half .gallery-tile.portrait{aspect-ratio:var(--ar-half, 1 / 1) !important;}
+.gallery-grid.crop-half .gallery-tile.portrait img{object-position:center 20%;}
 .gallery-tile img{
   width:100%; height:100%; object-fit:cover; display:block;
   -webkit-user-drag:none; user-select:none;
@@ -1130,6 +1133,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       </select>
       <select id="galleryCropSelect" class="btn" title="Portraits : recadrés à la hauteur des paysages, ou images entières" aria-label="Cadrage des miniatures" style="width:auto;">
         <option value="crop">Cadrage : recadré</option>
+        <option value="half">Cadrage : portrait demi entier</option>
         <option value="full">Cadrage : image entière</option>
       </select>
       <button class="btn" id="btnSortOrderGallery" title="Basculer entre tri chronologique et anti-chronologique">⇅ Tri anti-chronologique</button>
@@ -1208,6 +1212,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <optgroup label="Tablette & mobile"><option value="tablette1024">Tablette 1024</option><option value="smartphoneGrand">Smartphone grand (Pro Max/Ultra)</option><option value="smartphoneStandard">Smartphone standard</option><option value="smartphonePetit">Smartphone petit (SE/mini)</option></optgroup>
       <option value="lisibilite">Lisibilité max</option>
     </select></div>
+    <div class="search-field"><label for="displayQualitySelect">Qualité d'affichage</label>
+      <select id="displayQualitySelect">
+        <option value="eco">Économique (léger, rapide)</option>
+        <option value="standard" selected>Standard (équilibré)</option>
+        <option value="haute">Haute qualité</option>
+        <option value="max">Maximale (gourmand en mémoire)</option>
+      </select>
+      <div id="displayQualityHint" style="font-size:11.5px; color:var(--ink-dim); margin-top:4px;"></div></div>
     <div class="search-field"><label for="barModeSelect">Barre du haut</label>
       <select id="barModeSelect">
         <option value="auto">Automatique (textes + icônes)</option>
@@ -5558,6 +5570,7 @@ function buildGalleryTile(p){
   tile.title = p.fileName || "";
   const ar = effectiveAspectRatio(p);
   tile.style.aspectRatio = String(ar);
+  tile.style.setProperty("--ar-half", String(2 / (1 / ar + 2 / 3))); // ratio « demi entier » : hauteur moyenne entre l'image entière et la boîte 3:2
   if(ar < 1.2) tile.classList.add("portrait"); // recadré (ou non) selon la combo « Cadrage » (classe .crop-portrait sur la grille)
   if(State.gallerySelection.has(p.id)) tile.classList.add("selected");
   const mark = document.createElement("span");
@@ -6231,8 +6244,11 @@ function applyAgencement(key, persist){
   if(!sel || !grid) return;
   let v = null;
   try{ v = localStorage.getItem("imago_gallery_crop"); }catch(e){}
-  sel.value = v === "full" ? "full" : "crop";
-  const apply = ()=> grid.classList.toggle("crop-portrait", sel.value === "crop");
+  sel.value = (v === "full" || v === "half") ? v : "crop";
+  const apply = ()=>{
+    grid.classList.toggle("crop-portrait", sel.value === "crop");
+    grid.classList.toggle("crop-half", sel.value === "half");
+  };
   apply();
   sel.addEventListener("change", ()=>{ apply(); try{ localStorage.setItem("imago_gallery_crop", sel.value); }catch(e){} });
 })();
@@ -10265,7 +10281,8 @@ function getImageDimensions(dataUrl){
    principal) même sur un moniteur 4K, tout en divisant la mémoire
    utilisée par photo par un facteur de 5 à 15 selon la résolution
    d'origine. */
-const IMPORT_MAX_DIM = (navigator.deviceMemory && navigator.deviceMemory <= 4) ? 1600 : 2400;
+const IMAGO_LOW_MEMORY = !!(navigator.deviceMemory && navigator.deviceMemory <= 4);
+let IMPORT_MAX_DIM = IMAGO_LOW_MEMORY ? 1600 : 2400; // modifiable via « Qualité d'affichage » (menu Agencement)
 /* navigator.deviceMemory (Chrome/Android uniquement, absent ailleurs — d'où
    le premier test) donne une estimation approximative, en Go, de la RAM de
    l'appareil. En dessous de 4 Go (cas typique d'un Samsung Galaxy A51,
@@ -10274,7 +10291,7 @@ const IMPORT_MAX_DIM = (navigator.deviceMemory && navigator.deviceMemory <= 4) ?
    chaque dataUrl stocké en mémoire/IndexedDB, donc moins de risque
    d'épuiser la mémoire disponible sur un import de plusieurs dizaines de
    photos (voir l'avertissement Android "Mémoire insuffisante" observé). */
-const IMPORT_JPEG_QUALITY = 0.86;
+let IMPORT_JPEG_QUALITY = 0.86;
 /* Décode une photo pour mesurer ses dimensions et, si nécessaire, la
    redimensionne via <canvas> pour ramener son plus grand côté à
    IMPORT_MAX_DIM (ré-encodée en JPEG). Ne touche PAS aux photos déjà sous
@@ -10314,7 +10331,9 @@ function loadAndMaybeDownscaleImage(dataUrl){
         const nw = Math.round(w*scale), nh = Math.round(h*scale);
         const canvas = document.createElement("canvas");
         canvas.width = nw; canvas.height = nh;
-        canvas.getContext("2d").drawImage(img, 0, 0, nw, nh);
+        const cctx = canvas.getContext("2d");
+        cctx.imageSmoothingEnabled = true; cctx.imageSmoothingQuality = "high"; // filtre de réduction de meilleure qualité (moins de crénelage/moiré)
+        cctx.drawImage(img, 0, 0, nw, nh);
         // Encodage asynchrone (toBlob) : le moteur JPEG travaille hors du
         // fil principal, l'interface (clics sur les miniatures pendant
         // l'import, défilement) ne fige plus ~60 ms par photo comme avec
@@ -10327,9 +10346,7 @@ function loadAndMaybeDownscaleImage(dataUrl){
         try{
           const ts = Math.min(1, THUMB_MAX_DIM / Math.max(nw,nh));
           const tw = Math.max(1, Math.round(nw*ts)), th = Math.max(1, Math.round(nh*ts));
-          const tc = document.createElement("canvas");
-          tc.width = tw; tc.height = th;
-          tc.getContext("2d").drawImage(canvas, 0, 0, tw, th);
+          const tc = downscaleToCanvas(canvas, nw, nh, tw, th); // réduction par paliers (÷2) : bien plus nette qu'un seul saut 2400 → 320 px
           thumbDataUrl = tc.toDataURL("image/jpeg", THUMB_JPEG_QUALITY);
           tc.width = 0; tc.height = 0;
         }catch(_){ thumbDataUrl = null; }
@@ -10358,8 +10375,55 @@ function loadAndMaybeDownscaleImage(dataUrl){
    rapide). C'est cette miniature — et seulement elle — qui reste en mémoire
    en permanence dans State.photos (voir p.thumbDataUrl) ; l'image complète,
    elle, ne vit que dans IndexedDB (voir getFullDataUrl plus bas). */
-const THUMB_MAX_DIM = 320;
-const THUMB_JPEG_QUALITY = 0.65;
+let THUMB_MAX_DIM = 320;
+let THUMB_JPEG_QUALITY = 0.72; // était 0.65 : moins d'artefacts de compression pour ~+15-20 % de poids par vignette
+/* Combo « Qualité d'affichage » (menu burger > Agencement). Règle la définition des miniatures conservées en mémoire et celle des
+   images importées. S'applique aux PROCHAINS imports : les photos déjà chargées gardent leur qualité actuelle. */
+const DISPLAY_QUALITY_PRESETS = {
+  eco:      { thumb: 256, tq: 0.60, imp: 1600,                         iq: 0.80, hint: "Miniatures 256 px, images 1600 px : mémoire minimale, import le plus rapide." },
+  standard: { thumb: 320, tq: 0.72, imp: IMAGO_LOW_MEMORY ? 1600 : 2400, iq: 0.86, hint: "Miniatures 320 px, images " + (IMAGO_LOW_MEMORY ? 1600 : 2400) + " px : bon compromis (réglage par défaut)." },
+  haute:    { thumb: 400, tq: 0.78, imp: IMAGO_LOW_MEMORY ? 1600 : 2400, iq: 0.90, hint: "Miniatures 400 px, JPEG plus fin : plus net sur grands écrans, ~+50 % de mémoire pour les miniatures." },
+  max:      { thumb: 480, tq: 0.82, imp: IMAGO_LOW_MEMORY ? 2400 : 3000, iq: 0.92, hint: "Miniatures 480 px, images jusqu'à " + (IMAGO_LOW_MEMORY ? 2400 : 3000) + " px : netteté maximale, mais import plus lent et nettement plus de mémoire." }
+};
+function applyDisplayQuality(key){
+  const pr = DISPLAY_QUALITY_PRESETS[key] || DISPLAY_QUALITY_PRESETS.standard;
+  THUMB_MAX_DIM = pr.thumb; THUMB_JPEG_QUALITY = pr.tq; IMPORT_MAX_DIM = pr.imp; IMPORT_JPEG_QUALITY = pr.iq;
+  const hint = document.getElementById("displayQualityHint");
+  if(hint) hint.textContent = pr.hint + " S'applique aux prochains imports.";
+}
+(function initDisplayQuality(){
+  const sel = document.getElementById("displayQualitySelect");
+  let v = null;
+  try{ v = localStorage.getItem("imago_display_quality"); }catch(e){}
+  if(!DISPLAY_QUALITY_PRESETS[v]) v = "standard";
+  if(sel){
+    sel.value = v;
+    sel.addEventListener("change", ()=>{
+      applyDisplayQuality(sel.value);
+      try{ localStorage.setItem("imago_display_quality", sel.value); }catch(e){}
+      toast("Qualité d'affichage : " + sel.options[sel.selectedIndex].text.split(" (")[0] + " — appliquée aux prochains imports.", 4500);
+    });
+  }
+  applyDisplayQuality(v);
+})();
+/* Réduit src (image, canvas ou bitmap de sw×sh) vers tw×th par paliers successifs (÷2 au plus à chaque fois) avec lissage « high » :
+   un seul saut de 7× produit du crénelage ; par paliers, le résultat est net pour un coût CPU négligeable (canvas de plus en plus petits). */
+function downscaleToCanvas(src, sw, sh, tw, th){
+  let cur = src, cw = sw, ch = sh, tmp = null;
+  while(cw / 2 >= tw && ch / 2 >= th){
+    const nw = Math.max(tw, Math.round(cw / 2)), nh = Math.max(th, Math.round(ch / 2));
+    const c = document.createElement("canvas"); c.width = nw; c.height = nh;
+    const g = c.getContext("2d"); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+    g.drawImage(cur, 0, 0, nw, nh);
+    if(tmp){ tmp.width = 0; tmp.height = 0; } // libère le palier précédent (jamais la source d'origine)
+    tmp = c; cur = c; cw = nw; ch = nh;
+  }
+  const out = document.createElement("canvas"); out.width = tw; out.height = th;
+  const og = out.getContext("2d"); og.imageSmoothingEnabled = true; og.imageSmoothingQuality = "high";
+  og.drawImage(cur, 0, 0, tw, th);
+  if(tmp){ tmp.width = 0; tmp.height = 0; }
+  return out;
+}
 function makeThumbnail(dataUrl){
   return new Promise((resolve)=>{
     const img = new Image();
@@ -10369,9 +10433,7 @@ function makeThumbnail(dataUrl){
       try{
         const scale = Math.min(1, THUMB_MAX_DIM / Math.max(w,h));
         const nw = Math.max(1, Math.round(w*scale)), nh = Math.max(1, Math.round(h*scale));
-        const canvas = document.createElement("canvas");
-        canvas.width = nw; canvas.height = nh;
-        canvas.getContext("2d").drawImage(img, 0, 0, nw, nh);
+        const canvas = downscaleToCanvas(img, w, h, nw, nh);
         const out = canvas.toDataURL("image/jpeg", THUMB_JPEG_QUALITY);
         img.src = ""; canvas.width = 0; canvas.height = 0;
         resolve(out);
