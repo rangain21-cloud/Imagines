@@ -1285,6 +1285,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
           </div>
           <div class="viewer-video-pending hidden" id="viewerVideoPending">
             <button class="btn copper" id="btnLoadPendingVideo">▶ Charger la vidéo (<span id="pendingVideoSize"></span>)</button>
+            <button class="btn hidden" id="btnVideoPickFolder" type="button" title="Choisir (ou ajouter) le dossier qui contient vos vidéos : Imago s'en souviendra et les retrouvera tout seul">📁 Choisir le dossier des vidéos…</button>
             <div class="sub" id="pendingVideoNote">Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.</div>
           </div>
           <div class="viewer-missing hidden" id="viewerMissing">
@@ -5286,7 +5287,10 @@ function renderGrid(){
       ? `Format ${pendingFmt} : les navigateurs ne savent pas le lire. Enregistrez une copie du fichier pour l'ouvrir dans le lecteur de votre ordinateur (VLC, Lecteur Windows…).`
       : (!pendingVideoFiles.has(p.id) && driveMediaFolderId()
           ? "Vidéo stockée sur Drive (« " + driveMediaFolderLabel() + " ») : son contenu est téléchargé à la demande."
-          : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.");
+          : (videoDirSupported()
+              ? "Vidéo de plus de 5 Mo : chargée à la demande depuis votre disque. Choisissez une fois son dossier : Imago le retrouvera ensuite tout seul (un clic de confirmation peut être demandé à chaque nouvelle session)."
+              : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur."));
+    document.getElementById("btnVideoPickFolder").classList.toggle("hidden", pendingIsAvi || !videoDirSupported());
     document.getElementById("pendingVideoSize").textContent = fmtSize(p.videoSizeBytes) || "?";
     videoPending.classList.remove("hidden");
   } else if(p.isVideo){
@@ -13319,6 +13323,92 @@ document.getElementById("btnAc3Save").addEventListener("click", ()=>{
 function openOrPlayVideoFile(p, file){
   if(isUnplayableVideoName(p.fileName)) saveVideoCopy(p, file); else playVideoFromFile(p, file);
 }
+/* -----------------------------------------------------------------
+   Mémorisation du DOSSIER des vidéos (Chrome / Edge : File System Access API)
+   -----------------------------------------------------------------
+   Une grosse vidéo n'est pas copiée dans Imago : après un rechargement de la page, le navigateur interdit de rouvrir un fichier du
+   disque sans que l'utilisateur le désigne à nouveau. En revanche, il autorise à MÉMORISER l'accès à un dossier choisi par
+   l'utilisateur (handle gardé dans IndexedDB). Le dossier est donc choisi UNE fois ; ensuite la vidéo est retrouvée toute seule
+   (par son sous-dossier d'origine, sinon par recherche de son nom), au prix d'un clic de confirmation par session si le navigateur
+   a « oublié » l'autorisation. Firefox/Safari/mobile : pas de handle possible, on garde la resélection du fichier.
+   ----------------------------------------------------------------- */
+function videoDirSupported(){ return typeof window.showDirectoryPicker === "function"; }
+const videoDirPromptedIds = new Set(); // vidéos pour lesquelles on a déjà proposé de choisir un dossier dans cette session
+async function vdirLoadAll(){
+  try{ const v = await idbGetMeta("videoDirHandles", []); return Array.isArray(v) ? v : []; }catch(e){ return []; }
+}
+async function vdirSave(handle){
+  const all = await vdirLoadAll();
+  for(const h of all){ try{ if(await h.isSameEntry(handle)) return; }catch(_){} }
+  all.push(handle);
+  await idbSetMeta("videoDirHandles", all);
+}
+async function vdirGranted(h, interactive){
+  try{
+    let st = await h.queryPermission({mode: "read"});
+    if(st !== "granted" && interactive) st = await h.requestPermission({mode: "read"}); // exige un clic de l'utilisateur
+    return st === "granted";
+  }catch(e){ return false; }
+}
+async function vdirFileAt(root, parts, name){
+  let d = root;
+  for(const seg of parts) d = await d.getDirectoryHandle(seg);
+  return d.getFileHandle(name);
+}
+// Recherche en largeur par nom dans l'arborescence (plafonnée pour ne pas parcourir un disque entier).
+async function vdirSearch(root, name, wantSize){
+  const queue = [root]; let seen = 0, fallback = null;
+  while(queue.length && seen < 60000){
+    const d = queue.shift();
+    try{
+      const f = await (await d.getFileHandle(name)).getFile();
+      if(!wantSize || f.size === wantSize) return f;
+      if(!fallback) fallback = f;
+    }catch(_){}
+    try{ for await (const [, h] of d.entries()){ seen++; if(h.kind === "directory") queue.push(h); } }catch(_){}
+  }
+  return fallback;
+}
+// Retrouve le fichier de la vidéo p dans le dossier mémorisé h : d'abord par son sous-dossier d'origine (dossier choisi = racine, ou
+// = parent de la racine, ou = dossier direct), puis par recherche de son nom.
+async function vdirFind(h, p){
+  const parts = String(p.sousDossier || "").split("/").filter(Boolean), name = p.fileName, want = p.videoSizeBytes || 0;
+  for(const t of [parts.slice(1), parts, []]){
+    try{
+      const f = await (await vdirFileAt(h, t, name)).getFile();
+      if(!want || f.size === want) return f;
+    }catch(_){}
+  }
+  return vdirSearch(h, name, want);
+}
+async function findVideoInSavedFolders(p){
+  for(const h of await vdirLoadAll()){
+    if(!(await vdirGranted(h, true))) continue;
+    const f = await vdirFind(h, p);
+    if(f) return f;
+  }
+  return null;
+}
+// Ouvre le sélecteur de dossier (mode lecture), le mémorise, puis cherche la vidéo dedans. Retourne "found" | "notfound" | "cancel" | "retry".
+async function pickVideoFolderAndPlay(p){
+  let dir;
+  try{ dir = await window.showDirectoryPicker({id: "imago-videos", mode: "read"}); }
+  catch(e){
+    if(e && e.name === "AbortError") return "cancel";
+    if(e && e.name === "SecurityError"){ toast("Cliquez de nouveau pour choisir le dossier des vidéos.", 5000); return "retry"; }
+    toast("Dossier illisible : " + ((e && e.message) || e), 6000); return "cancel";
+  }
+  try{ await vdirSave(dir); }catch(e){ console.warn("Dossier des vidéos non mémorisé", e); }
+  const f = await vdirFind(dir, p);
+  if(!f){
+    toast(`« ${p.fileName} » est introuvable dans « ${dir.name} ». Choisissez le dossier qui contient cette vidéo (ou son dossier parent) avec « 📁 Choisir le dossier des vidéos… ».`, 9000);
+    return "notfound";
+  }
+  pendingVideoFiles.set(p.id, f);
+  toast(`Dossier « ${dir.name} » mémorisé : vos vidéos y seront retrouvées automatiquement.`, 5000);
+  openOrPlayVideoFile(p, f);
+  return "found";
+}
 async function loadPendingVideoFile(p){
   const cachedFile = pendingVideoFiles.get(p.id);
   if(cachedFile){
@@ -13326,6 +13416,17 @@ async function loadPendingVideoFile(p){
     return;
   }
   if(await loadVideoFromDrive(p)) return; // catalogue chargé depuis Drive : téléchargement à la demande
+  if(videoDirSupported() && !isUnplayableVideoName(p.fileName)){
+    // Dossier déjà mémorisé : la vidéo est retrouvée toute seule. Sinon, première fois pour cette vidéo : on propose de choisir son dossier (mémorisé ensuite).
+    let f = null;
+    try{ f = await findVideoInSavedFolders(p); }catch(e){ console.warn("Recherche dans les dossiers mémorisés impossible", e); }
+    if(f){ pendingVideoFiles.set(p.id, f); openOrPlayVideoFile(p, f); return; }
+    if(!videoDirPromptedIds.has(p.id)){
+      const r = await pickVideoFolderAndPlay(p);
+      if(r !== "retry") videoDirPromptedIds.add(p.id);
+      return; // 2e clic (dossier annulé ou sans cette vidéo) : on retombe sur la resélection du fichier ci-dessous
+    }
+  }
   // Session précédente terminée (page rechargée) : le File d'origine n'est
   // plus disponible en mémoire — on demande à l'utilisateur de le
   // resélectionner uniquement lui (pas tout le dossier).
@@ -13346,6 +13447,10 @@ singleVideoPickerInput.addEventListener("change", ()=>{
   }
   pendingVideoFiles.set(p.id, file); // reste disponible pour le reste de la session
   openOrPlayVideoFile(p, file);
+});
+document.getElementById("btnVideoPickFolder").addEventListener("click", async ()=>{
+  const p = getSelected();
+  if(p) await pickVideoFolderAndPlay(p);
 });
 document.getElementById("btnLoadPendingVideo").addEventListener("click", ()=>{
   const p = getSelected();
