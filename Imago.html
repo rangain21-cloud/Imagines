@@ -1567,6 +1567,11 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <button class="btn" id="afSelNone" type="button">☐ Tout décocher</button>
         <span class="drive-note" style="margin:0;">Clic = cocher · Maj+clic = plage · Double-clic = agrandir</span>
       </div>
+      <div class="af-toolbar" id="afUploadRow">
+        <label class="af-check-lbl" title="Envoie directement les fichiers cochés (tels quels) dans le dossier Drive du catalogue, sans passer par « Modifier › Détails » ni par « Sauver sur Drive »"><input type="checkbox" id="afUpload"> ☁ Téléverser aussi les fichiers cochés sur Drive</label>
+        <span class="drive-note" id="afUploadInfo" style="margin:0;"></span>
+        <label class="af-check-lbl hidden" id="afCsvLbl" title="Ajoute les nouvelles lignes au catalogue .csv sur Drive (sinon : « Sauver sur Drive » plus tard)"><input type="checkbox" id="afUploadCsv" checked> Mettre à jour le catalogue (.csv) sur Drive</label>
+      </div>
       <div class="af-wrap" id="afWrap"><div class="af-grid" id="afGrid"></div><div class="af-empty" id="afEmpty">Choisissez un dossier pour voir ses photos et vidéos.</div></div>
     </div>
     <div class="modal-foot">
@@ -5169,7 +5174,7 @@ function repairVideoFlags(p, persist = true){
    Renvoie true si la demande est traitée ici, false pour laisser l'ancien parcours (resélection du fichier local). */
 async function loadVideoFromDrive(p){
   if(!driveMediaFolderId()) return false;
-  if(!State.drive.token){ toast("Connectez-vous à Drive (menu ☰ › Connexion) pour télécharger cette vidéo.", 6000); return true; }
+  if(!State.drive.token) return false; // Drive facultatif : non connecté, on n'impose RIEN (ni message, ni connexion) — la vidéo se charge depuis le disque local
   let hit;
   try{ hit = (await getDriveMediaIndex()).get(catalogLooseKey(p.fileName)); }
   catch(err){ toast("Dossier Drive illisible : " + ((err && err.message) || err), 6000); return true; }
@@ -5361,11 +5366,14 @@ function renderGrid(){
       : '▶ Charger la vidéo (<span id="pendingVideoSize"></span>)';
     document.getElementById("pendingVideoNote").textContent = pendingIsAvi
       ? `Format ${pendingFmt} : les navigateurs ne savent pas le lire. Enregistrez une copie du fichier pour l'ouvrir dans le lecteur de votre ordinateur (VLC, Lecteur Windows…).`
-      : (!pendingVideoFiles.has(p.id) && driveMediaFolderId()
-          ? "Vidéo stockée sur Drive (« " + driveMediaFolderLabel() + " ») : son contenu est téléchargé à la demande."
-          : (videoDirSupported()
-              ? "Vidéo de plus de 5 Mo : chargée à la demande depuis votre disque. Choisissez une fois son dossier : Imago le retrouvera ensuite tout seul (un clic de confirmation peut être demandé à chaque nouvelle session)."
-              : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur."));
+      : (() => {
+          const driveOn = !!driveMediaFolderId() && !!State.drive.token; // Drive = secours facultatif, jamais exigé
+          if(videoDirSupported()) return "Vidéo de plus de 5 Mo : chargée à la demande depuis votre disque (sans Drive). Choisissez une fois son dossier : Imago le retrouvera ensuite tout seul (un clic de confirmation peut être demandé à chaque nouvelle session)."
+            + (driveOn ? " À défaut, elle sera téléchargée depuis Drive (« " + driveMediaFolderLabel() + " »)." : "");
+          return driveOn
+            ? "Vidéo stockée sur Drive (« " + driveMediaFolderLabel() + " ») : son contenu est téléchargé à la demande."
+            : "Vidéo de plus de 5 Mo : son contenu n'est chargé qu'à la demande, pour économiser la mémoire du navigateur.";
+        })();
     document.getElementById("btnVideoPickFolder").classList.toggle("hidden", pendingIsAvi || !videoDirSupported());
     document.getElementById("pendingVideoSize").textContent = fmtSize(p.videoSizeBytes) || "?";
     videoPending.classList.remove("hidden");
@@ -13491,17 +13499,20 @@ async function loadPendingVideoFile(p){
     openOrPlayVideoFile(p, cachedFile);
     return;
   }
-  if(await loadVideoFromDrive(p)) return; // catalogue chargé depuis Drive : téléchargement à la demande
-  if(videoDirSupported() && !isUnplayableVideoName(p.fileName)){
-    // Dossier déjà mémorisé : la vidéo est retrouvée toute seule. Sinon, première fois pour cette vidéo : on propose de choisir son dossier (mémorisé ensuite).
+  // 1) Disque local d'abord : dossier déjà mémorisé → la vidéo est retrouvée toute seule, sans Drive ni sélecteur.
+  const localFolderMode = videoDirSupported() && !isUnplayableVideoName(p.fileName);
+  if(localFolderMode){
     let f = null;
     try{ f = await findVideoInSavedFolders(p); }catch(e){ console.warn("Recherche dans les dossiers mémorisés impossible", e); }
     if(f){ pendingVideoFiles.set(p.id, f); openOrPlayVideoFile(p, f); return; }
-    if(!videoDirPromptedIds.has(p.id)){
-      const r = await pickVideoFolderAndPlay(p);
-      if(r !== "retry") videoDirPromptedIds.add(p.id);
-      return; // 2e clic (dossier annulé ou sans cette vidéo) : on retombe sur la resélection du fichier ci-dessous
-    }
+  }
+  // 2) Drive : uniquement en secours, et seulement si l'utilisateur y est DÉJÀ connecté (jamais de connexion imposée).
+  if(await loadVideoFromDrive(p)) return;
+  // 3) Pas retrouvée : première fois pour cette vidéo → on propose de choisir son dossier (mémorisé ensuite).
+  if(localFolderMode && !videoDirPromptedIds.has(p.id)){
+    const r = await pickVideoFolderAndPlay(p);
+    if(r !== "retry") videoDirPromptedIds.add(p.id);
+    return; // 2e clic (dossier annulé ou sans cette vidéo) : on retombe sur la resélection du fichier ci-dessous
   }
   // Session précédente terminée (page rechargée) : le File d'origine n'est
   // plus disponible en mémoire — on demande à l'utilisateur de le
@@ -13750,11 +13761,24 @@ document.addEventListener("keydown", (e)=>{
     }
   }
   function updateCount(){
-    const sel = items.filter(isSel).length;
+    const sel = items.filter(isSel).length, up = $("afUpload").checked && !$("afUpload").disabled;
     $("afCount").textContent = items.length ? `${sel} sélectionné(s) · ${view.length} affiché(s) sur ${items.length}` : "";
     const btn = $("afAdd");
     btn.disabled = sel === 0;
-    btn.textContent = sel ? `➕ Ajouter ${sel} au catalogue` : "➕ Ajouter au catalogue";
+    btn.textContent = sel ? `➕ Ajouter ${sel} au catalogue${up ? " + ☁ Drive" : ""}` : "➕ Ajouter au catalogue";
+  }
+  // Téléversement : proposé seulement si l'utilisateur est DÉJÀ connecté à Drive (aucune connexion n'est jamais imposée).
+  function refreshUploadUi(){
+    const cb = $("afUpload"), connected = !!(State.drive && State.drive.token);
+    cb.disabled = !connected;
+    if(!connected){ cb.checked = false; $("afUploadInfo").textContent = "(Drive non connecté : menu ☰ › Connexion)"; }
+    else{
+      let pref = false; try{ pref = localStorage.getItem("imago_af_upload") === "1"; }catch(_){}
+      cb.checked = pref;
+      $("afUploadInfo").textContent = "→ dossier « " + (driveMediaFolderId() ? driveMediaFolderLabel() : "IMAGINES") + " »";
+    }
+    $("afCsvLbl").classList.toggle("hidden", !cb.checked);
+    updateCount();
   }
   function rebuildView(){
     const type = $("afType").value, sub = $("afSub").value, q = $("afSearch").value.trim().toLowerCase();
@@ -13844,7 +13868,13 @@ document.addEventListener("keydown", (e)=>{
   }
 
   // ---- événements ----
+  $("afUpload").addEventListener("change", ()=>{
+    try{ localStorage.setItem("imago_af_upload", $("afUpload").checked ? "1" : "0"); }catch(_){}
+    $("afCsvLbl").classList.toggle("hidden", !$("afUpload").checked);
+    updateCount();
+  });
   $("btnAddFromFolder").addEventListener("click", ()=>{
+    refreshUploadUi();
     openModal("modalAddFromFolder");
     if(!items.length) input.click(); // première ouverture : on propose directement de choisir le dossier
   });
@@ -13883,13 +13913,83 @@ document.addEventListener("keydown", (e)=>{
   $("afClose").addEventListener("click", close);
   $("afCancel").addEventListener("click", close);
   $("modalAddFromFolder").addEventListener("click", (e)=>{ if(e.target === $("modalAddFromFolder")) close(); });
-  $("afAdd").addEventListener("click", ()=>{
+  $("afAdd").addEventListener("click", async ()=>{
     const files = items.filter(isSel).map(it => it.file);
     if(!files.length) return;
-    const name = rootName;
+    const name = rootName, upload = $("afUpload").checked && !$("afUpload").disabled, withCsv = $("afUploadCsv").checked;
     close();
-    handleFilesSelected(files, name, true, "btnPickFiles"); // ajout pur : le catalogue en cours est conservé
+    await handleFilesSelected(files, name, true, "btnPickFiles"); // ajout pur : le catalogue en cours est conservé
+    if(upload) await uploadPickedToDrive(files, withCsv);
   });
+
+  /* Téléverse les fichiers choisis TELS QUELS (octets d'origine, aucune ré-encodage) dans le dossier Drive du catalogue.
+     Ne dépend ni de « Modifier › Détails » ni du plan de « Sauver sur Drive » : un fichier déjà présent sur Drive sous ce nom est
+     simplement rattaché (jamais de doublon). Les métadonnées des vidéos (titre, auteur…) pourront être écrites plus tard par « Sauver
+     sur Drive » si elles sont renseignées. */
+  async function uploadPickedToDrive(files, withCsv){
+    if(!State.drive.token){ toast("Drive non connecté : téléversement non effectué (les fichiers sont bien ajoutés au catalogue).", 7000); return; }
+    let folderId, folderLabel;
+    try{
+      const mediaFolder = driveMediaFolderId();
+      folderId = mediaFolder || await ensureImaginesFolder();
+      folderLabel = mediaFolder ? driveMediaFolderLabel() : "IMAGINES";
+    }catch(e){ toast("Dossier Drive introuvable : " + ((e && e.message) || e), 8000); return; }
+    const win = driveSaveWindow("Téléversement vers Drive — « " + folderLabel + " »");
+    const status = document.createElement("p"); status.style.cssText = "margin:0 0 12px; line-height:1.5;"; status.textContent = "Comparaison avec le dossier Drive…";
+    win.body.appendChild(status);
+    let stopped = false;
+    const bStop = driveSaveButton("Arrêter"); bStop.onclick = ()=>{ stopped = true; bStop.disabled = true; };
+    win.body.appendChild(bStop);
+    const sent = new Map(), failed = []; let skipped = 0;
+    try{
+      let idx;
+      try{ driveMediaIndexPromise = null; driveMediaIndexFolder = ""; idx = await getDriveMediaIndex(folderId); } // listing frais : jamais de doublon
+      catch(e){ idx = new Map(); }
+      for(let i = 0; i < files.length && !stopped; i++){
+        const f = files[i], head = `Téléversement ${i + 1} / ${files.length} — ${f.name}`;
+        status.textContent = head;
+        const hit = idx.get(catalogLooseKey(f.name));
+        if(hit){ skipped++; sent.set(f.name, {id: hit.id, link: ""}); continue; }
+        try{
+          const mime = isVideoFile(f) ? videoMimeFor(f.name, f.type) : guessMimeType(f);
+          const up = await driveResumableUpload(f, {name: f.name, parentId: folderId, mimeType: mime}, (a, b)=>{ status.textContent = `${head} — ${Math.round(a * 100 / b)} %`; });
+          sent.set(f.name, {id: up.id, link: up.webViewLink || ""});
+        }catch(err){
+          console.warn(`Téléversement Drive impossible pour « ${f.name} » :`, err);
+          failed.push(`${f.name} (${(err && err.message) || err})`);
+          if(!State.drive.token) break; // session expirée : inutile d'insister
+        }
+      }
+      // Rattache l'identifiant Drive aux fiches du catalogue (l'import peut finir en arrière-plan : on attend qu'elles existent)
+      status.textContent = "Rattachement au catalogue…";
+      const wanted = new Set(sent.keys());
+      const t0 = Date.now(); let pending = wanted.size;
+      while(pending > 0 && Date.now() - t0 < 120000){
+        pending = 0;
+        for(const nm of wanted){
+          const ph = State.photos.find(x => x.fileName === nm);
+          if(!ph){ pending++; continue; }
+          if(!ph.driveFileId){ const r = sent.get(nm); ph.driveFileId = r.id; if(r.link) ph.driveWebViewLink = r.link; idbPut("photos", ph).catch(()=>{}); }
+        }
+        if(pending > 0) await new Promise(r => setTimeout(r, 600));
+      }
+      let csvNote = "";
+      if(withCsv && sent.size){
+        if(pending > 0) csvNote = " Catalogue .csv non mis à jour (import encore en cours) : utilisez « Sauver sur Drive » ensuite.";
+        else{
+          try{ status.textContent = "Mise à jour du catalogue .csv sur Drive…"; await saveCsvToDrive(folderId); csvNote = " Catalogue .csv mis à jour."; }
+          catch(err){ csvNote = " Catalogue .csv non mis à jour : " + ((err && err.message) || err); }
+        }
+      }
+      win.close();
+      const sentNew = sent.size - skipped;
+      toast(`☁ ${sentNew} fichier(s) téléversé(s) vers « ${folderLabel} »` + (skipped ? `, ${skipped} déjà présent(s)` : "") +
+        (failed.length ? `, ⚠️ ${failed.length} échec(s) (voir la console F12)` : "") + (stopped ? " — arrêté avant la fin" : "") + "." + csvNote, 12000);
+    }catch(err){
+      win.close();
+      toast("Téléversement interrompu : " + ((err && err.message) || err), 9000);
+    }
+  }
 })();
 /* ---------------------------------------------------------------
    9. Modales : ouverture / fermeture génériques
