@@ -644,6 +644,47 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   box-shadow:0 20px 60px rgba(0,0,0,.6);
 }
 .modal.wide{max-width:760px;}
+/* ---------- Modale « Ajouter depuis un autre dossier » : parcourir un dossier en vignettes, cocher, puis ajouter au catalogue ---------- */
+#modalAddFromFolder .modal{
+  width:1100px; max-width:96vw; height:88vh; max-height:94vh; min-width:340px; min-height:380px;
+  resize:both; overflow:hidden; display:flex; flex-direction:column; position:relative;
+}
+#modalAddFromFolder .modal-head, #modalAddFromFolder .modal-foot{flex:0 0 auto;}
+#modalAddFromFolder .modal-body{flex:1 1 auto; min-height:0; display:flex; flex-direction:column; gap:10px; padding:12px 16px; overflow:hidden;}
+#modalAddFromFolder .modal-foot{align-items:center; justify-content:space-between; flex-wrap:wrap;}
+.af-toolbar{display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+.af-toolbar select, .af-toolbar input[type=text]{
+  background:var(--bg-deep); color:var(--ink); border:1px solid var(--line); border-radius:4px; padding:6px 8px; font-size:12.5px; max-width:100%;
+}
+.af-toolbar input[type=text]{flex:1 1 140px; min-width:110px;}
+.af-toolbar label.af-check-lbl{display:flex; gap:5px; align-items:center; font-size:12px; color:var(--ink-dim); cursor:pointer; white-space:nowrap;}
+.af-wrap{flex:1 1 auto; min-height:0; overflow-y:auto; border:1px solid var(--line); border-radius:6px; background:var(--bg-deep); padding:10px;}
+.af-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(124px, 1fr)); gap:8px;}
+.af-tile{position:relative; border:2px solid transparent; border-radius:5px; background:var(--bg-panel); cursor:pointer; user-select:none; overflow:hidden;}
+.af-tile:hover{border-color:var(--line);}
+.af-tile.sel{border-color:var(--copper);}
+.af-tile.off{opacity:.42; cursor:not-allowed;}
+.af-thumb{aspect-ratio:1 / 1; display:flex; align-items:center; justify-content:center; background:#0c1410; color:var(--ink-dim); font-size:12px; overflow:hidden;}
+.af-thumb img{width:100%; height:100%; object-fit:cover; display:block;}
+.af-mark{
+  position:absolute; top:5px; left:5px; width:20px; height:20px; border-radius:4px; border:2px solid #fff;
+  background:rgba(0,0,0,.45); color:transparent; font-size:14px; line-height:16px; text-align:center; font-weight:700;
+}
+.af-tile.sel .af-mark{background:var(--copper); border-color:var(--copper); color:#fff;}
+.af-tile.off .af-mark{display:none;}
+.af-badge{position:absolute; top:5px; right:5px; font-size:10.5px; padding:1px 5px; border-radius:3px; background:rgba(0,0,0,.65); color:#fff; max-width:80%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.af-name{font-size:11px; padding:4px 6px 5px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.af-empty{padding:30px 10px; text-align:center; color:var(--ink-dim); font-size:13px;}
+.af-preview{position:absolute; inset:0; z-index:5; background:rgba(6,10,8,.94); display:none; align-items:center; justify-content:center; padding:16px;}
+.af-preview.show{display:flex;}
+.af-preview img, .af-preview video{max-width:100%; max-height:100%; object-fit:contain;}
+.af-preview .af-prev-close{position:absolute; top:10px; right:14px; font-size:26px; background:none; border:0; color:#fff; cursor:pointer;}
+.af-preview .af-prev-cap{position:absolute; bottom:10px; left:0; right:0; text-align:center; font-size:12px; color:var(--ink-dim);}
+@media (max-width:760px){
+  .af-grid{grid-template-columns:repeat(auto-fill, minmax(96px, 1fr));}
+  #modalAddFromFolder .modal{height:94vh;}
+}
+
 /* Modale "Quel fichier est le catalogue ?" : trop de réglages (Tri, Critère,
    case ET/OU, liste de Personnages) pour la largeur/hauteur par défaut de
    .modal — gabarit de départ plus généreux, ET poignée de redimensionnement
@@ -1179,6 +1220,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   <details class="pave" id="pvPhototheque" open><summary>Photothèque locale</summary>
     <button class="btn" id="btnPickFolder" title="Choisir le dossier de vos images">📁 Choisir un dossier d'images…</button>
     <button class="btn" id="btnPickFiles" title="À utiliser si le choix du dossier échoue">🖼️ Sélectionner des images…</button>
+    <button class="btn" id="btnAddFromFolder" title="Parcourir un autre dossier avec des vignettes, cocher les photos/vidéos voulues, puis les AJOUTER au catalogue en cours (rien n'est effacé)">🗂️ Ajouter depuis un autre dossier…</button>
     <button class="btn copper" id="btnPickCatalog" title="Sur Google Drive, le sélecteur d'images n'affiche que les photos/vidéos : choisissez ici le fichier catalogue (.csv) de référence. Plusieurs fichiers trouvés vous seront proposés au choix.">📄 Choisir le catalogue (.csv)…</button>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
     <button class="btn copper hidden" id="btnRetryFailedImports" style="margin-top:8px;"></button>
@@ -1501,6 +1543,40 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <button class="btn reset" id="btnTransferCopySkip">Continuer sans copier</button>
       <button class="btn copper" id="btnTransferCopyConfirm">📥 Choisir le dossier et copier…</button>
     </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: AJOUTER DEPUIS UN AUTRE DOSSIER ============== -->
+<div class="modal-overlay" id="modalAddFromFolder">
+  <div class="modal">
+    <div class="modal-head"><h2>Ajouter depuis un autre dossier</h2><button class="modal-close" id="afClose" aria-label="Fermer">×</button></div>
+    <div class="modal-body">
+      <div class="af-toolbar">
+        <button class="btn copper" id="afPickBtn" type="button">📁 Choisir un dossier…</button>
+        <span class="drive-note" id="afFolderLabel" style="margin:0;">Aucun dossier choisi.</span>
+      </div>
+      <div class="af-toolbar" id="afFilters">
+        <select id="afType" title="Type de fichier"><option value="">Photos et vidéos</option><option value="photo">Photos seulement</option><option value="video">Vidéos seulement</option></select>
+        <select id="afSub" title="Sous-dossier"><option value="">Tous les sous-dossiers</option></select>
+        <input type="text" id="afSearch" placeholder="Nom contient…" aria-label="Filtrer par nom">
+        <select id="afSort" title="Tri"><option value="folder">Tri : dossier puis nom</option><option value="name">Tri : nom</option><option value="newest">Tri : plus récents d'abord</option><option value="oldest">Tri : plus anciens d'abord</option></select>
+        <label class="af-check-lbl"><input type="checkbox" id="afHideKnown" checked> Masquer ceux déjà dans le catalogue</label>
+      </div>
+      <div class="af-toolbar">
+        <button class="btn" id="afSelAll" type="button">☑ Tout cocher (affichés)</button>
+        <button class="btn" id="afSelNone" type="button">☐ Tout décocher</button>
+        <span class="drive-note" style="margin:0;">Clic = cocher · Maj+clic = plage · Double-clic = agrandir</span>
+      </div>
+      <div class="af-wrap" id="afWrap"><div class="af-grid" id="afGrid"></div><div class="af-empty" id="afEmpty">Choisissez un dossier pour voir ses photos et vidéos.</div></div>
+    </div>
+    <div class="modal-foot">
+      <span class="drive-note" id="afCount" style="margin:0;"></span>
+      <span style="display:flex; gap:10px;">
+        <button class="btn reset" id="afCancel" type="button">Annuler</button>
+        <button class="btn copper" id="afAdd" type="button" disabled>➕ Ajouter au catalogue</button>
+      </span>
+    </div>
+    <div class="af-preview" id="afPreview"><button class="af-prev-close" id="afPrevClose" aria-label="Fermer l'aperçu">×</button><div id="afPrevBox" style="display:contents;"></div><div class="af-prev-cap" id="afPrevCap"></div></div>
   </div>
 </div>
 
@@ -13532,6 +13608,289 @@ function toggleSidebarDrawer(open){
 document.getElementById("sidebarToggle").addEventListener("click", ()=> toggleSidebarDrawer());
 sidebarOverlay.addEventListener("click", ()=> toggleSidebarDrawer(false));
 
+/* Raccourci Ctrl+F (⌘F sur Mac) : affiche le panneau « Recherches » et place le curseur dans « Mot clé... tout azimut ».
+   Sur PC le panneau est toujours visible (ancré à gauche) ; sur mobile/écran étroit c'est un tiroir qu'on ouvre. Le raccourci n'est PAS
+   détourné quand il n'a pas de sens (écran d'accueil, diaporama, fenêtre modale ouverte) : la recherche native du navigateur reste alors disponible. */
+document.addEventListener("keydown", (e)=>{
+  if(!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "f") return;
+  if(!document.getElementById("galleryScreen").classList.contains("hidden")) return;
+  if(slideshowEl.classList.contains("show")) return;
+  const infoIsDockedPanel = window.matchMedia("(min-width: 761px)").matches; // le panneau Infos ancré à droite sur PC n'est pas bloquant
+  if(document.querySelector(infoIsDockedPanel ? ".modal-overlay.show:not(#modalInfo)" : ".modal-overlay.show")) return;
+  e.preventDefault();
+  const isDrawer = getComputedStyle(document.getElementById("sidebarToggle")).display !== "none";
+  if(isDrawer) toggleSidebarDrawer(true);
+  const field = document.getElementById("fToutAzimut");
+  setTimeout(()=>{ field.focus(); field.select(); }, isDrawer ? 200 : 0); // laisse finir la glissière du tiroir avant de donner le focus
+});
+
+
+/* ---------------------------------------------------------------
+   Ajouter depuis un autre dossier : parcourir un dossier en vignettes, cocher, puis AJOUTER au catalogue en cours
+   ---------------------------------------------------------------
+   Le dossier est lu par un <input webkitdirectory> (tous navigateurs de bureau) : chaque fichier arrive avec son chemin relatif,
+   donc le sous-dossier d'origine est enregistré comme pour un import normal. Les fichiers cochés sont confiés à handleFilesSelected
+   en mode « ajout pur » (le même que « Sélectionner des images… ») : le catalogue existant n'est jamais effacé.
+   Imago identifie une photo par son NOM : un fichier dont le nom existe déjà dans le catalogue serait ignoré à l'import. Ces fichiers
+   sont donc signalés et non cochables, plutôt que de disparaître en silence au moment de l'ajout. Les vignettes ne sont calculées
+   que pour les tuiles réellement visibles (et par petits lots) : un dossier de plusieurs milliers de fichiers reste fluide. */
+(function initAddFromFolder(){
+  const MEDIA_RE = /\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov|avi|mpe?g)$/i;
+  const PAGE = 240;               // tuiles affichées d'un coup (la suite se charge en faisant défiler)
+  const THUMB_PARALLEL = 3;       // vignettes calculées en même temps
+  const $ = id => document.getElementById(id);
+  const input = document.createElement("input");
+  input.type = "file"; input.multiple = true; input.webkitdirectory = true; input.className = "hidden";
+  document.body.appendChild(input);
+
+  let items = [], view = [], shown = 0, lastIdx = -1, rootName = "";
+  let thumbQueue = [], thumbBusy = 0, io = null, moreIo = null, previewUrl = "";
+
+  const relOf = f => f.webkitRelativePath ? f.webkitRelativePath.slice(0, f.webkitRelativePath.length - f.name.length - 1) : "";
+  const isSel = it => it.status === "ok" && it.sel;
+
+  function releaseAll(){
+    thumbQueue = [];
+    if(io){ io.disconnect(); io = null; }
+    if(moreIo){ moreIo.disconnect(); moreIo = null; }
+    items.forEach(it => { if(it.thumbUrl){ URL.revokeObjectURL(it.thumbUrl); it.thumbUrl = ""; } });
+    items = []; view = []; shown = 0; lastIdx = -1;
+    closePreview();
+  }
+
+  // ---- vignettes ----
+  async function imageThumb(file){
+    const bmp = await createImageBitmap(file, {resizeWidth: 240, resizeQuality: "medium"});
+    const c = document.createElement("canvas"); c.width = bmp.width; c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0); if(bmp.close) bmp.close();
+    const blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.72));
+    return blob ? URL.createObjectURL(blob) : "";
+  }
+  function videoThumb(file){
+    return new Promise(resolve => {
+      const v = document.createElement("video"), src = URL.createObjectURL(file);
+      v.muted = true; v.preload = "metadata"; v.playsInline = true;
+      let done = false, timer = 0;
+      const fin = (u)=>{ if(done) return; done = true; clearTimeout(timer); URL.revokeObjectURL(src); v.removeAttribute("src"); try{ v.load(); }catch(_){} resolve(u || ""); };
+      timer = setTimeout(()=> fin(""), 7000);
+      v.onerror = ()=> fin("");
+      v.onloadeddata = ()=>{ try{ v.currentTime = Math.min(1, (v.duration || 2) / 4); }catch(_){ fin(""); } };
+      v.onseeked = ()=>{
+        try{
+          const w = 240, h = Math.max(1, Math.round(w * (v.videoHeight || 135) / (v.videoWidth || 240)));
+          const c = document.createElement("canvas"); c.width = w; c.height = h;
+          c.getContext("2d").drawImage(v, 0, 0, w, h);
+          c.toBlob(b => fin(b ? URL.createObjectURL(b) : ""), "image/jpeg", 0.72);
+        }catch(_){ fin(""); }
+      };
+      v.src = src;
+    });
+  }
+  function placeholder(it){
+    const ext = (it.name.split(".").pop() || "").toUpperCase();
+    return `<span>${it.isVideo ? "🎬" : "🖼️"}<br>${ext}</span>`;
+  }
+  function fillThumb(tile, it){
+    const box = tile.querySelector(".af-thumb");
+    if(it.thumbUrl){ box.innerHTML = ""; const im = new Image(); im.alt = ""; im.decoding = "async"; im.src = it.thumbUrl; box.appendChild(im); }
+    else box.innerHTML = placeholder(it);
+  }
+  function pumpThumbs(){
+    while(thumbBusy < THUMB_PARALLEL && thumbQueue.length){
+      const {it, tile} = thumbQueue.shift();
+      if(!tile.isConnected) continue;
+      thumbBusy++;
+      (async ()=>{
+        if(it.thumbUrl === undefined){
+          try{
+            const aviLike = /\.(avi|mpe?g)$/i.test(it.name);
+            it.thumbUrl = (it.isVideo && aviLike) ? "" : await (it.isVideo ? videoThumb(it.file) : imageThumb(it.file));
+          }catch(_){ it.thumbUrl = ""; }
+        }
+        if(tile.isConnected) fillThumb(tile, it);
+      })().finally(()=>{ thumbBusy--; pumpThumbs(); });
+    }
+  }
+
+  // ---- affichage ----
+  function statusBadge(it){
+    if(it.status === "same") return {txt: "Déjà là", tip: "Cette photo/vidéo est déjà dans le catalogue."};
+    if(it.status === "name") return {txt: "Nom déjà pris", tip: `Une photo de même nom (« ${it.known || "autre dossier"} ») est déjà dans le catalogue : Imago identifie les photos par leur nom, celle-ci serait ignorée.`};
+    if(it.status === "dup") return {txt: "Nom en double", tip: "Un autre fichier de ce dossier porte le même nom : un seul des deux peut être ajouté."};
+    return it.isVideo ? {txt: "🎬", tip: "Vidéo"} : null;
+  }
+  // Construction par l'API DOM (jamais par innerHTML) : un nom de fichier contenant « " », « < » ou « & » ne peut rien casser.
+  function makeTile(it, vi){
+    const b = statusBadge(it), tile = document.createElement("div");
+    tile.className = "af-tile" + (isSel(it) ? " sel" : "") + (it.status !== "ok" ? " off" : "");
+    tile.dataset.v = String(vi);
+    tile.setAttribute("role", "checkbox"); tile.setAttribute("aria-checked", String(isSel(it)));
+    tile.title = (it.rel ? it.rel + "/" : "") + it.name + (b && it.status !== "ok" ? " — " + b.tip : "");
+    const th = document.createElement("div"); th.className = "af-thumb"; tile.appendChild(th);
+    const mk = document.createElement("span"); mk.className = "af-mark"; mk.textContent = "✓"; tile.appendChild(mk);
+    if(b){ const bd = document.createElement("span"); bd.className = "af-badge"; bd.textContent = b.txt; bd.title = b.tip; tile.appendChild(bd); }
+    const nm = document.createElement("div"); nm.className = "af-name"; nm.textContent = it.name; tile.appendChild(nm);
+    if(it.thumbUrl !== undefined) fillThumb(tile, it); // vignette déjà calculée (retour sur un filtre précédent)
+    return tile;
+  }
+  function appendTiles(){
+    const grid = $("afGrid"), end = Math.min(view.length, shown + PAGE);
+    const frag = document.createDocumentFragment();
+    for(let vi = shown; vi < end; vi++){
+      const tile = makeTile(view[vi], vi);
+      frag.appendChild(tile);
+      if(io && view[vi].thumbUrl === undefined) io.observe(tile);
+    }
+    grid.appendChild(frag); shown = end;
+    // sentinelle : quand elle devient visible, on affiche la suite
+    const old = $("afMore"); if(old) old.remove();
+    if(shown < view.length){
+      const m = document.createElement("div"); m.id = "afMore"; m.style.cssText = "height:1px; grid-column:1/-1;"; grid.appendChild(m);
+      if(moreIo) moreIo.observe(m);
+    }
+  }
+  function updateCount(){
+    const sel = items.filter(isSel).length;
+    $("afCount").textContent = items.length ? `${sel} sélectionné(s) · ${view.length} affiché(s) sur ${items.length}` : "";
+    const btn = $("afAdd");
+    btn.disabled = sel === 0;
+    btn.textContent = sel ? `➕ Ajouter ${sel} au catalogue` : "➕ Ajouter au catalogue";
+  }
+  function rebuildView(){
+    const type = $("afType").value, sub = $("afSub").value, q = $("afSearch").value.trim().toLowerCase();
+    const hide = $("afHideKnown").checked, sort = $("afSort").value;
+    view = items.filter(it =>
+      (!type || (type === "video") === it.isVideo) &&
+      (!sub || it.rel === sub) &&
+      (!q || it.name.toLowerCase().includes(q)) &&
+      (!hide || (it.status !== "same" && it.status !== "name")));
+    const byName = (a, b)=> a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: "base"});
+    if(sort === "name") view.sort(byName);
+    else if(sort === "newest") view.sort((a, b)=> b.file.lastModified - a.file.lastModified || byName(a, b));
+    else if(sort === "oldest") view.sort((a, b)=> a.file.lastModified - b.file.lastModified || byName(a, b));
+    else view.sort((a, b)=> a.rel.localeCompare(b.rel, undefined, {numeric: true, sensitivity: "base"}) || byName(a, b));
+    // observateurs recréés à chaque reconstruction : seules les tuiles à l'écran déclenchent un calcul de vignette
+    if(io) io.disconnect(); if(moreIo) moreIo.disconnect(); thumbQueue = [];
+    const wrap = $("afWrap");
+    io = new IntersectionObserver(entries => {
+      entries.forEach(en => {
+        if(!en.isIntersecting) return;
+        io.unobserve(en.target);
+        const it = view[Number(en.target.dataset.v)];
+        if(it && it.thumbUrl === undefined){ thumbQueue.push({it, tile: en.target}); pumpThumbs(); }
+      });
+    }, {root: wrap, rootMargin: "300px"});
+    moreIo = new IntersectionObserver(entries => { if(entries.some(e => e.isIntersecting)) appendTiles(); }, {root: wrap, rootMargin: "600px"});
+    $("afGrid").innerHTML = ""; shown = 0; lastIdx = -1; wrap.scrollTop = 0;
+    appendTiles();
+    $("afEmpty").style.display = view.length ? "none" : "";
+    $("afEmpty").textContent = items.length ? "Aucun fichier ne correspond à ces filtres." : "Choisissez un dossier pour voir ses photos et vidéos.";
+    updateCount();
+  }
+  function refreshTile(vi){
+    const tile = $("afGrid").querySelector(`.af-tile[data-v="${vi}"]`), it = view[vi];
+    if(!tile || !it) return;
+    tile.classList.toggle("sel", isSel(it)); tile.setAttribute("aria-checked", String(isSel(it)));
+  }
+
+  // ---- chargement du dossier ----
+  function loadFolder(fileList){
+    const files = [...fileList].filter(f => MEDIA_RE.test(f.name));
+    releaseAll();
+    if(!files.length){
+      $("afFolderLabel").textContent = "Aucune photo ni vidéo dans ce dossier.";
+      rebuildView(); return;
+    }
+    rootName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split("/")[0] : "dossier";
+    const known = new Map(State.photos.map(p => [p.fileName, p.sousDossier || ""])), seen = new Set();
+    items = files.map(f => {
+      const rel = relOf(f), isVideo = isVideoFile(f);
+      let status = "ok", knownIn = "";
+      if(known.has(f.name)){ knownIn = known.get(f.name); status = samePlace(knownIn, rel) ? "same" : "name"; }
+      else if(seen.has(f.name)) status = "dup";
+      seen.add(f.name);
+      return {file: f, name: f.name, rel, isVideo, status, known: knownIn ? knownIn + "/" + f.name : "", sel: false, thumbUrl: undefined};
+    });
+    const nNew = items.filter(it => it.status === "ok").length;
+    $("afFolderLabel").textContent = `« ${rootName} » : ${items.length} fichier(s), dont ${nNew} pouvant être ajouté(s).`;
+    // liste des sous-dossiers
+    const counts = new Map(); items.forEach(it => counts.set(it.rel, (counts.get(it.rel) || 0) + 1));
+    const sel = $("afSub"); sel.innerHTML = "";
+    const all = document.createElement("option"); all.value = ""; all.textContent = `Tous les sous-dossiers (${items.length})`; sel.appendChild(all);
+    [...counts.keys()].sort((a, b)=> a.localeCompare(b, undefined, {numeric: true, sensitivity: "base"})).forEach(r => {
+      const o = document.createElement("option"); o.value = r; o.textContent = `${r || "(dossier racine)"} (${counts.get(r)})`; sel.appendChild(o);
+    });
+    rebuildView();
+  }
+
+  // ---- aperçu agrandi (double-clic) ----
+  function closePreview(){
+    $("afPreview").classList.remove("show");
+    $("afPrevBox").innerHTML = "";
+    if(previewUrl){ URL.revokeObjectURL(previewUrl); previewUrl = ""; }
+  }
+  function openPreview(it){
+    closePreview();
+    previewUrl = URL.createObjectURL(it.file);
+    const box = $("afPrevBox");
+    if(it.isVideo){ const v = document.createElement("video"); v.src = previewUrl; v.controls = true; v.autoplay = true; box.appendChild(v); }
+    else{
+      const im = new Image(); im.src = previewUrl; im.alt = it.name;
+      im.onerror = ()=>{ box.textContent = "Aperçu indisponible pour ce format (il sera bien importé)."; };
+      box.appendChild(im);
+    }
+    $("afPrevCap").textContent = (it.rel ? it.rel + "/" : "") + it.name + (it.status !== "ok" ? " — " + (statusBadge(it) || {}).tip : "");
+    $("afPreview").classList.add("show");
+  }
+
+  // ---- événements ----
+  $("btnAddFromFolder").addEventListener("click", ()=>{
+    openModal("modalAddFromFolder");
+    if(!items.length) input.click(); // première ouverture : on propose directement de choisir le dossier
+  });
+  $("afPickBtn").addEventListener("click", ()=> input.click());
+  input.addEventListener("change", ()=>{ const fl = [...input.files]; input.value = ""; if(fl.length) loadFolder(fl); });
+  ["afType", "afSub", "afSort", "afHideKnown"].forEach(id => $(id).addEventListener("change", rebuildView));
+  let searchTimer = 0;
+  $("afSearch").addEventListener("input", ()=>{ clearTimeout(searchTimer); searchTimer = setTimeout(rebuildView, 200); });
+  $("afSelAll").addEventListener("click", ()=>{ view.forEach(it => { if(it.status === "ok") it.sel = true; }); $("afGrid").querySelectorAll(".af-tile").forEach(t => refreshTile(Number(t.dataset.v))); updateCount(); });
+  $("afSelNone").addEventListener("click", ()=>{ items.forEach(it => it.sel = false); $("afGrid").querySelectorAll(".af-tile").forEach(t => refreshTile(Number(t.dataset.v))); updateCount(); });
+  $("afGrid").addEventListener("click", (e)=>{
+    const tile = e.target.closest(".af-tile"); if(!tile) return;
+    const vi = Number(tile.dataset.v), it = view[vi]; if(!it || it.status !== "ok") return;
+    if(e.shiftKey && lastIdx >= 0){ // plage : applique l'état de la tuile cliquée à toutes celles entre les deux
+      const target = !it.sel, a = Math.min(lastIdx, vi), b = Math.max(lastIdx, vi);
+      for(let i = a; i <= b; i++){ if(view[i] && view[i].status === "ok"){ view[i].sel = target; refreshTile(i); } }
+    } else { it.sel = !it.sel; refreshTile(vi); }
+    lastIdx = vi; updateCount();
+  });
+  $("afGrid").addEventListener("dblclick", (e)=>{
+    const tile = e.target.closest(".af-tile"); if(!tile) return;
+    const it = view[Number(tile.dataset.v)]; if(it) openPreview(it);
+  });
+  $("afPrevClose").addEventListener("click", closePreview);
+  $("afPreview").addEventListener("click", (e)=>{ if(e.target === $("afPreview")) closePreview(); });
+  document.addEventListener("keydown", (e)=>{
+    if(!$("modalAddFromFolder").classList.contains("show")) return;
+    if(e.key === "Escape"){
+      if($("afPreview").classList.contains("show")) closePreview(); else $("afClose").click();
+      e.preventDefault(); e.stopPropagation(); return;
+    }
+    const t = e.target, typing = t && (t.tagName === "INPUT" && t.type === "text" || t.tagName === "TEXTAREA");
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && !typing){ e.preventDefault(); $("afSelAll").click(); }
+  }, true);
+  const close = ()=>{ closeModal("modalAddFromFolder"); releaseAll(); $("afGrid").innerHTML = ""; $("afSub").innerHTML = '<option value="">Tous les sous-dossiers</option>'; $("afFolderLabel").textContent = "Aucun dossier choisi."; $("afEmpty").style.display = ""; $("afEmpty").textContent = "Choisissez un dossier pour voir ses photos et vidéos."; updateCount(); };
+  $("afClose").addEventListener("click", close);
+  $("afCancel").addEventListener("click", close);
+  $("modalAddFromFolder").addEventListener("click", (e)=>{ if(e.target === $("modalAddFromFolder")) close(); });
+  $("afAdd").addEventListener("click", ()=>{
+    const files = items.filter(isSel).map(it => it.file);
+    if(!files.length) return;
+    const name = rootName;
+    close();
+    handleFilesSelected(files, name, true, "btnPickFiles"); // ajout pur : le catalogue en cours est conservé
+  });
+})();
 /* ---------------------------------------------------------------
    9. Modales : ouverture / fermeture génériques
    --------------------------------------------------------------- */
