@@ -9283,9 +9283,18 @@ async function importOneFile(file, csvRowByFileName, stats){
   // pouvoir relocaliser un fichier plus tard (voir "Hall of fame", qui
   // combine les favoris de plusieurs catalogues Année sans jamais relire
   // les images elles-mêmes).
-  const sousDossier = file.webkitRelativePath
+  let sousDossier = file.webkitRelativePath
     ? file.webkitRelativePath.slice(0, file.webkitRelativePath.length - file.name.length - 1)
     : "";
+  // NOUVEAUTÉ d'un catalogue chargé (aucune ligne pour ce fichier) : son sous-dossier ne reprend PAS le nom du dossier choisi
+  // (ex. « Récents »), mais seulement les sous-dossiers situés en dessous. Un fichier posé directement dans le dossier a donc un
+  // sous-dossier vide : il est enregistré (export, copie, catalogue) directement dans le dossier, sans sous-répertoire parasite.
+  const isCatalogNovelty = csvRowByFileName.size > 0 && !csvRowByFileName.get(file.name);
+  const stripRoot = (isCatalogNovelty || file.imagoStripRoot === true) && !!file.webkitRelativePath; // imagoStripRoot : fichiers ajoutés via « Ajouter depuis un autre dossier »
+  if(stripRoot){
+    const wp = file.webkitRelativePath, cut = wp.lastIndexOf("/");
+    sousDossier = (cut >= 0 ? wp.slice(0, cut) : "").split("/").slice(1).join("/");
+  }
   try{
     const isVideo = isVideoFile(file);
     const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isUnplayableVideoFile(file)); // grosse vidéo (ou AVI/MPG, que <video> ne sait pas lire) : contenu chargé à la demande, voir plus bas
@@ -9416,6 +9425,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     // chercher. Reste faux pour une vidéo différée (deferVideo) : son accès
     // passe par un mécanisme entièrement différent, loadPendingVideoFile().
     rec.hasFullImage = !deferVideo && !!finalDataUrl;
+    if(stripRoot){ rec.noSubfolderOK = !sousDossier; State.dirty = true; } // nouveauté créée dans le catalogue : à enregistrer au prochain « Sauver »
     let savedToIdb = false;
     try{
       await idbPut("photos", rec); // enregistrement COMPLET (avec dataUrl) — seule copie durable de l'image
@@ -9870,8 +9880,8 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // absent du catalogue (jamais encore importé) est exclu dès qu'un filtre
   // est actif : impossible de savoir s'il correspondrait au critère demandé.
   const restrictionActive = !!(pick.critere || pick.personnages);
-  // Catalogue choisi : on ne charge QUE les fichiers du dossier (et sous-dossiers) qui correspondent à une ligne du CSV
-  // (nom de fichier), et non plus tout ce qui s'y trouve. Les photos/vidéos sans ligne dans le catalogue sont ignorées.
+  // Catalogue choisi : les fichiers du dossier qui ont une ligne dans le CSV reprennent leurs métadonnées ; ceux qui n'en ont PAS
+  // (nouveautés) sont importés aussi et créés dans le catalogue — plus aucun fichier n'est écarté pour « Absent du catalogue ».
   const catalogRestrict = csvRowByFileName.size > 0;
   const skippedAlreadyPresentCount = existingFileNames ? files.filter(f=> existingFileNames.has(f.name)).length : 0;
   if(restrictionActive && csvRowByFileName.size){
@@ -9891,8 +9901,11 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     }
     if(catalogRestrict){
       const row = csvRowByFileName.get(f.name);
-      const keep = !!row && (!restrictionActive || catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode));
-      if(!keep) traceSkipped(f, row ? "Exclu par le filtre Critère/Personnage" : "Absent du catalogue", row ? "ne correspond pas aux critères choisis" : describeMissingCatalogRow(f.name, csvRowByFileName, chosen));
+      // NOUVEAUTÉ (fichier du dossier sans ligne dans le catalogue) : elle n'est plus écartée, elle est importée et CRÉÉE dans le catalogue
+      // (une ligne est ajoutée au CSV au prochain « Sauver »). Les filtres Critère/Personnage ne s'appliquent qu'aux fichiers qui ont une ligne.
+      if(!row) return true;
+      const keep = !restrictionActive || catalogRowMatchesFilters(row, pick.critere, pick.personnages, pick.combineMode);
+      if(!keep) traceSkipped(f, "Exclu par le filtre Critère/Personnage", "ne correspond pas aux critères choisis");
       return keep;
     }
     return true;
@@ -9913,7 +9926,10 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
     updateGalleryCounter();
     document.getElementById("folderStatus").textContent = existingFileNames
       ? `Reprise de l'import : "${folderName}" — ${skippedAlreadyPresentCount} fichier(s) déjà présent(s) ignoré(s) d'emblée, ${filesToImport.length} restant(s) à traiter…`
-      : `Import du catalogue en cours : "${folderName}" (${filesToImport.length} fichier(s) du catalogue retrouvé(s) sur ${files.length} dans le dossier)…`;
+      : (()=>{
+          const nNew = filesToImport.filter(f=>!csvRowByFileName.get(f.name)).length;
+          return `Import du catalogue en cours : "${folderName}" (${filesToImport.length - nNew} fichier(s) du catalogue retrouvé(s)` + (nNew ? ` + ${nNew} nouveauté(s) créée(s) dans le catalogue` : "") + `, sur ${files.length} dans le dossier)…`;
+        })();
   }
 
   // ---- 2) Tri par date estimée, ou par nom de fichier si "🔤 Tri par nom
@@ -14007,7 +14023,8 @@ document.addEventListener("pointerdown", (e)=>{
   $("afAdd").addEventListener("click", async ()=>{
     const files = items.filter(isSel).map(it => it.file);
     if(!files.length) return;
-    const picked = items.filter(isSel).map(it => ({file: it.file, rel: it.rel}));
+    files.forEach(f => { f.imagoStripRoot = true; }); // nouveautés : sous-dossier SANS le nom du dossier choisi (voir importOneFile)
+    const picked = items.filter(isSel).map(it => ({file: it.file, rel: it.rel.split("/").slice(1).join("/")})); // copie : directement dans la destination, sans sous-répertoire du nom du dossier source
     const name = rootName, upload = $("afUpload").checked, dest = $("afDest").value, withCsv = $("afUploadCsv").checked;
     // Le sélecteur de dossier doit s'ouvrir tout de suite : le navigateur l'exige dans la foulée du clic, pas après un long import.
     let destDir = null;
@@ -18268,7 +18285,7 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   // transmet jamais l'emplacement d'origine (restriction de confidentialité
   // d'Android, pas une limite d'Imago). Sans cet avertissement, l'absence de
   // sous-dossier n'était découverte qu'au diaporama/HOF, bien plus tard.
-  const noPathCount = State.photos.filter(p=> !p.sousDossier).length;
+  const noPathCount = State.photos.filter(p=> !p.sousDossier && !p.noSubfolderOK).length;
   const pathNote = noPathCount
     ? ` ⚠️ ${noPathCount} photo(s)/vidéo(s) sans sous-dossier enregistré (importée(s) via « Sélectionner des images… » plutôt que « Choisir un dossier » — le sélecteur de photos d'Android ne transmet pas l'emplacement d'origine) : pour le diaporama ou le Hall of fame, elles ne seront retrouvées que si le dossier choisi à ce moment-là est EXACTEMENT celui où elles se trouvent (sans descendre dans un sous-dossier). Pour un chemin fiable comme sur PC, préférez « Choisir un dossier d'images… » à l'import.`
     : "";
