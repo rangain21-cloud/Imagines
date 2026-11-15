@@ -676,7 +676,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .af-name{font-size:11px; padding:4px 6px 5px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .af-foot-right{display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:flex-end;}
 .af-upload-lbl{font-size:13px; color:var(--ink); font-weight:600;}
-.af-upload-lbl:has(input:disabled){opacity:.55; cursor:not-allowed;}
+#afDest{background:var(--bg-deep); color:var(--ink); border:1px solid var(--line); border-radius:4px; padding:5px 6px; font-size:12.5px; max-width:230px;}
 .af-empty{padding:30px 10px; text-align:center; color:var(--ink-dim); font-size:13px;}
 .af-preview{position:absolute; inset:0; z-index:5; background:rgba(6,10,8,.94); display:none; align-items:center; justify-content:center; padding:16px;}
 .af-preview.show{display:flex;}
@@ -1575,9 +1575,10 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div class="modal-foot">
       <span class="drive-note" id="afCount" style="margin:0;"></span>
       <span class="af-foot-right">
-        <label class="af-check-lbl af-upload-lbl" id="afUploadLbl" title="Envoie aussi les fichiers cochés, tels quels, dans le dossier Drive du catalogue (sans passer par « Modifier › Détails » ni « Sauver sur Drive »)"><input type="checkbox" id="afUpload"> ☁ Téléverser</label>
+        <label class="af-check-lbl af-upload-lbl" id="afUploadLbl" title="Copie aussi les fichiers cochés, tels quels, vers la destination choisie (sans passer par « Modifier › Détails »)"><input type="checkbox" id="afUpload"> ⬆ Téléverser</label>
+        <select id="afDest" title="Destination du téléversement" aria-label="Destination du téléversement"></select>
         <span class="drive-note" id="afUploadInfo" style="margin:0;"></span>
-        <label class="af-check-lbl hidden" id="afCsvLbl" title="Ajoute les nouvelles lignes au catalogue .csv sur Drive (sinon : « Sauver sur Drive » plus tard)"><input type="checkbox" id="afUploadCsv" checked> + catalogue .csv</label>
+        <label class="af-check-lbl hidden" id="afCsvLbl" title="Ajoute les nouvelles lignes au catalogue .csv sur Drive (sinon : « Sauver sur Drive » plus tard)"><input type="checkbox" id="afUploadCsv" checked> + catalogue .csv sur Drive</label>
         <button class="btn reset" id="afCancel" type="button">Annuler</button>
         <button class="btn copper" id="afAdd" type="button" disabled>➕ Ajouter au catalogue</button>
       </span>
@@ -13762,23 +13763,32 @@ document.addEventListener("keydown", (e)=>{
     }
   }
   function updateCount(){
-    const sel = items.filter(isSel).length, up = $("afUpload").checked && !$("afUpload").disabled;
+    const sel = items.filter(isSel).length, up = $("afUpload").checked;
     $("afCount").textContent = items.length ? `${sel} sélectionné(s) · ${view.length} affiché(s) sur ${items.length}` : "";
     const btn = $("afAdd");
     btn.disabled = sel === 0;
-    btn.textContent = sel ? `➕ Ajouter ${sel} au catalogue${up ? " + ☁ Drive" : ""}` : "➕ Ajouter au catalogue";
+    btn.textContent = sel ? `➕ Ajouter ${sel} au catalogue${up ? " + ⬆ Téléverser" : ""}` : "➕ Ajouter au catalogue";
   }
-  // Téléversement : proposé seulement si l'utilisateur est DÉJÀ connecté à Drive (aucune connexion n'est jamais imposée).
+  // Téléversement : trois destinations. « Téléchargements » et « dossier du PC » ne demandent AUCUNE connexion ; Drive n'est proposé que
+  // si l'utilisateur y est déjà connecté (jamais de connexion imposée).
   function refreshUploadUi(){
-    const cb = $("afUpload"), connected = !!(State.drive && State.drive.token);
-    cb.disabled = !connected;
-    if(!connected){ cb.checked = false; $("afUploadInfo").textContent = "(Drive non connecté : menu ☰ › Connexion)"; }
-    else{
-      let pref = false; try{ pref = localStorage.getItem("imago_af_upload") === "1"; }catch(_){}
-      cb.checked = pref;
-      $("afUploadInfo").textContent = "→ « " + (driveMediaFolderId() ? driveMediaFolderLabel() : "IMAGINES") + " »";
-    }
-    $("afCsvLbl").classList.toggle("hidden", !cb.checked);
+    const dest = $("afDest"), connected = !!(State.drive && State.drive.token);
+    let want = "downloads", pref = false;
+    try{ want = localStorage.getItem("imago_af_dest") || "downloads"; pref = localStorage.getItem("imago_af_upload") === "1"; }catch(_){}
+    dest.innerHTML = "";
+    const add = (v, t)=>{ const o = document.createElement("option"); o.value = v; o.textContent = t; dest.appendChild(o); };
+    add("downloads", "vers Téléchargements");
+    if(typeof window.showDirectoryPicker === "function") add("dir", "vers un dossier du PC…");
+    if(connected) add("drive", "vers Drive");
+    dest.value = [...dest.options].some(o => o.value === want) ? want : "downloads";
+    $("afUpload").checked = pref;
+    syncUploadUi();
+  }
+  function syncUploadUi(){
+    const on = $("afUpload").checked, d = $("afDest").value;
+    $("afCsvLbl").classList.toggle("hidden", !(on && d === "drive"));
+    $("afUploadInfo").textContent = d === "drive" ? "→ « " + (driveMediaFolderId() ? driveMediaFolderLabel() : "IMAGINES") + " »"
+      : d === "dir" ? "(dossier à choisir)" : "(dossier de téléchargement du navigateur)";
     updateCount();
   }
   function rebuildView(){
@@ -13871,8 +13881,11 @@ document.addEventListener("keydown", (e)=>{
   // ---- événements ----
   $("afUpload").addEventListener("change", ()=>{
     try{ localStorage.setItem("imago_af_upload", $("afUpload").checked ? "1" : "0"); }catch(_){}
-    $("afCsvLbl").classList.toggle("hidden", !$("afUpload").checked);
-    updateCount();
+    syncUploadUi();
+  });
+  $("afDest").addEventListener("change", ()=>{
+    try{ localStorage.setItem("imago_af_dest", $("afDest").value); }catch(_){}
+    syncUploadUi();
   });
   $("btnAddFromFolder").addEventListener("click", ()=>{
     refreshUploadUi();
@@ -13917,11 +13930,74 @@ document.addEventListener("keydown", (e)=>{
   $("afAdd").addEventListener("click", async ()=>{
     const files = items.filter(isSel).map(it => it.file);
     if(!files.length) return;
-    const name = rootName, upload = $("afUpload").checked && !$("afUpload").disabled, withCsv = $("afUploadCsv").checked;
+    const picked = items.filter(isSel).map(it => ({file: it.file, rel: it.rel}));
+    const name = rootName, upload = $("afUpload").checked, dest = $("afDest").value, withCsv = $("afUploadCsv").checked;
+    // Le sélecteur de dossier doit s'ouvrir tout de suite : le navigateur l'exige dans la foulée du clic, pas après un long import.
+    let destDir = null;
+    if(upload && dest === "dir"){
+      try{ destDir = await window.showDirectoryPicker({id: "imago-photos-dir", mode: "readwrite", startIn: "downloads"}); }
+      catch(e){
+        if(e && e.name === "AbortError") return; // annulé : rien n'est ajouté ni copié, la fenêtre reste ouverte
+        toast("Impossible d'ouvrir ce dossier en écriture : " + ((e && e.message) || e) + " — choisissez un autre dossier ou « vers Téléchargements ».", 9000);
+        return;
+      }
+    }
     close();
     await handleFilesSelected(files, name, true, "btnPickFiles"); // ajout pur : le catalogue en cours est conservé
-    if(upload) await uploadPickedToDrive(files, withCsv);
+    if(!upload) return;
+    if(dest === "drive") await uploadPickedToDrive(files, withCsv);
+    else if(dest === "dir") await copyPickedToFolder(picked, destDir);
+    else await downloadPicked(picked);
   });
+
+  /* Téléversement LOCAL, sans Drive ni connexion.
+     - « Téléchargements » : chaque fichier est « téléchargé » par le navigateur (marche partout) ; il atterrit dans le dossier de
+       téléchargement du navigateur (réglage du navigateur). Les sous-dossiers ne peuvent pas être recréés.
+     - « Dossier du PC » : écriture directe (Chrome/Edge) dans le dossier choisi, avec l'arborescence d'origine. Un fichier de même nom
+       déjà présent n'est jamais écrasé. */
+  async function downloadPicked(picked){
+    const win = driveSaveWindow("Téléversement vers Téléchargements");
+    const status = document.createElement("p"); status.style.cssText = "margin:0 0 12px; line-height:1.5;"; win.body.appendChild(status);
+    let stopped = false;
+    const bStop = driveSaveButton("Arrêter"); bStop.onclick = ()=>{ stopped = true; bStop.disabled = true; }; win.body.appendChild(bStop);
+    let n = 0;
+    for(let i = 0; i < picked.length && !stopped; i++){
+      const f = picked[i].file;
+      status.textContent = `Téléversement ${i + 1} / ${picked.length} — ${f.name}`;
+      const url = URL.createObjectURL(f), a = document.createElement("a");
+      a.href = url; a.download = f.name; a.style.display = "none"; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=> URL.revokeObjectURL(url), 120000);
+      n++;
+      await new Promise(r => setTimeout(r, 350)); // laisse le navigateur enchaîner les téléchargements
+    }
+    win.close();
+    toast(`⬆ ${n} fichier(s) envoyé(s) vers le dossier de téléchargement du navigateur` + (stopped ? " — arrêté avant la fin" : "") +
+      ". Si rien n'apparaît, autorisez les téléchargements multiples pour cette page (bandeau du navigateur).", 12000);
+  }
+  async function copyPickedToFolder(picked, destDir){
+    const win = driveSaveWindow("Téléversement vers « " + destDir.name + " »");
+    const status = document.createElement("p"); status.style.cssText = "margin:0 0 12px; line-height:1.5;"; win.body.appendChild(status);
+    let stopped = false;
+    const bStop = driveSaveButton("Arrêter"); bStop.onclick = ()=>{ stopped = true; bStop.disabled = true; }; win.body.appendChild(bStop);
+    let n = 0, existed = 0; const failed = [];
+    for(let i = 0; i < picked.length && !stopped; i++){
+      const {file, rel} = picked[i];
+      status.textContent = `Téléversement ${i + 1} / ${picked.length} — ${file.name}`;
+      try{
+        const dir = await getOrCreateSubdir(destDir, rel ? rel.split("/").filter(Boolean) : []);
+        let exists = true; try{ await dir.getFileHandle(file.name); }catch(_){ exists = false; }
+        if(exists){ existed++; continue; } // jamais d'écrasement
+        await writeFileToLocalDirectory(dir, file.name, file);
+        n++;
+      }catch(err){
+        console.warn(`Copie impossible pour « ${file.name} » :`, err);
+        failed.push(file.name);
+      }
+    }
+    win.close();
+    toast(`⬆ ${n} fichier(s) copié(s) dans « ${destDir.name} »` + (existed ? `, ${existed} déjà présent(s) (non écrasés)` : "") +
+      (failed.length ? `, ⚠️ ${failed.length} échec(s) (voir la console F12)` : "") + (stopped ? " — arrêté avant la fin" : "") + ".", 12000);
+  }
 
   /* Téléverse les fichiers choisis TELS QUELS (octets d'origine, aucune ré-encodage) dans le dossier Drive du catalogue.
      Ne dépend ni de « Modifier › Détails » ni du plan de « Sauver sur Drive » : un fichier déjà présent sur Drive sous ce nom est
