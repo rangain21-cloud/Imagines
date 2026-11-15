@@ -9149,7 +9149,8 @@ function estimateFileDate(file, existingRow){
    (nom de fichier, valeurs par défaut) ; ces règles ne servent que si la propriété est vide.
    Titre -> personnage | Objet -> lieu | Notation -> favori | Commentaires -> map | Copyright -> auteur |
    Modèle d'appareil photo -> optique | Prise de vue -> dateAchat (déjà prioritaire : resolveDateAchat).
-   Pour une ligne déjà présente dans le catalogue (row), une valeur non vide du CSV n'est jamais écrasée. */
+   Pour une ligne déjà présente dans le catalogue (row), une valeur non vide du CSV n'est jamais écrasée ; et si son lieu est significatif,
+   la rubrique personnage du CSV n'est pas touchée du tout (voir applyWindowsProps). */
 const WIN_FAVORI_MIN_STARS = 4; // Notation (1 à 5 étoiles) à partir de laquelle l'image devient « favori »
 function winRatingStars(exif){
   if(exif.winRating>0) return exif.winRating;
@@ -9165,7 +9166,11 @@ function winCommentToMapUrl(txt){
 function applyWindowsProps(rec, exif, row){
   if(!exif) return;
   const has = k => !!(row && row[k]);
-  if(exif.winTitre && !has("personnage")) rec.personnage = exif.winTitre;
+  // Ligne de catalogue dont le LIEU est significatif (non vide, ni « Inconnu », « - », nom de fichier d'appareil…) : sa rubrique personnage est
+  // laissée EXACTEMENT telle qu'elle est dans le CSV (même vide). Le « Titre » Windows du fichier ne la remplit pas : il contient souvent
+  // un lieu ou une légende (Imago y écrit aussi le titre quand il n'y a pas de personnage), pas un prénom.
+  const lieuSignificatif = !!(row && winClean(row.lieu));
+  if(exif.winTitre && !has("personnage") && !lieuSignificatif) rec.personnage = exif.winTitre;
   if(exif.winObjet && !has("lieu")){ rec.lieu = exif.winObjet; rec.lieuCandidate = ""; }
   if(exif.copyright && !has("auteur")) rec.auteur = exif.copyright;
   const winModel = winClean(exif.model);
