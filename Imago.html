@@ -279,6 +279,17 @@ html.bar-icons .brand, html.bar-icons .selection-hint{display:none;}
 .empty-state .sub{font-family:var(--font-ui); font-size:13px; margin-top:8px; max-width:360px;}
 
 /* ---------- panneau latéral mobile (drawer) ---------- */
+/* Champ « Mot clé... tout azimut » : la saisie est mise en évidence (texte sombre gras sur fond jaune clair) dès qu'il contient quelque chose,
+   pour qu'on voie d'un coup d'œil qu'un filtre est actif ; contour renforcé quand il a le focus. */
+#fToutAzimut:not(:placeholder-shown){
+  background:#ffe08a; color:#2a1c00; font-weight:700; font-size:14px; border:2px solid #e0a100;
+}
+#fToutAzimut:focus{ outline:3px solid rgba(255,196,0,.55); outline-offset:1px; }
+#fToutAzimut:not(:placeholder-shown)::selection{ background:#2a1c00; color:#ffe08a; }
+/* Ctrl+F : le panneau « Recherches » passe AU-DESSUS de tout (galerie, diaporama, fenêtres ouvertes) — voir le raccourci plus bas. */
+.sidebar.float{ position:relative; z-index:2500; box-shadow:-10px 0 28px rgba(0,0,0,.55); }
+.sidebar-overlay.float{ z-index:2450; }
+@media (max-width: 760px){ .sidebar.float{ position:fixed; } }
 .sidebar-toggle-btn{display:none;}
 .sidebar-overlay{
   display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:790;
@@ -13617,25 +13628,51 @@ function toggleSidebarDrawer(open){
   const willOpen = (open !== undefined) ? open : !sidebarEl.classList.contains("open");
   sidebarEl.classList.toggle("open", willOpen);
   sidebarOverlay.classList.toggle("show", willOpen);
+  if(!willOpen) closeSearchFloat(); // le panneau redescend à sa place normale
 }
 document.getElementById("sidebarToggle").addEventListener("click", ()=> toggleSidebarDrawer());
 sidebarOverlay.addEventListener("click", ()=> toggleSidebarDrawer(false));
 
-/* Raccourci Ctrl+F (⌘F sur Mac) : affiche le panneau « Recherches » et place le curseur dans « Mot clé... tout azimut ».
-   Sur PC le panneau est toujours visible (ancré à gauche) ; sur mobile/écran étroit c'est un tiroir qu'on ouvre. Le raccourci n'est PAS
-   détourné quand il n'a pas de sens (écran d'accueil, diaporama, fenêtre modale ouverte) : la recherche native du navigateur reste alors disponible. */
-document.addEventListener("keydown", (e)=>{
-  if(!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "f") return;
-  if(!document.getElementById("galleryScreen").classList.contains("hidden")) return;
-  if(slideshowEl.classList.contains("show")) return;
-  const infoIsDockedPanel = window.matchMedia("(min-width: 761px)").matches; // le panneau Infos ancré à droite sur PC n'est pas bloquant
-  if(document.querySelector(infoIsDockedPanel ? ".modal-overlay.show:not(#modalInfo)" : ".modal-overlay.show")) return;
-  e.preventDefault();
+/* Raccourci Ctrl+F (⌘F sur Mac), sur N'IMPORTE QUELLE fenêtre de l'application (visionneuse, galerie, diaporama, fenêtres/modales,
+   panneau Infos…) : affiche le panneau « Recherches » et place le curseur dans « Mot clé... tout azimut », texte déjà saisi sélectionné.
+   - Si le panneau est déjà visible à sa place (PC, visionneuse), on se contente de donner le focus.
+   - Sinon (il est caché sous la galerie, une fenêtre, le diaporama, ou on est sur écran étroit où c'est un tiroir), il est remonté
+     AU-DESSUS de tout (classe .float) sans rien déplacer dans la page ; Échap, un clic en dehors ou la fermeture du tiroir le
+     font redescendre. Les filtres s'appliquent en direct à ce qui est affiché derrière (la galerie suit les filtres). */
+function closeSearchFloat(){
+  sidebarEl.classList.remove("float"); sidebarOverlay.classList.remove("float");
+}
+function searchPanelVisibleInPlace(){
+  if(getComputedStyle(document.getElementById("sidebarToggle")).display !== "none") return false; // écran étroit : tiroir caché hors écran
+  const r = sidebarEl.getBoundingClientRect();
+  if(r.width < 20 || r.height < 20) return false;
+  const top = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 160)); // qu'y a-t-il VRAIMENT au-dessus du panneau ?
+  return !!top && sidebarEl.contains(top);
+}
+function openSearchPanel(){
   const isDrawer = getComputedStyle(document.getElementById("sidebarToggle")).display !== "none";
-  if(isDrawer) toggleSidebarDrawer(true);
+  if(isDrawer){
+    sidebarEl.classList.add("float"); sidebarOverlay.classList.add("float");
+    toggleSidebarDrawer(true);
+  } else if(!searchPanelVisibleInPlace()){
+    sidebarEl.classList.add("float");
+    sidebarEl.scrollTop = 0;
+  }
   const field = document.getElementById("fToutAzimut");
   setTimeout(()=>{ field.focus(); field.select(); }, isDrawer ? 200 : 0); // laisse finir la glissière du tiroir avant de donner le focus
-});
+}
+document.addEventListener("keydown", (e)=>{
+  if(e.key === "Escape" && sidebarEl.classList.contains("float") && !sidebarEl.classList.contains("open") && sidebarEl.contains(document.activeElement)){
+    closeSearchFloat(); document.activeElement.blur(); e.preventDefault(); e.stopImmediatePropagation(); return;
+  }
+  if(!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "f") return;
+  e.preventDefault(); e.stopImmediatePropagation(); // remplace la recherche native du navigateur, partout
+  openSearchPanel();
+}, true);
+// Panneau remonté sur PC : un clic en dehors le fait redescendre (le clic, lui, agit normalement).
+document.addEventListener("pointerdown", (e)=>{
+  if(sidebarEl.classList.contains("float") && !sidebarEl.classList.contains("open") && !sidebarEl.contains(e.target)) closeSearchFloat();
+}, true);
 
 
 /* ---------------------------------------------------------------
