@@ -674,6 +674,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 .af-tile.off .af-mark{display:none;}
 .af-badge{position:absolute; top:5px; right:5px; font-size:10.5px; padding:1px 5px; border-radius:3px; background:rgba(0,0,0,.65); color:#fff; max-width:80%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .af-name{font-size:11px; padding:4px 6px 5px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.af-foot-right{display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:flex-end;}
+.af-upload-lbl{font-size:13px; color:var(--ink); font-weight:600;}
+.af-upload-lbl:has(input:disabled){opacity:.55; cursor:not-allowed;}
 .af-empty{padding:30px 10px; text-align:center; color:var(--ink-dim); font-size:13px;}
 .af-preview{position:absolute; inset:0; z-index:5; background:rgba(6,10,8,.94); display:none; align-items:center; justify-content:center; padding:16px;}
 .af-preview.show{display:flex;}
@@ -1567,16 +1570,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <button class="btn" id="afSelNone" type="button">☐ Tout décocher</button>
         <span class="drive-note" style="margin:0;">Clic = cocher · Maj+clic = plage · Double-clic = agrandir</span>
       </div>
-      <div class="af-toolbar" id="afUploadRow">
-        <label class="af-check-lbl" title="Envoie directement les fichiers cochés (tels quels) dans le dossier Drive du catalogue, sans passer par « Modifier › Détails » ni par « Sauver sur Drive »"><input type="checkbox" id="afUpload"> ☁ Téléverser aussi les fichiers cochés sur Drive</label>
-        <span class="drive-note" id="afUploadInfo" style="margin:0;"></span>
-        <label class="af-check-lbl hidden" id="afCsvLbl" title="Ajoute les nouvelles lignes au catalogue .csv sur Drive (sinon : « Sauver sur Drive » plus tard)"><input type="checkbox" id="afUploadCsv" checked> Mettre à jour le catalogue (.csv) sur Drive</label>
-      </div>
       <div class="af-wrap" id="afWrap"><div class="af-grid" id="afGrid"></div><div class="af-empty" id="afEmpty">Choisissez un dossier pour voir ses photos et vidéos.</div></div>
     </div>
     <div class="modal-foot">
       <span class="drive-note" id="afCount" style="margin:0;"></span>
-      <span style="display:flex; gap:10px;">
+      <span class="af-foot-right">
+        <label class="af-check-lbl af-upload-lbl" id="afUploadLbl" title="Envoie aussi les fichiers cochés, tels quels, dans le dossier Drive du catalogue (sans passer par « Modifier › Détails » ni « Sauver sur Drive »)"><input type="checkbox" id="afUpload"> ☁ Téléverser</label>
+        <span class="drive-note" id="afUploadInfo" style="margin:0;"></span>
+        <label class="af-check-lbl hidden" id="afCsvLbl" title="Ajoute les nouvelles lignes au catalogue .csv sur Drive (sinon : « Sauver sur Drive » plus tard)"><input type="checkbox" id="afUploadCsv" checked> + catalogue .csv</label>
         <button class="btn reset" id="afCancel" type="button">Annuler</button>
         <button class="btn copper" id="afAdd" type="button" disabled>➕ Ajouter au catalogue</button>
       </span>
@@ -13775,7 +13776,7 @@ document.addEventListener("keydown", (e)=>{
     else{
       let pref = false; try{ pref = localStorage.getItem("imago_af_upload") === "1"; }catch(_){}
       cb.checked = pref;
-      $("afUploadInfo").textContent = "→ dossier « " + (driveMediaFolderId() ? driveMediaFolderLabel() : "IMAGINES") + " »";
+      $("afUploadInfo").textContent = "→ « " + (driveMediaFolderId() ? driveMediaFolderLabel() : "IMAGINES") + " »";
     }
     $("afCsvLbl").classList.toggle("hidden", !cb.checked);
     updateCount();
