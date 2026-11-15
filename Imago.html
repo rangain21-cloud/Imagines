@@ -1027,6 +1027,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   transform: translate(-50%,-50%) translate(0, var(--exit-shift-y, 0px)) scale(var(--exit-scale, 1.22)) rotate(var(--rot, 0deg));
   z-index:1; /* reste visible sous l'image entrante, qui elle-même met un peu de temps à devenir opaque (fondu croisé) */
 }
+/* Mode immersif : après quelques secondes sans bouger la souris, tout ce qui n'est pas l'image s'efface (boutons, bande de miniatures,
+   curseur). L'opacité seule est modifiée : rien ne bouge, l'image ne change donc pas de taille. Un mouvement de souris ou une touche ramène tout. */
+.slideshow-fill-toggle, .slideshow-fullscreen-toggle, .slideshow-rail, .slideshow-rail-resizer{ transition:opacity .5s ease; }
+.slideshow.idle .slideshow-fill-toggle,
+.slideshow.idle .slideshow-fullscreen-toggle,
+.slideshow.idle .slideshow-rail,
+.slideshow.idle .slideshow-rail-resizer{ opacity:0; pointer-events:none; }
+.slideshow.idle, .slideshow.idle *{ cursor:none !important; }
 .slideshow-fill-toggle{
   position:absolute; top:14px; right:14px; z-index:5;
   background:rgba(20,20,20,.7); border:1px solid rgba(255,255,255,.25); color:#e8dcc2;
@@ -16884,6 +16892,7 @@ function requestSlideshowFullscreen(){
     return;
   }
   if(document.fullscreenEnabled === false){
+    toast("Plein écran indisponible ici : le navigateur ou la page l'interdit (ouvrez Imago directement dans Chrome, pas dans un aperçu intégré).", 8000);
     console.warn("[Imago] Plein écran désactivé pour cette page (document.fullscreenEnabled = false) — probablement une politique de permissions du navigateur, d'une extension, ou d'un cadre parent si la page est intégrée dans un iframe.");
     return;
   }
@@ -16891,6 +16900,7 @@ function requestSlideshowFullscreen(){
     const result = request.call(el);
     if(result && result.catch){
       result.catch(err=>{
+        toast("Plein écran refusé par le navigateur : cliquez sur le bouton ⛶ du diaporama pour le redemander.", 7000);
         console.warn("[Imago] Plein écran refusé par le navigateur :", err && err.message ? err.message : err);
       });
     }
@@ -16918,6 +16928,7 @@ function openLoupe(id){
   loupeZoom=1; loupeX=0; loupeY=0; applyLoupeTransform();
   slideshowEl.classList.add("show");
   armSlideshowHint();
+  armSlideshowIdle();
 }
 function openDiaporama(id){
   // Le diaporama (contrairement à la Loupe) n'affiche que les photos : les
@@ -16946,6 +16957,7 @@ function openDiaporama(id){
   slideshowEl.classList.add("show");
   requestSlideshowFullscreen();
   armSlideshowHint();
+  armSlideshowIdle();
   clearTimeout(State.slideshowTimer);
   State.slideshowTimer = null;
   applySlideshowTimingVars();
@@ -17136,7 +17148,18 @@ function stepSlideshow(dir){
   State.slideshowIndex = (State.slideshowIndex + dir + State.slideshowList.length) % State.slideshowList.length;
   showSlideshowFrame();
 }
+let slideshowIdleTimer = 0;
+const SLIDESHOW_IDLE_MS = 3000;
+function armSlideshowIdle(){
+  slideshowEl.classList.remove("idle");
+  clearTimeout(slideshowIdleTimer);
+  if(!slideshowEl.classList.contains("show")) return;
+  slideshowIdleTimer = setTimeout(()=>{ if(slideshowEl.classList.contains("show")) slideshowEl.classList.add("idle"); }, SLIDESHOW_IDLE_MS);
+}
+["mousemove", "mousedown", "touchstart", "wheel"].forEach(evt => slideshowEl.addEventListener(evt, armSlideshowIdle, {passive: true}));
+document.addEventListener("keydown", ()=>{ if(slideshowEl.classList.contains("show")) armSlideshowIdle(); }, true);
 function closeSlideshow(){
+  clearTimeout(slideshowIdleTimer); slideshowEl.classList.remove("idle");
   slideshowEl.classList.remove("show");
   exitSlideshowFullscreen();
   clearTimeout(slideshowHintTimer);
