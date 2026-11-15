@@ -11099,10 +11099,37 @@ function toXPBytes(str){
   bytes.push(0,0); // terminateur nul (UTF-16 : 2 octets)
   return bytes;
 }
+/* Résultat de la DERNIÈRE écriture EXIF (lu par les boutons « Enregistrer » pour avertir l'utilisateur au lieu d'échouer en silence). */
+let lastExifWriteStatus = {ok: true, reason: ""};
+/* Les tags EXIF « texte » classiques (Model, ImageDescription, Copyright, Artist) sont de l'ASCII/Latin-1 : un caractère au-delà de 255
+   (’ “ ” – … œ € émojis…) serait TRONQUÉ octet par octet par piexifjs et donnerait un texte corrompu (« Cœur » → « CSur »). On remplace donc
+   ces caractères par leur équivalent simple ; les lettres accentuées Latin-1 (é è à ç ô…) sont conservées telles quelles. */
+function asciiTag(str){
+  const map = {"’":"'", "‘":"'", "‚":",", "“":"\"", "”":"\"", "„":"\"", "«":"\"", "»":"\"", "–":"-", "—":"-", "…":"...", "œ":"oe", "Œ":"OE", "€":"EUR", "\u00a0":" "};
+  let out = "";
+  for(const ch of String(str == null ? "" : str)){
+    if(map[ch] !== undefined) out += map[ch];
+    else if(ch.charCodeAt(0) <= 255) out += ch;
+    else{
+      const base = ch.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      out += (base && base.charCodeAt(0) <= 255 && base !== ch) ? base : "?";
+    }
+  }
+  return out.replace(/[\uD800-\uDFFF]/g, "");
+}
+function exifFail(reason){ lastExifWriteStatus = {ok: false, reason}; }
 /* motsCles = rubrique « titre » (« Mots clés » Windows). favori/art/concert pilotent la « Notation »
    Windows : favori → 5 étoiles ; sinon Art et/ou Concert → 3 étoiles ; sinon aucune notation écrite. */
 async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage, motsCles, dateAchat, favori, art, concert}){
-  if(!dataUrl || !dataUrl.startsWith("data:image/jpeg")) return dataUrl;
+  lastExifWriteStatus = {ok: true, reason: ""};
+  if(!dataUrl) return dataUrl;
+  // Étiquette « image/jpeg » MAIS aussi « image/jpg », « application/octet-stream » ou vide (fichiers venus de Drive/USB sans type MIME) :
+  // c'est le contenu réel (signature FF D8, vérifiée plus bas) qui décide, pas l'étiquette.
+  const declaredMime = ((dataUrl.match(/^data:([^;,]*)/) || [])[1] || "").toLowerCase();
+  if(!(/^image\/jpe?g$/.test(declaredMime) || declaredMime === "" || declaredMime === "application/octet-stream" || declaredMime === "binary/octet-stream")){
+    exifFail(`le fichier est au format « ${declaredMime} » : l'EXIF ne s'écrit que dans les JPEG`);
+    return dataUrl;
+  }
   if(!cameraModel && !lieu && !mapField && !auteur && !personnage && !motsCles && !dateAchat && !favori && !art && !concert) return dataUrl; // rien à écrire
   // Normalise vers EXACTEMENT le préfixe attendu par piexifjs
   // ("data:image/jpeg;base64,"), quitte à corriger une variante proche —
@@ -11116,6 +11143,7 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
   const prefix = dataUrl.slice(0, commaIdx).toLowerCase();
   if(!prefix.includes("base64")){
     console.warn(`[Imago] Écriture EXIF ignorée : dataUrl non base64 (préfixe "${dataUrl.slice(0,40)}").`);
+    exifFail("données image non lisibles (pas en base64)");
     return dataUrl;
   }
   const normalizedDataUrl = "data:image/jpeg;base64," + dataUrl.slice(commaIdx+1);
@@ -11145,14 +11173,18 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     // rotation "ne se fixe jamais", même en repassant par la modale
     // Modifier.
     zeroth[piexif.ImageIFD.Orientation] = 1;
-    if(cameraModel) zeroth[piexif.ImageIFD.Model] = cameraModel;
+    if(cameraModel) zeroth[piexif.ImageIFD.Model] = asciiTag(cameraModel);
     // "Titre" (Windows) provient d'ImageDescription — et non de XPTitle, qui
     // est ignoré par l'Explorateur Windows dès qu'ImageDescription existe.
     // Repli : sans personnage, le titre de la photo (rubrique « titre ») alimente « Titre » plutôt que de le laisser vide.
     const windowsTitle = personnage || motsCles;
-    if(windowsTitle) zeroth[piexif.ImageIFD.ImageDescription] = windowsTitle;
+    if(windowsTitle) zeroth[piexif.ImageIFD.ImageDescription] = asciiTag(windowsTitle);
     // "Droits d'auteur"/Copyright (Windows) — tag EXIF standard, ASCII simple.
-    if(auteur) zeroth[piexif.ImageIFD.Copyright] = auteur;
+    if(auteur){
+      zeroth[piexif.ImageIFD.Copyright] = asciiTag(auteur);   // « Droits d'auteur »
+      zeroth[piexif.ImageIFD.Artist] = asciiTag(auteur);      // « Auteur » EXIF standard (lu par la plupart des logiciels)
+      zeroth[piexif.ImageIFD.XPAuthor] = toXPBytes(auteur);   // « Auteurs » de l'Explorateur Windows (UTF-16, accents/œ conservés)
+    }
     // "Objet"/Subject (Windows) n'a pas d'équivalent EXIF standard : c'est
     // XPSubject (propre à Windows), à encoder en UTF-16LE (voir toXPBytes).
     if(lieu) zeroth[piexif.ImageIFD.XPSubject] = toXPBytes(lieu);
@@ -11198,22 +11230,38 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
       if(cur === 5 || cur === 3){ delete exifObj["0th"][piexif.ImageIFD.Rating]; delete exifObj["0th"][piexif.ImageIFD.RatingPercent]; }
     }
     if(Object.keys(gps).length) exifObj["GPS"] = Object.assign({}, exifObj["GPS"], gps);
-    // "Prise de vue" (Windows, section Origine) — DateTimeOriginal, dans
-    // l'IFD "Exif" (pas "0th" comme les autres tags ci-dessus). Format EXIF
-    // imposé : "AAAA:MM:JJ HH:MM:SS" (à la seconde près, même si "Date
-    // cliché" ne va qu'à la minute — on complète à ":00").
+    // "Prise de vue" (Windows, section Origine) — DateTimeOriginal, dans l'IFD "Exif" (pas "0th" comme les autres tags ci-dessus).
+    // Format EXIF imposé : "AAAA:MM:JJ HH:MM:SS" (à la seconde près, même si "Date cliché" ne va qu'à la minute — on complète à ":00").
+    const oursExif = {};
     if(dateAchat){
       const datePart = dateAchat.slice(0,10).replace(/-/g, ":");
       const timePart = dateAchat.length > 10 ? dateAchat.slice(11,16) : "00:00";
-      const exifDate = `${datePart} ${timePart}:00`;
-      exifObj["Exif"] = Object.assign({}, exifObj["Exif"], {
-        [piexif.ExifIFD.DateTimeOriginal]: exifDate
-      });
+      oursExif[piexif.ExifIFD.DateTimeOriginal] = `${datePart} ${timePart}:00`;
+      exifObj["Exif"] = Object.assign({}, exifObj["Exif"], oursExif);
     }
-    const exifBytes = piexif.dump(exifObj);
+    /* piexif.dump() peut refuser l'EXIF d'ORIGINE d'un appareil (balise exotique, MakerNote, miniature abîmée…) : l'écriture échouait alors EN
+       ENTIER et le fichier partait sans aucune donnée. On réessaie donc par paliers, en sacrifiant d'abord le moins important :
+       1) tout conservé ; 2) sans miniature intégrée ; 3) seulement les balises courantes d'origine + les nôtres ; 4) seulement les nôtres. */
+    const keep = (obj, ids)=>{ const o = {}; for(const k of ids){ if(obj && obj[k] !== undefined) o[k] = obj[k]; } return o; };
+    const SAFE_0TH = [271, 272, 305, 306, 315, 33432];                                              // Make, Model, Software, DateTime, Artist, Copyright
+    const SAFE_EXIF = [33434, 33437, 34855, 36867, 36868, 37377, 37378, 37380, 37383, 37385, 37386, 41986, 41987, 42036]; // exposition, ISO, dates, focale, objectif…
+    const attempts = [
+      ()=> exifObj,
+      ()=> Object.assign({}, exifObj, {"1st": {}, "thumbnail": null}),
+      ()=> ({"0th": Object.assign(keep(exifObj["0th"], SAFE_0TH), zeroth), "Exif": Object.assign(keep(exifObj["Exif"], SAFE_EXIF), oursExif), "GPS": Object.assign(keep(exifObj["GPS"], [1,2,3,4,5,6]), gps), "1st": {}, "thumbnail": null}),
+      ()=> ({"0th": zeroth, "Exif": oursExif, "GPS": gps, "1st": {}, "thumbnail": null})
+    ];
+    let exifBytes = null, lastErr = null, level = -1;
+    for(let i = 0; i < attempts.length && exifBytes === null; i++){
+      try{ exifBytes = piexif.dump(attempts[i]()); level = i; }
+      catch(e){ lastErr = e; console.warn(`[Imago] EXIF : palier ${i + 1}/${attempts.length} refusé par piexifjs, repli au palier suivant :`, e && e.message ? e.message : e); }
+    }
+    if(exifBytes === null) throw lastErr || new Error("dump EXIF impossible");
+    if(level > 0) console.warn(`[Imago] EXIF écrit avec repli (palier ${level + 1}) : une partie de l'EXIF d'origine de l'appareil n'a pas pu être conservée.`);
     return piexif.insert(exifBytes, jpegDataUrl);
   }catch(e){
     console.warn(`[Imago] Écriture des métadonnées EXIF impossible (fichier enregistré sans, catalogue Imago inchangé) — préfixe reçu : "${dataUrl.slice(0,40)}" :`, e);
+    exifFail("erreur d'écriture : " + ((e && e.message) || e));
     return dataUrl;
   }
 }
@@ -16197,6 +16245,10 @@ async function saveEditedPhoto(p, fullDataUrl){
     await idbPut("photos", p); // aucune image complète disponible (cas très rare) : au moins les métadonnées sont sauvegardées
   }
 }
+/* Avertit si les métadonnées n'ont PAS pu être écrites dans le fichier (le catalogue, lui, est bien à jour). */
+function warnIfExifNotWritten(p){
+  if(p && !p.isVideo && !lastExifWriteStatus.ok) toast("⚠️ Données EXIF non écrites dans le fichier : " + lastExifWriteStatus.reason + ". Le catalogue (CSV) est bien à jour.", 12000);
+}
 document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
   const result = await applyEditFormToSelectedPhoto(); if(!result) return;
   const {p, fullDataUrl} = result;
@@ -16205,6 +16257,7 @@ document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
   renderGrid();
   closeModal("modalEdit");
   toast("Modifications enregistrées.");
+  warnIfExifNotWritten(p);
   autoBuildCsv();
 });
 document.getElementById("btnSaveEditDownload").addEventListener("click", async ()=>{
@@ -16222,9 +16275,14 @@ document.getElementById("btnSaveEditDownload").addEventListener("click", async (
     }
   }catch(e){ console.warn("Aplatissement impossible, téléchargement de l'original :", e); }
   const a = document.createElement("a");
-  a.href = finalUrl; a.download = p.fileName || "image.jpg";
+  // Téléchargement via un Blob plutôt qu'un très long lien « data: » (Chrome peut refuser ou tronquer les gros liens data: ; les octets, EXIF compris, sont identiques).
+  let href = finalUrl, blobHref = "";
+  try{ blobHref = URL.createObjectURL(await (await fetch(finalUrl)).blob()); href = blobHref; }catch(e){ /* repli : lien data: */ }
+  a.href = href; a.download = p.fileName || "image.jpg";
   document.body.appendChild(a); a.click(); a.remove();
+  if(blobHref) setTimeout(()=> URL.revokeObjectURL(blobHref), 60000);
   toast("Modifications enregistrées et image téléchargée localement (rotation/filtre/recadrage inclus).");
+  warnIfExifNotWritten(p);
 });
 
 document.getElementById("btnInfo").addEventListener("click", ()=>{
