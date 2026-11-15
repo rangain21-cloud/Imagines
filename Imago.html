@@ -1172,7 +1172,6 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <button class="tool-btn" id="btnBackToGallery" title="Retour galerie"><span class="ic">▦</span><span>Retour galerie</span></button>
     <button class="tool-btn" id="btnShare" title="Partager"><span class="ic">⇪</span><span>Partager</span></button>
     <button class="tool-btn" id="btnEdit" title="Modifier"><span class="ic">✎</span><span>Modifier</span></button>
-    <button class="tool-btn" id="btnZoomToggle" title="Loupe (zoom / dézoom)"><span class="ic">🔍</span><span>Loupe</span></button>
     <button class="tool-btn" id="btnFav" title="Favori"><span class="ic">★</span><span>Favori</span></button>
     <button class="tool-btn" id="btnArt" title="Art"><span class="ic">🎨</span><span>Art</span></button>
     <button class="tool-btn" id="btnConcert" title="Concert"><span class="ic">🎤</span><span>Concert</span></button>
@@ -1246,7 +1245,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 
   <details class="pave" id="pvPhototheque" open><summary>Photothèque locale</summary>
     <button class="btn" id="btnPickFolder" title="Choisir le dossier de vos images">📁 Choisir un dossier d'images…</button>
-    <button class="btn" id="btnPickFiles" title="À utiliser si le choix du dossier échoue">🖼️ Sélectionner des images…</button>
+    <button class="btn hidden" id="btnPickFiles" title="Android : choisir des photos/vidéos une à une quand le choix d'un dossier n'est pas possible. Elles sont AJOUTÉES au catalogue en cours, rien n'est effacé.">📱 Choisir des photos (Android)…</button>
     <button class="btn" id="btnAddFromFolder" title="Parcourir un autre dossier avec des vignettes, cocher les photos/vidéos voulues, puis les AJOUTER au catalogue en cours (rien n'est effacé)">🗂️ Ajouter depuis un autre dossier…</button>
     <button class="btn copper" id="btnPickCatalog" title="Sur Google Drive, le sélecteur d'images n'affiche que les photos/vidéos : choisissez ici le fichier catalogue (.csv) de référence. Plusieurs fichiers trouvés vous seront proposés au choix.">📄 Choisir le catalogue (.csv)…</button>
     <p class="drive-note" id="folderStatus">Aucun dossier chargé pour l'instant.</p>
@@ -1551,7 +1550,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 </div>
 
 <!-- ============== MODAL: COPIER VERS UN DOSSIER DE TRANSFERT ==============
-     Proposée après "Sélectionner des images…" (repli Android quand "Choisir
+     Proposée après "Choisir des photos (Android)…" (repli Android quand "Choisir
      un dossier" échoue, ex. dossier Caméra) : ce sélecteur de photos système
      ne transmet aucun chemin d'origine (restriction Android), donc le
      catalogue ne pourrait pas relocaliser ces fichiers plus tard pour le
@@ -6032,7 +6031,7 @@ function getSelected(){ return State.photos.find(p=>p.id===State.selectedId) || 
 
 function updateToolbarState(){
   const has = !!getSelected();
-  ["btnShare","btnEdit","btnZoomToggle","btnInfo","btnFav","btnArt","btnConcert","btnHistoire","btnPartition","btnTrash","btnMore"].forEach(id=>{
+  ["btnShare","btnEdit","btnInfo","btnFav","btnArt","btnConcert","btnHistoire","btnPartition","btnTrash","btnMore"].forEach(id=>{
     document.getElementById(id).disabled = !has;
   });
   document.getElementById("selHint").textContent = has ? `Sélection : ${getSelected().fileName}` : "Aucune image sélectionnée";
@@ -6455,7 +6454,7 @@ burgerOverlay.addEventListener("click", ()=> toggleBurger(false));
 /* Boutons de chargement de la Photothèque locale + « Charger depuis Drive » : si la galerie Main contient déjà
    des images/vidéos, confirmation avant effacement (Non = l'action est annulée). Le pavé « Importer » reste, lui, additif. */
 document.addEventListener("click", async (e)=>{
-  const b = e.target.closest("#btnPickFolder,#btnPickCatalog,#btnDriveLoad"); // « Sélectionner des images… » (btnPickFiles) est volontairement exclu : il AJOUTE à Main (90%) sans rien effacer
+  const b = e.target.closest("#btnPickFolder,#btnPickCatalog,#btnDriveLoad"); // « Choisir des photos (Android)… » (btnPickFiles) est volontairement exclu : il AJOUTE à Main (90%) sans rien effacer
   if(!b || !State.photos.length || (b.id === "btnDriveLoad" && !State.drive.token)) return;
   e.stopPropagation(); e.preventDefault();
   if(!confirm("Êtes-vous sûr d'effacer les images/vidéos pour en charger d'autres ?")) return;
@@ -9278,7 +9277,7 @@ async function importOneFile(file, csvRowByFileName, stats){
   }
   // Sous-dossier de provenance (ex. "2024\Vidéo") : disponible via
   // webkitRelativePath UNIQUEMENT quand le fichier vient du sélecteur de
-  // DOSSIER (vide pour "Sélectionner des images…"/"Nouvelle entrée", qui ne
+  // DOSSIER (vide pour "Choisir des photos (Android)…"/"Nouvelle entrée", qui ne
   // fournissent pas cette information). Consigné dans le catalogue pour
   // pouvoir relocaliser un fichier plus tard (voir "Hall of fame", qui
   // combine les favoris de plusieurs catalogues Année sans jamais relire
@@ -9735,7 +9734,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   let existingSousDossierByName = null; // nom -> sous-dossier d'origine des photos déjà présentes (mode "Compléter"), pour repérer un fichier de MÊME NOM mais d'un AUTRE dossier
   let existingFileNames = null; // rempli seulement si "Compléter" est choisi — voir filesToImport plus bas
   if(State.photos.length){
-    // « Sélectionner des images… » : ajout pur, sans question ni effacement (équivaut à « Compléter »).
+    // « Choisir des photos (Android)… » : ajout pur, sans question ni effacement (équivaut à « Compléter »).
     const choice = sourceButtonId === "btnPickFiles" ? "complete" : await confirmChoice(
       "Photos déjà chargées",
       `${State.photos.length} photo(s) sont déjà chargées dans cette session.\n\n• "Compléter" garde l'existant et n'importe que les fichiers réellement nouveaux (les fichiers déjà présents, même nom, sont ignorés d'emblée — sans même les relire un par un — pour reprendre là où ça s'est arrêté) — c'est le choix à faire pour continuer un import interrompu.\n• "Remplacer" efface tout ce qui est chargé avant de repartir de ce nouvel import.`,
@@ -9789,7 +9788,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // supplémentaire nécessaire) — un seul .csv trouvé est utilisé sans même
   // demander ; plusieurs déclenchent un choix explicite (voir
   // pickCatalogFromCandidates). Fonctionne aussi bien pour "Choisir un
-  // dossier…" que pour "Sélectionner des images…" (il suffit d'inclure le
+  // dossier…" que pour "Choisir des photos (Android)…" (il suffit d'inclure le
   // fichier Catalogue-xxxx.csv dans la sélection multiple pour ce 2e cas) —
   // sans effet si aucun .csv n'est présent dans la sélection. On y ajoute
   // les catalogues choisis explicitement via « Choisir le catalogue (.csv)… »
@@ -9961,7 +9960,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   // déjà faite. Seules les images absentes du catalogue ("non lues") sont
   // analysées et donneront lieu à une nouvelle ligne à la prochaine sauvegarde.
   const stats = { added:0, reused:0, failedFiles:[], failedDetails:[], firstErrorDetail:"", heicFailed:[], videoDeferred:0, orphaned:orphanedCount,
-    // Import sans dossier (repli Android "Sélectionner des images…", déclenché
+    // Import sans dossier (repli Android "Choisir des photos (Android)…", déclenché
     // quand "Choisir un dossier" échoue) : le sélecteur de photos système ne
     // transmet jamais l'emplacement d'origine, donc aucun chemin ne sera
     // enregistré pour ces fichiers (voir importSummaryMessage). Prévenir
@@ -10044,7 +10043,12 @@ filePickerInput.accept = "image/*,video/mp4,video/quicktime"; // Photo Picker An
 filePickerInput.multiple = true;
 filePickerInput.className = "hidden";
 document.body.appendChild(filePickerInput);
-document.getElementById("btnPickFiles").addEventListener("click", ()=> filePickerInput.click());
+// Repli Android : le bouton « Choisir des photos (Android)… » n'apparaît QUE sur Android (le sélecteur de dossier y échoue souvent) ; ailleurs il reste masqué.
+{
+  const btnPickFiles = document.getElementById("btnPickFiles");
+  if(/Android/i.test(navigator.userAgent)) btnPickFiles.classList.remove("hidden");
+  btnPickFiles.addEventListener("click", ()=> filePickerInput.click());
+}
 
 /* Le Sélecteur de photos système (filePickerInput ci-dessus) lit très bien
    les fichiers même dans un dossier "cloisonné" comme Caméra, mais ne
@@ -10132,7 +10136,7 @@ filePickerInput.addEventListener("change", ()=>{
    restreint aux photos/vidéos pour préserver le Photo Picker Android — voir
    commentaire plus haut), celui-ci ne filtre QUE les .csv. Il permet donc de
    choisir un catalogue existant même quand on parcourt Google Drive via
-   « Sélectionner des images… », où le .csv n'apparaît jamais dans ce
+   « Choisir des photos (Android)… », où le .csv n'apparaît jamais dans ce
    sélecteur-là faute d'être une image. Les fichiers choisis ici sont
    mémorisés et proposés (avec choix explicite si plusieurs) au prochain
    import — voir leur usage dans handleFilesSelected(). */
@@ -13736,7 +13740,7 @@ document.addEventListener("pointerdown", (e)=>{
    ---------------------------------------------------------------
    Le dossier est lu par un <input webkitdirectory> (tous navigateurs de bureau) : chaque fichier arrive avec son chemin relatif,
    donc le sous-dossier d'origine est enregistré comme pour un import normal. Les fichiers cochés sont confiés à handleFilesSelected
-   en mode « ajout pur » (le même que « Sélectionner des images… ») : le catalogue existant n'est jamais effacé.
+   en mode « ajout pur » (le même que « Choisir des photos (Android)… ») : le catalogue existant n'est jamais effacé.
    Imago identifie une photo par son NOM : un fichier dont le nom existe déjà dans le catalogue serait ignoré à l'import. Ces fichiers
    sont donc signalés et non cochables, plutôt que de disparaître en silence au moment de l'ajout. Les vignettes ne sont calculées
    que pour les tuiles réellement visibles (et par petits lots) : un dossier de plusieurs milliers de fichiers reste fluide. */
@@ -16823,7 +16827,7 @@ document.getElementById("btnTrash").addEventListener("click", async ()=>{
 
 document.getElementById("btnMore").addEventListener("click", ()=>{ if(getSelected()) openModal("modalMore"); });
 
-document.getElementById("btnZoomToggle").addEventListener("click", ()=>{ if(getSelected()) openLoupe(State.selectedId); });
+// (le bouton « Loupe » de la barre du haut a été retiré : la Loupe s'ouvre toujours par un double-clic sur l'image)
 
 /* ---------------------------------------------------------------
    11. Loupe / Diaporama (plein écran)
@@ -18280,14 +18284,14 @@ document.getElementById("btnExportCsv").addEventListener("click", ()=>{
   markCsvClean();
   document.getElementById("btnExportCsv").classList.add("done"); // même retour visuel (vert) que "Connecter à Drive"
   // Avertissement sur les entrées sans chemin enregistré : arrive quand des
-  // photos ont été importées via "Sélectionner des images…" (repli Android
+  // photos ont été importées via "Choisir des photos (Android)…" (repli Android
   // utilisé quand "Choisir un dossier" échoue) — ce sélecteur système ne
   // transmet jamais l'emplacement d'origine (restriction de confidentialité
   // d'Android, pas une limite d'Imago). Sans cet avertissement, l'absence de
   // sous-dossier n'était découverte qu'au diaporama/HOF, bien plus tard.
   const noPathCount = State.photos.filter(p=> !p.sousDossier && !p.noSubfolderOK).length;
   const pathNote = noPathCount
-    ? ` ⚠️ ${noPathCount} photo(s)/vidéo(s) sans sous-dossier enregistré (importée(s) via « Sélectionner des images… » plutôt que « Choisir un dossier » — le sélecteur de photos d'Android ne transmet pas l'emplacement d'origine) : pour le diaporama ou le Hall of fame, elles ne seront retrouvées que si le dossier choisi à ce moment-là est EXACTEMENT celui où elles se trouvent (sans descendre dans un sous-dossier). Pour un chemin fiable comme sur PC, préférez « Choisir un dossier d'images… » à l'import.`
+    ? ` ⚠️ ${noPathCount} photo(s)/vidéo(s) sans sous-dossier enregistré (importée(s) via « Choisir des photos (Android)… » plutôt que « Choisir un dossier d'images… » — le sélecteur de photos d'Android ne transmet pas l'emplacement d'origine) : pour le diaporama ou le Hall of fame, elles ne seront retrouvées que si le dossier choisi à ce moment-là est EXACTEMENT celui où elles se trouvent (sans descendre dans un sous-dossier). Pour un chemin fiable comme sur PC, préférez « Choisir un dossier d'images… » à l'import.`
     : "";
   toast(`« ${State.catalogFileName} » exporté — déposez-le dans le dossier de vos images pour qu'il soit retrouvé automatiquement au prochain import.${pathNote}`, pathNote ? 18000 : undefined);
   openCorbeilleDeleteModal();
