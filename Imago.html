@@ -1262,7 +1262,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 
   <details class="pave" id="pvSauvegarde"><summary>Sauvegarde des travaux</summary>
     <button class="btn copper" id="btnExportCsv">Sauver les MàJ du catalogue</button>
-    <button class="btn" id="btnWriteExifBatch" title="Utile après une modification faite directement dans le fichier .csv (Excel…) : la modale « Modifier » n'écrit les métadonnées que photo par photo.">🖊️ Reporter Caméra/Lieu/Map dans l'EXIF</button>
+    <button class="btn" id="btnWriteExifBatch" title="Utile après une modification faite directement dans le fichier .csv (Excel…) : la modale « Modifier » n'écrit les métadonnées que photo par photo. Une photo dont l'EXIF porte déjà les valeurs du catalogue n'est pas réécrite.">🖊️ Reporter Caméra/Lieu/Map dans l'EXIF</button>
     <button class="btn" id="btnExportAllPhotos" title="Écrit dans un dossier de votre choix (ou dans un .zip si l'écriture directe est impossible) les seules photos dont au moins une métadonnée a évolué par rapport au fichier existant ; les autres ne sont pas réécrites.">📤 Sauver les métadonnées de toutes les photos</button>
   </details>
 
@@ -18391,15 +18391,22 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
   const btn = document.getElementById("btnWriteExifBatch");
   btn.disabled = true;
   btn.classList.remove("done"); // nouvelle tentative : on efface le fond vert précédent tant qu'elle n'a pas abouti
-  let done = 0, changed = 0, failed = 0;
+  let done = 0, changed = 0, failed = 0, unchanged = 0;
   btn.textContent = `🖊️ Écriture EXIF… (0/${targets.length})`;
   for(const p of targets){
     try{
       const original = await getFullDataUrl(p);
       if(!original) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
-      const updated = await writeMetadataIntoJpegDataUrl(original, {
-        cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert
-      });
+      // Rien n'a évolué (l'EXIF de l'image porte déjà les valeurs du catalogue) : on ne la réécrit pas. Même comparaison que pour
+      // « Sauver les métadonnées de toutes les photos » — voir snapshotNeedsUpdate.
+      const fieldsB = exportMetaFields(p);
+      let skipWrite = false;
+      if(isJpegDataUrl(original)){
+        const have = exifSnapshotOfBinary(original);
+        if(have && !snapshotNeedsUpdate(await desiredExifSnapshot(fieldsB), have, {orientation: true})) skipWrite = true;
+      }
+      if(skipWrite) unchanged++;
+      const updated = skipWrite ? original : await writeMetadataIntoJpegDataUrl(original, fieldsB);
       if(updated !== original){
         p.poids = Math.round((updated.length * 0.75) / 1024);
         p.sizeBytes = Math.round(updated.length * 0.75);
@@ -18423,10 +18430,12 @@ document.getElementById("btnWriteExifBatch").addEventListener("click", async ()=
   }
   btn.disabled = false;
   btn.textContent = LABEL_WRITE_EXIF_BATCH;
-  btn.classList.toggle("done", changed > 0); // fond vert : au moins une photo mise à jour avec succès
+  btn.classList.toggle("done", (changed + unchanged) > 0 && failed === 0); // fond vert : l'EXIF de toutes les photos est à jour
   renderGrid();
   autoBuildCsv();
-  toast(`✅ Métadonnées EXIF à jour pour ${changed} photo(s) sur ${targets.length}.` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 8000);
+  toast(changed
+    ? `✅ EXIF réécrit pour ${changed} photo(s)` + (unchanged ? `, ${unchanged} inchangée(s) non réécrite(s)` : "") + `.` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "")
+    : (unchanged ? `ℹ️ Aucune métadonnée n'a évolué : l'EXIF de ${unchanged} photo(s) est déjà à jour, rien n'a été réécrit.` : `⚠️ Aucune photo mise à jour.`) + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 9000);
 });
 
 /* -----------------------------------------------------------------
@@ -18508,6 +18517,7 @@ function exifSnapshotFromObj(ex){
   if(z[I.XPKeywords]) put("XPKeywords", xpBytesToString(z[I.XPKeywords]));
   if(z[I.XPComment]) put("XPComment", xpBytesToString(z[I.XPComment]));
   put("Rating", z[I.Rating]); put("RatingPercent", z[I.RatingPercent]);
+  put("Orientation", z[I.Orientation]);
   put("DateTimeOriginal", ex && ex["Exif"] && ex["Exif"][piexif.ExifIFD.DateTimeOriginal]);
   const g = (ex && ex["GPS"]) || {}, G = piexif.GPSIFD;
   const lat = gpsToDecimal(g[G.GPSLatitude], g[G.GPSLatitudeRef]), lon = gpsToDecimal(g[G.GPSLongitude], g[G.GPSLongitudeRef]);
@@ -18520,9 +18530,13 @@ async function desiredExifSnapshot(fields){
   const withMeta = await writeMetadataIntoJpegDataUrl(EXPORT_TINY_JPEG, fields);
   return exifSnapshotOfBinary(withMeta) || {};
 }
-function snapshotNeedsUpdate(want, have){
+function snapshotNeedsUpdate(want, have, opts){
   if(!have) return true; // EXIF du fichier illisible : on l'écrit
-  for(const k of Object.keys(want)){ if(have[k] !== want[k]) return true; }
+  for(const k of Object.keys(want)){ if(k !== "Orientation" && have[k] !== want[k]) return true; }
+  // Écriture EXIF dans l'image conservée par Imago (pixels déjà correctement orientés) : une balise Orientation ≠ 1 survivante ferait
+  // tourner l'image une 2e fois dans les logiciels qui la respectent — l'écriture la remet à 1, c'est donc une correction à faire.
+  // (Pas appliqué à l'export vers un dossier : un fichier d'origine cohérent avec SA propre orientation n'a pas à être réécrit.)
+  if(opts && opts.orientation && have.Orientation && have.Orientation !== "1") return true;
   // Plus ni favori, ni Art, ni Concert alors que le fichier porte encore la notation 5 ou 3 étoiles qu'Imago attribue : l'écriture la retirerait
   // (voir writeMetadataIntoJpegDataUrl) — c'est donc une évolution à sauvegarder. Toute autre notation (1, 2, 4 étoiles) est laissée intacte.
   if(want.Rating === undefined && (have.Rating === "5" || have.Rating === "3")) return true;
