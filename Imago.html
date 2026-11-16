@@ -1263,7 +1263,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   <details class="pave" id="pvSauvegarde"><summary>Sauvegarde des travaux</summary>
     <button class="btn copper" id="btnExportCsv">Sauver les MàJ du catalogue</button>
     <button class="btn" id="btnWriteExifBatch" title="Utile après une modification faite directement dans le fichier .csv (Excel…) : la modale « Modifier » n'écrit les métadonnées que photo par photo.">🖊️ Reporter Caméra/Lieu/Map dans l'EXIF</button>
-    <button class="btn" id="btnExportAllPhotos" title="Écrit chaque photo du catalogue (métadonnées à jour) dans un dossier de votre choix, ou dans un .zip si l'écriture directe est impossible.">📤 Sauver les métadonnées de toutes les photos</button>
+    <button class="btn" id="btnExportAllPhotos" title="Écrit dans un dossier de votre choix (ou dans un .zip si l'écriture directe est impossible) les seules photos dont au moins une métadonnée a évolué par rapport au fichier existant ; les autres ne sont pas réécrites.">📤 Sauver les métadonnées de toutes les photos</button>
   </details>
 
   <details class="pave" id="pvHof"><summary>Hall of fame</summary>
@@ -1829,7 +1829,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
           </div>
           <div class="field-row" style="grid-column:1/-1;"><label for="edEtiquette">Étiquette (mots-clés séparés par une virgule)</label><input type="text" class="info-title-input" id="edEtiquette" placeholder="Ajouter une étiquette" style="margin-bottom:0;"></div>
           <div class="field-row" style="grid-column:1/-1;"><label for="edAuteur">Auteur</label><input type="text" id="edAuteur" list="auteurList"></div>
-          <div class="field-row"><label for="edOptique">Caméra</label><input type="text" id="edOptique" placeholder="ex. Apple iPhone 14 Pro"></div>
+          <div class="field-row"><label for="edOptique">Caméra</label><input type="text" id="edOptique" list="optiqueList" placeholder="ex. Apple iPhone 14 Pro"></div>
           <div class="field-row">
             <label for="edPoids">Taille</label>
             <div style="display:flex; align-items:center; gap:8px;">
@@ -1873,6 +1873,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <datalist id="titreList"></datalist>
       <datalist id="personnageList"></datalist>
       <datalist id="lieuList"></datalist>
+      <datalist id="optiqueList"></datalist>
       <div id="infoContacts"></div>
       <div class="info-divider"></div>
       <div class="info-rows" id="infoRows"></div>
@@ -6184,6 +6185,8 @@ function populateInfoModalDatalists(){
   if(personnageDl) personnageDl.innerHTML = uniquePersonnageTokens().map(t=>`<option value="${escapeHtml(t)}">`).join("");
   const lieuDl = document.getElementById("lieuList");
   if(lieuDl) lieuDl.innerHTML = uniqueValues("lieu").map(t=>`<option value="${escapeHtml(t)}">`).join("");
+  const optiqueDl = document.getElementById("optiqueList"); // appareils déjà présents dans le catalogue (rubrique « optique »)
+  if(optiqueDl) optiqueDl.innerHTML = uniqueValues("optique").map(t=>`<option value="${escapeHtml(t)}">`).join("");
 }
 /* Mémorisation des filtres du panneau Recherches (Auteur, Personnage, Lieu,
    Favori, Type, Mot clé) : au rechargement d'un catalogue on retrouve les
@@ -16411,13 +16414,14 @@ function renderInfoModal(p){
 
     <div class="info-row">
       <div class="info-ic">📷</div>
-      <div class="info-content">
+      <div class="info-content" id="infoRowOptique">
         ${p.optique ? `<div class="main-line">${escapeHtml(p.optique)}</div>` : ""}
         ${exifLines
           ? exifLines.filter((l,i)=> !(i===0 && p.optique)).map(l=>`<div class="${p.optique?'sub-line':'main-line'}">${escapeHtml(l)}</div>`).join("")
-          : (p.optique ? "" : `<div class="sub-line">Informations de l'appareil indisponibles pour ce fichier</div>`)}
+          : (p.optique ? "" : `<div class="sub-line" id="infoOptiqueHint" style="cursor:pointer;" title="Cliquer pour saisir ou choisir l'appareil">Informations de l'appareil indisponibles pour ce fichier</div>`)}
         ${(!p.optique && !exifLines && exifDiagnosticFiles.has(p.id)) ? `<button class="btn" id="infoDiagnoseExifBtn" type="button" style="margin-top:6px; padding:6px 10px; font-size:12px;">🔍 Diagnostiquer ce fichier</button>` : ""}
       </div>
+      <button class="info-pencil" data-edit="optique" title="Saisir ou choisir l'appareil">✎</button>
     </div>
 
     <div class="info-row">
@@ -16491,6 +16495,9 @@ function renderInfoModal(p){
   `;
 
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
+  rows.querySelector('[data-edit="optique"]').addEventListener("click", ()=> startInlineEdit("infoRowOptique", "optique", p));
+  const optiqueHint = document.getElementById("infoOptiqueHint");
+  if(optiqueHint) optiqueHint.addEventListener("click", ()=> startInlineEdit("infoRowOptique", "optique", p));
   rows.querySelector('[data-edit="personnage"]').addEventListener("click", ()=> startInlineEdit("infoPersonnageText", "personnage", p));
   infoFacesStart(p); // reconnaissance des visages en arrière-plan (ajout automatique des personnages sûrs/probables)
   rows.querySelector('[data-edit="lieu"]').addEventListener("click", ()=> startInlineEdit("infoLieuText", "lieu", p));
@@ -16798,21 +16805,23 @@ function syncMapWithLieu(p, oldLieu, newLieu){
 function startInlineEdit(containerId, field, p){
   const container = document.getElementById(containerId);
   if(!container || container.querySelector("input")) return;
-  const current = field==="date" ? toDateTimeLocalValue(p.dateAchat) : field==="personnage" ? (p.personnage||"") : (p.lieu||"");
+  const current = field==="date" ? toDateTimeLocalValue(p.dateAchat) : field==="personnage" ? (p.personnage||"") : field==="optique" ? (p.optique||"") : (p.lieu||"");
   // Suggestions de saisie ("tapez les 1ères lettres") à partir des valeurs
   // déjà utilisées dans le catalogue — aucun datalist pertinent pour une
   // date (valeur propre à chaque photo).
-  const listAttr = field==="personnage" ? ' list="personnageList"' : field==="lieu" ? ' list="lieuList"' : "";
+  const listAttr = field==="personnage" ? ' list="personnageList"' : field==="lieu" ? ' list="lieuList"' : field==="optique" ? ' list="optiqueList" placeholder="Appareil (ex. Apple iPhone 14 Pro)"' : "";
   const wrap = document.createElement("div");
   wrap.className = "info-inline-edit";
   wrap.innerHTML = `<input type="${field==='date'?'datetime-local':'text'}" value="${escapeHtml(current)}"${listAttr}><button class="btn copper" style="padding:5px 10px;">OK</button>`;
   container.appendChild(wrap);
   const input = wrap.querySelector("input");
   input.focus();
+  input.addEventListener("keydown", (e)=>{ if(e.key === "Enter"){ e.preventDefault(); wrap.querySelector("button").click(); } else if(e.key === "Escape"){ e.stopPropagation(); wrap.remove(); } }); // Entrée = OK, Échap = annuler
   input.select(); // tout le texte existant est présélectionné : taper une nouvelle valeur la remplace directement, sans avoir à effacer caractère par caractère pour choisir un autre auteur/lieu/personnage dans les suggestions
   wrap.querySelector("button").addEventListener("click", async ()=>{
     if(field==="date") p.dateAchat = normalizeDateAchatInput(input.value) || p.dateAchat;
     else if(field==="personnage") p.personnage = input.value.trim();
+    else if(field==="optique") p.optique = input.value.trim(); // appareil : saisie libre ou choix parmi ceux du catalogue
     else{
       const oldLieu = p.lieu || "";
       p.lieu = input.value.trim();
@@ -18461,6 +18470,77 @@ async function getExportTargetDir(rootHandle, parts, cache){
   cache.set(key, dir);
   return dir;
 }
+/* -----------------------------------------------------------------
+   Sauvegarde CONDITIONNELLE : un fichier n'est écrit que si au moins une métadonnée a évolué
+   -----------------------------------------------------------------
+   « Évolué » = la valeur que le catalogue voudrait écrire (Caméra, Lieu, Map/GPS, Date cliché, Auteur, Personnage, Titre/Mots clés, Notation)
+   diffère de ce que contient DÉJÀ le fichier :
+   - dossier de destination choisi : on lit l'EXIF du fichier qui s'y trouve déjà (début du fichier seulement) ;
+   - .zip : on compare à l'image conservée dans Imago ;
+   - le fichier n'existe pas encore dans le dossier de destination : il est écrit (rien à « ne pas sauvegarder ») ;
+   - rotation en attente (les pixels changent) : il est écrit ;
+   - image non JPEG (PNG, WebP…) : aucune métadonnée n'y est écrivable, donc rien n'a pu « évoluer » — elle n'est écrite que si elle n'existe pas encore.
+   La valeur « voulue » est calculée avec la MÊME fonction que celle qui écrit (writeMetadataIntoJpegDataUrl) sur un JPEG minuscule : la comparaison
+   ne peut donc pas diverger de l'écriture réelle (mêmes remplacements de caractères, mêmes notations 5/3 étoiles…). Une balise que le catalogue
+   ne renseigne pas (champ vide) n'est jamais comparée : on n'écrit pas de valeur vide, donc vider un champ n'est pas une « évolution » à propager. */
+const EXPORT_TINY_JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwAooooA/9k=";
+function exportMetaFields(p){
+  return {cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert};
+}
+function isJpegDataUrl(u){ return /^data:image\/jpe?g/i.test(u || ""); }
+function xpBytesToString(v){
+  if(!Array.isArray(v)) return String(v == null ? "" : v);
+  let out = ""; for(let i = 0; i + 1 < v.length; i += 2){ const c = v[i] | (v[i+1] << 8); if(!c) break; out += String.fromCharCode(c); }
+  return out;
+}
+function gpsToDecimal(dms, ref){
+  if(!Array.isArray(dms) || dms.length < 3) return null;
+  const f = r => (r && r[1]) ? r[0] / r[1] : 0;
+  const d = f(dms[0]) + f(dms[1]) / 60 + f(dms[2]) / 3600;
+  return Math.round((ref === "S" || ref === "W" ? -d : d) * 1e5) / 1e5;
+}
+// Valeurs, normalisées en texte, des seules balises que Imago écrit (Orientation exclue : forcée à 1, ce n'est pas une métadonnée du catalogue).
+function exifSnapshotFromObj(ex){
+  const I = piexif.ImageIFD, snap = {}, z = (ex && ex["0th"]) || {}, put = (k, v)=>{ if(v !== undefined && v !== null && v !== "") snap[k] = String(v); };
+  put("Model", z[I.Model]); put("ImageDescription", z[I.ImageDescription]); put("Copyright", z[I.Copyright]); put("Artist", z[I.Artist]);
+  if(z[I.XPAuthor]) put("XPAuthor", xpBytesToString(z[I.XPAuthor]));
+  if(z[I.XPSubject]) put("XPSubject", xpBytesToString(z[I.XPSubject]));
+  if(z[I.XPKeywords]) put("XPKeywords", xpBytesToString(z[I.XPKeywords]));
+  if(z[I.XPComment]) put("XPComment", xpBytesToString(z[I.XPComment]));
+  put("Rating", z[I.Rating]); put("RatingPercent", z[I.RatingPercent]);
+  put("DateTimeOriginal", ex && ex["Exif"] && ex["Exif"][piexif.ExifIFD.DateTimeOriginal]);
+  const g = (ex && ex["GPS"]) || {}, G = piexif.GPSIFD;
+  const lat = gpsToDecimal(g[G.GPSLatitude], g[G.GPSLatitudeRef]), lon = gpsToDecimal(g[G.GPSLongitude], g[G.GPSLongitudeRef]);
+  if(lat !== null && lon !== null) snap.GPS = lat + "," + lon;
+  return snap;
+}
+function exifSnapshotOfBinary(data){ try{ return exifSnapshotFromObj(piexif.load(data)); }catch(e){ return null; } } // null = EXIF illisible
+async function desiredExifSnapshot(fields){
+  await ensurePiexifLoaded();
+  const withMeta = await writeMetadataIntoJpegDataUrl(EXPORT_TINY_JPEG, fields);
+  return exifSnapshotOfBinary(withMeta) || {};
+}
+function snapshotNeedsUpdate(want, have){
+  if(!have) return true; // EXIF du fichier illisible : on l'écrit
+  for(const k of Object.keys(want)){ if(have[k] !== want[k]) return true; }
+  // Plus ni favori, ni Art, ni Concert alors que le fichier porte encore la notation 5 ou 3 étoiles qu'Imago attribue : l'écriture la retirerait
+  // (voir writeMetadataIntoJpegDataUrl) — c'est donc une évolution à sauvegarder. Toute autre notation (1, 2, 4 étoiles) est laissée intacte.
+  if(want.Rating === undefined && (have.Rating === "5" || have.Rating === "3")) return true;
+  return false;
+}
+async function blobHeadToBinaryString(blob, n){
+  const bytes = new Uint8Array(await blob.slice(0, n).arrayBuffer());
+  let out = ""; for(let i = 0; i < bytes.length; i += 8192) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  return out;
+}
+// Fichier déjà présent dans le dossier de destination : {exists:false} ou {exists:true, snap} (snap = null si EXIF illisible).
+async function readDestExifSnapshot(dir, name){
+  let fh; try{ fh = await dir.getFileHandle(name); }catch(_){ return {exists: false}; }
+  try{
+    const f = await fh.getFile();
+    return {exists: true, snap: exifSnapshotOfBinary(await blobHeadToBinaryString(f, 262144))}; // l'EXIF tient dans les premiers Ko
+  }catch(e){ return {exists: true, snap: null}; }
+}
 async function exportAllPhotosAsZip(targets, btn){
   try{
     await ensureJSZipLoaded();
@@ -18469,19 +18549,38 @@ async function exportAllPhotosAsZip(targets, btn){
     return;
   }
   const zip = new JSZip();
-  let failed = 0;
+  let failed = 0, written = 0, unchanged = 0;
   for(let i=0;i<targets.length;i++){
     const p = targets[i];
     // Chargée à la demande (une seule photo complète en mémoire à la fois —
     // voir getFullDataUrl) plutôt que de supposer p.dataUrl déjà disponible,
     // qui n'est plus le cas depuis le chantier "miniatures en mémoire".
+    const hadRotation = hasPendingRotation(p.rotation); // pixels modifiés par l'export : à écrire quoi qu'il arrive
     const full = await getPhotoDataUrlForExport(p);
     if(!full){ failed++; console.warn(`[Imago] Export .zip : image introuvable pour "${p.fileName}".`); }
-    else zip.file(exportSubdirParts(p, "").concat(p.fileName || `photo_${i+1}.jpg`).join("/"), dataURLtoBlob(full)); // arborescence d'origine conservée dans le .zip
+    else{
+      try{
+        let out = full, skip = false;
+        if(isJpegDataUrl(full)){
+          const fields = exportMetaFields(p);
+          if(!hadRotation){
+            const have = exifSnapshotOfBinary(full); // métadonnées déjà portées par l'image conservée dans Imago
+            if(have && !snapshotNeedsUpdate(await desiredExifSnapshot(fields), have)) skip = true;
+          }
+          if(!skip) out = await writeMetadataIntoJpegDataUrl(full, fields);
+        }
+        if(skip) unchanged++;
+        else{ zip.file(exportSubdirParts(p, "").concat(p.fileName || `photo_${i+1}.jpg`).join("/"), dataURLtoBlob(out)); written++; } // arborescence d'origine conservée dans le .zip
+      }catch(e){ failed++; console.warn(`[Imago] Export .zip impossible pour "${p.fileName}" :`, e); }
+    }
     btn.textContent = `📦 Préparation du .zip… (${i+1}/${targets.length})`;
     if(i % 20 === 0) await delay(10); // laisse l'interface respirer sur un gros catalogue
   }
   finalizeExportBake();
+  if(written === 0){
+    toast(unchanged ? `ℹ️ Aucune métadonnée n'a évolué : aucun fichier sauvegardé (${unchanged} inchangé(s)).` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "") : "⚠️ Aucun fichier à sauvegarder." + (failed ? ` ${failed} échec(s) — voir la console.` : ""), 9000);
+    return;
+  }
   btn.textContent = "📦 Compression…";
   const blob = await zip.generateAsync({type:"blob"});
   const a = document.createElement("a");
@@ -18489,7 +18588,7 @@ async function exportAllPhotosAsZip(targets, btn){
   a.download = "Imago-export.zip";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=> URL.revokeObjectURL(a.href), 30000);
-  toast(`✅ ${targets.length-failed} photo(s) exportée(s) dans « Imago-export.zip ».` + (failed ? ` ⚠️ ${failed} introuvable(s) — voir la console.` : ""));
+  toast(`✅ ${written} photo(s) exportée(s) dans « Imago-export.zip »` + (unchanged ? `, ${unchanged} inchangée(s) non sauvegardée(s)` : "") + "." + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 9000);
 }
 document.getElementById("btnExportAllPhotos").addEventListener("click", async ()=>{
   const targets = State.photos.filter(p=> !p.isVideo && p.hasFullImage);
@@ -18516,14 +18615,30 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
       return;
     }
     btn.disabled = true;
-    let done = 0, failed = 0;
+    let done = 0, failed = 0, written = 0, unchanged = 0;
     const dirCache = new Map();
     for(const p of targets){
       try{
+        const hadRotation = hasPendingRotation(p.rotation); // pixels modifiés par l'export : à écrire quoi qu'il arrive
         const full = await getPhotoDataUrlForExport(p);
         if(!full) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
         const targetDir = await getExportTargetDir(dirHandle, exportSubdirParts(p, dirHandle.name), dirCache); // sous-dossiers d'origine reproduits (avant : tout à la racine)
-        await writeFileToLocalDirectory(targetDir, p.fileName || `photo_${done+1}.jpg`, dataURLtoBlob(full));
+        const name = p.fileName || `photo_${done+1}.jpg`;
+        const jpeg = isJpegDataUrl(full);
+        let skip = false;
+        if(!hadRotation){
+          const dest = await readDestExifSnapshot(targetDir, name); // le fichier est-il déjà là, et que contient-il ?
+          if(dest.exists){
+            if(!jpeg) skip = true; // aucune métadonnée écrivable dans ce format : rien n'a pu évoluer
+            else if(dest.snap) skip = !snapshotNeedsUpdate(await desiredExifSnapshot(exportMetaFields(p)), dest.snap);
+          }
+        }
+        if(skip) unchanged++;
+        else{
+          const out = jpeg ? await writeMetadataIntoJpegDataUrl(full, exportMetaFields(p)) : full; // métadonnées du catalogue à jour dans le fichier écrit
+          await writeFileToLocalDirectory(targetDir, name, dataURLtoBlob(out));
+          written++;
+        }
       }catch(e){
         failed++;
         console.warn(`[Imago] Export impossible pour "${p.fileName}" :`, e);
@@ -18534,8 +18649,10 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     }
     finalizeExportBake();
     resetLabel();
-    btn.classList.toggle("done", (done-failed) > 0); // fond vert : au moins une photo exportée avec succès
-    toast(`✅ ${done-failed} photo(s) exportée(s) vers « ${dirHandle.name} ».` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 8000);
+    btn.classList.toggle("done", (written + unchanged) > 0 && failed === 0); // fond vert : tout est à jour dans le dossier
+    toast(written
+      ? `✅ ${written} photo(s) sauvegardée(s) vers « ${dirHandle.name} »` + (unchanged ? `, ${unchanged} inchangée(s) non réécrite(s)` : "") + "." + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "")
+      : (unchanged ? `ℹ️ Aucune métadonnée n'a évolué : aucun fichier sauvegardé (${unchanged} inchangé(s)).` : "⚠️ Aucun fichier sauvegardé.") + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 9000);
   } else {
     // Navigateur sans File System Access API (Firefox, Safari…) : seul le
     // .zip est possible.
