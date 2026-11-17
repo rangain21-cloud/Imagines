@@ -18904,9 +18904,16 @@ roEl("btnRoPickTarget").addEventListener("click", async ()=>{
   const d = await roPickDir("imago-restore-target", "readwrite");
   if(d){ RO.targetDir = d; roRefreshUi(); }
 });
+// Nom « aplati » : sans accents ni casse, seuls lettres et chiffres comptent (apostrophes typographiques, espaces doubles, tirets… ignorés).
+function roAggrKey(n){ return String(n == null ? "" : n).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+function roStem(n){ return String(n == null ? "" : n).replace(/\.[A-Za-z0-9]{1,5}$/, ""); }
+const RO_EXT_CLASS = {jpg:"jpg", jpeg:"jpg", jpe:"jpg", jfif:"jpg", png:"png", bmp:"bmp", gif:"gif", webp:"webp", heic:"heic", heif:"heic", tif:"tif", tiff:"tif", mpg:"mpg", mpeg:"mpg", mp4:"mp4", m4v:"mp4", mov:"mov", avi:"avi"};
+function roExtClass(n){ const e = (String(n).match(/\.([A-Za-z0-9]+)$/) || [])[1]; return e ? (RO_EXT_CLASS[e.toLowerCase()] || e.toLowerCase()) : ""; }
 // Index nom -> [{handle, parts}] de tout le répertoire d'origine (un seul parcours, plutôt qu'une recherche par photo).
 async function roIndexOrigin(dir, onProgress){
   const idx = new Map(); let n = 0;
+  idx.errors = []; idx.byTop = new Map(); // diagnostic : dossiers illisibles, nombre de fichiers par dossier de 1er niveau
+  idx.aggr = new Map(); idx.stem = new Map(); // index de repli : nom « aplati » (accents, espaces, ponctuation ignorés) et nom sans extension
   const stack = [{h: dir, parts: []}];
   while(stack.length){
     const {h, parts} = stack.pop();
@@ -18916,10 +18923,13 @@ async function roIndexOrigin(dir, onProgress){
         else{
           const k = catalogLooseKey(name); let a = idx.get(k);
           if(!a){ a = []; idx.set(k, a); }
-          a.push({handle: eh, parts}); n++;
+          const ent = {handle: eh, parts, name}; a.push(ent); n++;
+          const top = parts[0] || "(racine)"; idx.byTop.set(top, (idx.byTop.get(top) || 0) + 1);
+          const ak = roAggrKey(name); let b = idx.aggr.get(ak); if(!b){ b = []; idx.aggr.set(ak, b); } b.push(ent);
+          const sk = roAggrKey(roStem(name)); let c = idx.stem.get(sk); if(!c){ c = []; idx.stem.set(sk, c); } c.push(ent);
         }
       }
-    }catch(e){ console.warn("[Imago] Dossier d'origine illisible :", parts.join("/"), e); }
+    }catch(e){ idx.errors.push(`${parts.join("/") || "(racine)"} : ${(e && e.name) || ""} ${(e && e.message) || e}`); console.warn("[Imago] Dossier d'origine illisible :", parts.join("/"), e); }
     if(onProgress) onProgress(n);
     if(RO.stop) break;
   }
@@ -19015,6 +19025,9 @@ async function roRun(){
   try{
     roEl("roProgress").textContent = `Lecture du répertoire d'origine « ${RO.origin.name} »…`;
     const originIdx = await roIndexOrigin(RO.origin, n=>{ roEl("roProgress").textContent = `Lecture du répertoire d'origine « ${RO.origin.name} »… ${n} fichier(s)`; });
+    roLog(`📂 Répertoire d'origine : ${[...originIdx.values()].reduce((a, l)=> a + l.length, 0)} fichier(s) indexé(s) (sous-dossiers compris).`);
+    roLog("   Fichiers par dossier de 1er niveau : " + ([...originIdx.byTop.entries()].sort().slice(0, 60).map(([k, v])=> `${k} (${v})`).join(", ") || "aucun"));
+    if(originIdx.errors.length) roLog(`⚠️ ${originIdx.errors.length} dossier(s) illisible(s) dans l'origine :\n   ` + originIdx.errors.slice(0, 20).join("\n   "));
     if(mode === "drive"){
       roEl("roProgress").textContent = `Lecture du dossier Drive « ${folderLabel} »…`;
       driveMediaIndexPromise = null; driveMediaIndexFolder = "";
@@ -19030,8 +19043,20 @@ async function roRun(){
           const base = name.replace(/\.[A-Za-z0-9]+$/, "");
           list = originIdx.get(catalogLooseKey(base + ".bmp")) || originIdx.get(catalogLooseKey(base + ".png"));
         }
-        if(!list){ st.notFound++; note(p, "introuvable dans l'origine"); roLog(`❓ ${name} : introuvable dans le répertoire d'origine`); continue; }
+        let fuzzy = "";
+        if(!list){ // repli 1 : nom « aplati » identique (accents/espaces/ponctuation) ; repli 2 : même nom sans extension ET même famille d'extension (jpg/jpeg, mpg/mpeg…)
+          const byAggr = originIdx.aggr.get(roAggrKey(name));
+          if(byAggr){ list = byAggr; fuzzy = "nom voisin"; }
+          else{
+            const cls = roExtClass(name), same = (originIdx.stem.get(roAggrKey(roStem(name))) || []);
+            const ok = same.filter(e=> roExtClass(e.name) === cls);
+            if(ok.length){ list = ok; fuzzy = "extension voisine"; }
+            else if(same.length){ st.notFound++; note(p, "introuvable (autre format)", same.map(e=>e.name).join(" | ")); roLog(`❓ ${name} : seul un fichier de même nom mais d'un autre format existe dans l'origine (${same.map(e=>e.name).join(", ")}) — non traité`); continue; }
+          }
+        }
+        if(!list){ st.notFound++; note(p, "introuvable dans l'origine"); roLog(`❓ ${name} : introuvable dans le répertoire d'origine (catalogue : sous-dossier « ${p.sousDossier || ""} »)`); continue; }
         const cand = roPickCandidate(list, p.sousDossier);
+        if(fuzzy) roLog(`🔎 ${name} : trouvé sous « ${cand.name || cand.handle.name} » (${fuzzy})`);
         const orig = await cand.handle.getFile();
         const isVideo = !!p.isVideo || VIDEO_NAME_RE.test(name);
         const toJpg = !isVideo && /\.(bmp|png)$/i.test(cand.handle.name || name); // BMP/PNG : pas d'EXIF possible -> convertis en JPEG (qualité maximale)
