@@ -1542,7 +1542,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <p class="drive-note" style="margin-bottom:10px;" id="roIntro"></p>
       <p class="drive-note" style="margin-bottom:12px;">Pour chaque ligne du catalogue, le fichier est cherché dans le <b>répertoire d'origine</b> (sous-dossiers compris).
         <b>Non retouché</b> : l'original remplace le fichier du répertoire cible, avec les rubriques du catalogue écrites dans ses EXIF (Caméra, Lieu, Map/GPS, Date cliché, Auteur, Personnage, Titre, Favori…).
-        <b>Retouché ou rogné</b> : le fichier d'Imago est conservé et l'original est ajouté sous le même nom suivi de <b>_O</b> (ex. IMG_0012_O.jpg).</p>
+        <b>Retouché ou rogné</b> : le fichier d'Imago est conservé et l'original est ajouté sous le même nom suivi de <b>_O</b> (ex. IMG_0012_O.jpg), avec lui aussi les EXIF du catalogue (option ci-dessous).</p>
       <button class="btn" id="btnRoPickOrigin" type="button">📁 1. Répertoire d'origine (originaux)…</button>
       <p class="drive-note" id="roOriginStatus" style="margin:4px 0 12px;">Aucun répertoire d'origine choisi.</p>
       <div style="margin-bottom:6px;"><b>2. Répertoire cible</b></div>
@@ -1553,7 +1553,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
       <button class="btn hidden" id="btnRoPickTarget" type="button">📂 Choisir le dossier cible…</button>
       <p class="drive-note" id="roTargetStatus" style="margin:4px 0 12px;"></p>
       <label style="display:flex; align-items:flex-start; gap:6px; margin-bottom:6px;"><input type="checkbox" id="roDryRun" style="width:auto; margin-top:3px;"> <span>Simulation : analyser et lister ce qui serait fait, sans rien écrire</span></label>
-      <label style="display:flex; align-items:flex-start; gap:6px; margin-bottom:12px;"><input type="checkbox" id="roExifOnO" style="width:auto; margin-top:3px;"> <span>Écrire aussi les EXIF du catalogue dans les copies « _O » (sinon elles restent strictement identiques à l'original)</span></label>
+      <label style="display:flex; align-items:flex-start; gap:6px; margin-bottom:12px;"><input type="checkbox" id="roExifOnO" checked style="width:auto; margin-top:3px;"> <span>Écrire aussi les EXIF du catalogue dans les copies « _O » (décochez pour les laisser strictement identiques à l'original)</span></label>
       <p class="drive-note" id="roProgress" style="margin-bottom:8px; font-weight:600;"></p>
       <div id="roLog" style="max-height:220px; overflow-y:auto; font-size:12.5px; line-height:1.55; background:var(--bg-panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:none; white-space:pre-wrap;"></div>
     </div>
@@ -11243,7 +11243,12 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     // est ignoré par l'Explorateur Windows dès qu'ImageDescription existe.
     // « Titre » = personnage UNIQUEMENT. Personnage vide au catalogue → « Titre » reste vide (pas de repli sur la rubrique « titre »,
     // qui alimente seulement « Mots clés »), et un « Titre » hérité du fichier d'origine est retiré (voir plus bas).
-    if(personnage) zeroth[piexif.ImageIFD.ImageDescription] = asciiTag(personnage);
+    if(personnage){
+      zeroth[piexif.ImageIFD.ImageDescription] = asciiTag(personnage);
+      // XPTitle (0x9C9B) écrit AUSSI, à l'identique : un XPTitle hérité du fichier (ex. ancien « titre » du catalogue, « Voyage en Italie… »)
+      // passait sinon devant ImageDescription dans l'Explorateur Windows et s'affichait comme « Titre » à la place du personnage.
+      zeroth[piexif.ImageIFD.XPTitle] = toXPBytes(personnage);
+    }
     // "Droits d'auteur"/Copyright (Windows) — tag EXIF standard, ASCII simple.
     if(auteur){
       zeroth[piexif.ImageIFD.Copyright] = asciiTag(auteur);   // « Droits d'auteur »
@@ -11288,7 +11293,7 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     try{ exifObj = piexif.load(jpegDataUrl); }
     catch(e){ exifObj = {"0th":{}, "Exif":{}, "GPS":{}, "1st":{}, "thumbnail":null}; }
     exifObj["0th"] = Object.assign({}, exifObj["0th"], zeroth);
-    if(!personnage) delete exifObj["0th"][piexif.ImageIFD.ImageDescription]; // personnage vide au catalogue : « Titre » laissé vide (pas de valeur périmée du fichier)
+    if(!personnage){ delete exifObj["0th"][piexif.ImageIFD.ImageDescription]; delete exifObj["0th"][piexif.ImageIFD.XPTitle]; } // personnage vide au catalogue : « Titre » laissé vide (pas de valeur périmée du fichier)
     // Plus ni favori, ni Art, ni Concert : une notation de 5 ou 3 étoiles (celles qu'Imago attribue) devenue
     // fausse est retirée ; toute autre notation (1, 2, 4 étoiles, posée à la main) est laissée intacte.
     if(!rating){
@@ -18652,6 +18657,7 @@ function exifSnapshotFromObj(ex){
   put("Model", z[I.Model]); put("ImageDescription", z[I.ImageDescription]); put("Copyright", z[I.Copyright]); put("Artist", z[I.Artist]);
   if(z[I.XPAuthor]) put("XPAuthor", xpBytesToString(z[I.XPAuthor]));
   if(z[I.XPSubject]) put("XPSubject", xpBytesToString(z[I.XPSubject]));
+  if(z[I.XPTitle]) put("XPTitle", xpBytesToString(z[I.XPTitle])); // un XPTitle périmé doit déclencher la réécriture du fichier
   if(z[I.XPKeywords]) put("XPKeywords", xpBytesToString(z[I.XPKeywords]));
   if(z[I.XPComment]) put("XPComment", xpBytesToString(z[I.XPComment]));
   put("Rating", z[I.Rating]); put("RatingPercent", z[I.RatingPercent]);
