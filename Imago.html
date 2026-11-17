@@ -19019,6 +19019,23 @@ function roPickCandidate(list, sousDossier){
   }
   return best;
 }
+// ---- Rapport CSV : taille, type et champs EXIF réellement présents dans le fichier produit ----
+const RO_EXIF_COLS = ["Model","ImageDescription","XPTitle","Artist","Copyright","XPAuthor","XPSubject","XPKeywords","XPComment","Rating","RatingPercent","DateTimeOriginal","GPS","Orientation"];
+const RO_REPORT_HEAD = ["sousDossier","fileName","resultat","detail","fichierSortie","type","extension","tailleOriginalOctets","tailleSortieOctets","tailleSortieKo"].concat(RO_EXIF_COLS.map(k=> "EXIF_" + k));
+async function roReportInfo(outName, blob, orig, isVideo){
+  const info = {outName, type: "", ext: "", origSize: orig ? orig.size : "", size: blob ? blob.size : "", snap: null};
+  try{ info.type = roMime(orig, outName, isVideo) || ""; }catch(_){}
+  const m = /\.([A-Za-z0-9]+)$/.exec(outName); info.ext = m ? m[1].toLowerCase() : "";
+  if(blob && !isVideo && /^jpe?g$/.test(info.ext)){ // EXIF relus dans le fichier qui sera (ou vient d'être) écrit, pas simplement recopiés du catalogue
+    try{ await ensurePiexifLoaded(); info.snap = exifSnapshotOfBinary(await blobHeadToBinaryString(blob, 262144)); }catch(_){}
+  }
+  return info;
+}
+function roReportCells(info){
+  if(!info) return new Array(RO_REPORT_HEAD.length - 4).fill("");
+  const sn = info.snap || {};
+  return [info.outName, info.type, info.ext, info.origSize, info.size, info.size === "" ? "" : Math.round(info.size / 1024 * 10) / 10].concat(RO_EXIF_COLS.map(k=> sn[k] === undefined ? "" : sn[k]));
+}
 function roSuffixO(name){
   const m = String(name).match(/^(.*?)(\.[A-Za-z0-9]+)?$/);
   return (m[1] || name) + "_O" + (m[2] || "");
@@ -19093,7 +19110,7 @@ async function roRun(){
   document.querySelectorAll('input[name="roTarget"]').forEach(r=> r.disabled = true);
   roEl("btnRoStop").classList.remove("hidden"); roEl("btnRoReport").classList.add("hidden");
   const st = {restored: 0, withO: 0, already: 0, notFound: 0, failed: 0, noCompare: 0, dry};
-  const note = (p, result, detail)=>{ RO.report.push([p.sousDossier || "", p.fileName, result, detail || ""]); };
+  const note = (p, result, detail, info)=>{ RO.report.push([p.sousDossier || "", p.fileName, result, detail || ""].concat(roReportCells(info))); };
   try{
     roEl("roProgress").textContent = `Lecture du répertoire d'origine « ${RO.origin.name} »…`;
     const originIdx = await roIndexOrigin(RO.origin, n=>{ roEl("roProgress").textContent = `Lecture du répertoire d'origine « ${RO.origin.name} »… ${n} fichier(s)`; });
@@ -19168,14 +19185,15 @@ async function roRun(){
         }
         const baseOut = toJpg ? name.replace(/\.[A-Za-z0-9]+$/, "") + ".jpg" : name;
         const outName = retouched ? roSuffixO(baseOut) : baseOut;
+        const info = await roReportInfo(outName, blob, orig, isVideo);
         // --- déjà fait ? (même taille que ce qui serait écrit) ---
         let existing = null;
         if(mode === "local"){ try{ existing = await (await tgt.dir.getFileHandle(outName)).getFile(); }catch(_){} }
         else existing = driveIdx.get(catalogLooseKey(outName)) || null;
         const existingSize = existing ? (existing.size !== undefined ? +existing.size : 0) : -1;
-        if(existing && existingSize === blob.size){ st.already++; note(p, "déjà à jour", outName); if(!retouched && toJpg && !dry && p.fileName !== outName){ p.fileName = outName; p.support = "jpg"; st.restored++; } continue; }
-        if(retouched){ st.withO++; note(p, "retouchée : original ajouté en _O", `${outName} — ${why}`); roLog(`✂️ ${name} → ${outName} (${why})`); }
-        else{ st.restored++; note(p, "original restauré", outName); }
+        if(existing && existingSize === blob.size){ st.already++; note(p, "déjà à jour", outName, info); if(!retouched && toJpg && !dry && p.fileName !== outName){ p.fileName = outName; p.support = "jpg"; st.restored++; } continue; }
+        if(retouched){ st.withO++; note(p, "retouchée : original ajouté en _O", `${outName} — ${why}`, info); roLog(`✂️ ${name} → ${outName} (${why})`); }
+        else{ st.restored++; note(p, "original restauré", outName, info); }
         if(dry) continue;
         // --- écriture ---
         if(mode === "local") await writeFileToLocalDirectory(tgt.dir, outName, blob);
@@ -19216,7 +19234,7 @@ async function roRun(){
 roEl("btnRoRun").addEventListener("click", ()=>{ if(!RO.running) roRun(); });
 roEl("btnRoStop").addEventListener("click", ()=>{ RO.stop = true; roEl("roProgress").textContent = "Arrêt en cours…"; });
 roEl("btnRoReport").addEventListener("click", ()=>{
-  const head = ["sousDossier","fileName","resultat","detail"].join(";");
+  const head = RO_REPORT_HEAD.join(";");
   downloadCsvFile([head].concat(RO.report.map(r=> r.map(csvEscape).join(";"))).join("\n"), "Rapport-originaux.csv");
 });
 
