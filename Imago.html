@@ -11316,14 +11316,21 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
       ()=> ({"0th": Object.assign(keep(exifObj["0th"], SAFE_0TH), zeroth), "Exif": Object.assign(keep(exifObj["Exif"], SAFE_EXIF), oursExif), "GPS": Object.assign(keep(exifObj["GPS"], [1,2,3,4,5,6]), gps), "1st": {}, "thumbnail": null}),
       ()=> ({"0th": Object.assign(preserveOrientation ? keep(exifObj["0th"], [274]) : {}, zeroth), "Exif": oursExif, "GPS": gps, "1st": {}, "thumbnail": null})
     ];
-    let exifBytes = null, lastErr = null, level = -1;
-    for(let i = 0; i < attempts.length && exifBytes === null; i++){
-      try{ exifBytes = piexif.dump(attempts[i]()); level = i; }
+    /* Le segment EXIF d'un JPEG est limité à 64 Ko : un EXIF d'origine volumineux (MakerNote, miniature…) + nos balises le dépasse, et
+       piexif.insert() échoue alors (« 'pack' error ») APRÈS un dump() réussi — l'écriture était abandonnée en silence et le fichier partait
+       sans les métadonnées du catalogue. L'insertion fait donc partie de chaque palier : on passe au suivant tant qu'elle n'aboutit pas. */
+    let result = null, lastErr = null, level = -1;
+    for(let i = 0; i < attempts.length && result === null; i++){
+      try{
+        const bytes = piexif.dump(attempts[i]());
+        if(bytes.length > 65533) throw new Error(`segment EXIF trop volumineux (${bytes.length} octets, limite JPEG 65533)`);
+        result = piexif.insert(bytes, jpegDataUrl); level = i;
+      }
       catch(e){ lastErr = e; console.warn(`[Imago] EXIF : palier ${i + 1}/${attempts.length} refusé par piexifjs, repli au palier suivant :`, e && e.message ? e.message : e); }
     }
-    if(exifBytes === null) throw lastErr || new Error("dump EXIF impossible");
+    if(result === null) throw lastErr || new Error("dump EXIF impossible");
     if(level > 0) console.warn(`[Imago] EXIF écrit avec repli (palier ${level + 1}) : une partie de l'EXIF d'origine de l'appareil n'a pas pu être conservée.`);
-    return piexif.insert(exifBytes, jpegDataUrl);
+    return result;
   }catch(e){
     console.warn(`[Imago] Écriture des métadonnées EXIF impossible (fichier enregistré sans, catalogue Imago inchangé) — préfixe reçu : "${dataUrl.slice(0,40)}" :`, e);
     exifFail("erreur d'écriture : " + ((e && e.message) || e));
@@ -16349,7 +16356,10 @@ document.getElementById("btnSaveEditDownload").addEventListener("click", async (
   if(pristine){
     try{
       const src = await getLosslessImageSource(p, null);
-      if(src) losslessBlob = await losslessWithMetadata(src.file, exportMetaFields(p));
+      if(src){
+        losslessBlob = await losslessWithMetadata(src.file, exportMetaFields(p));
+        warnIfExifNotWritten(p); // échec d'écriture dans l'original : signalé (avant, le fichier partait sans métadonnées, sans aucun message)
+      }
       else if(!p.storedLossless) toast("ℹ️ Fichier d'origine introuvable : la copie interne d'Imago (de qualité réduite) est téléchargée. Réimportez le dossier d'origine pour obtenir le fichier sans perte.", 12000);
     }catch(e){ console.warn("Téléchargement sans perte impossible, repli sur la copie d'Imago :", e); }
   }
