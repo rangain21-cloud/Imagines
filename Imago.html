@@ -1264,6 +1264,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <button class="btn copper" id="btnExportCsv">Sauver les MàJ du catalogue</button>
     <button class="btn" id="btnWriteExifBatch" title="Utile après une modification faite directement dans le fichier .csv (Excel…) : la modale « Modifier » n'écrit les métadonnées que photo par photo. Une photo dont l'EXIF porte déjà les valeurs du catalogue n'est pas réécrite.">🖊️ Reporter Caméra/Lieu/Map dans l'EXIF</button>
     <button class="btn" id="btnExportAllPhotos" title="Écrit dans un dossier de votre choix (ou dans un .zip si l'écriture directe est impossible) les seules photos dont au moins une métadonnée a évolué par rapport au fichier existant ; les autres ne sont pas réécrites.">📤 Sauver les métadonnées de toutes les photos</button>
+    <button class="btn" id="btnRestoreOriginals" title="Redonne leur qualité d'origine aux photos/vidéos du catalogue : chaque fichier est cherché dans un répertoire d'origine puis déposé dans le répertoire cible avec les EXIF du catalogue (suffixe _O si la photo a été retouchée ou rognée).">🖼️ Récupérer les originaux…</button>
   </details>
 
   <details class="pave" id="pvHof"><summary>Hall of fame</summary>
@@ -1529,6 +1530,38 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div class="modal-foot">
       <button class="btn reset" id="btnCatalogPickNone">Aucun (nouveau catalogue)</button>
       <button class="btn copper" id="btnCatalogPickLoad">Charger</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: RÉCUPÉRER LES ORIGINAUX (qualité d'origine + EXIF du catalogue) ============== -->
+<div class="modal-overlay" id="modalRestoreOriginals">
+  <div class="modal wide">
+    <div class="modal-head"><h2>Récupérer les originaux</h2><button class="modal-close" data-close="modalRestoreOriginals">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" style="margin-bottom:10px;" id="roIntro"></p>
+      <p class="drive-note" style="margin-bottom:12px;">Pour chaque ligne du catalogue, le fichier est cherché dans le <b>répertoire d'origine</b> (sous-dossiers compris).
+        <b>Non retouché</b> : l'original remplace le fichier du répertoire cible, avec les rubriques du catalogue écrites dans ses EXIF (Caméra, Lieu, Map/GPS, Date cliché, Auteur, Personnage, Titre, Favori…).
+        <b>Retouché ou rogné</b> : le fichier d'Imago est conservé et l'original est ajouté sous le même nom suivi de <b>_O</b> (ex. IMG_0012_O.jpg).</p>
+      <button class="btn" id="btnRoPickOrigin" type="button">📁 1. Répertoire d'origine (originaux)…</button>
+      <p class="drive-note" id="roOriginStatus" style="margin:4px 0 12px;">Aucun répertoire d'origine choisi.</p>
+      <div style="margin-bottom:6px;"><b>2. Répertoire cible</b></div>
+      <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:6px;">
+        <label style="display:flex; align-items:center; gap:6px;"><input type="radio" name="roTarget" value="drive" checked style="width:auto;"> ☁️ Dossier Drive du catalogue</label>
+        <label style="display:flex; align-items:center; gap:6px;"><input type="radio" name="roTarget" value="local" style="width:auto;"> 💻 Dossier de cet ordinateur</label>
+      </div>
+      <button class="btn hidden" id="btnRoPickTarget" type="button">📂 Choisir le dossier cible…</button>
+      <p class="drive-note" id="roTargetStatus" style="margin:4px 0 12px;"></p>
+      <label style="display:flex; align-items:flex-start; gap:6px; margin-bottom:6px;"><input type="checkbox" id="roDryRun" style="width:auto; margin-top:3px;"> <span>Simulation : analyser et lister ce qui serait fait, sans rien écrire</span></label>
+      <label style="display:flex; align-items:flex-start; gap:6px; margin-bottom:12px;"><input type="checkbox" id="roExifOnO" style="width:auto; margin-top:3px;"> <span>Écrire aussi les EXIF du catalogue dans les copies « _O » (sinon elles restent strictement identiques à l'original)</span></label>
+      <p class="drive-note" id="roProgress" style="margin-bottom:8px; font-weight:600;"></p>
+      <div id="roLog" style="max-height:220px; overflow-y:auto; font-size:12.5px; line-height:1.55; background:var(--bg-panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:none; white-space:pre-wrap;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn hidden" id="btnRoReport" type="button">📄 Rapport (.csv)</button>
+      <button class="btn reset hidden" id="btnRoStop" type="button">⏹ Arrêter</button>
+      <button class="btn reset" data-close="modalRestoreOriginals" id="btnRoClose">Fermer</button>
+      <button class="btn copper" id="btnRoRun" type="button">▶ Lancer</button>
     </div>
   </div>
 </div>
@@ -18795,6 +18828,257 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     resetLabel();
     btn.classList.add("done");
   }
+});
+
+/* -----------------------------------------------------------------
+   RÉCUPÉRER LES ORIGINAUX : redonner leur qualité d'origine aux photos/vidéos du catalogue
+   -----------------------------------------------------------------
+   Pour chaque ligne du catalogue chargé (State.photos, hors corbeille) :
+   1) le fichier est cherché, par son nom, dans le RÉPERTOIRE D'ORIGINE (sous-dossiers compris ; en cas d'homonymes, celui dont le chemin
+      ressemble le plus à la rubrique « sousDossier » l'emporte) ;
+   2) NON retouché (image ou vidéo) : l'original est déposé dans le RÉPERTOIRE CIBLE sous son nom, à la place de la copie réduite, avec les
+      métadonnées du catalogue — mêmes règles que « Sauver les métadonnées » (exportMetaFields : Caméra, Lieu, Map/GPS, Date cliché, Auteur,
+      Personnage, Titre/Mots clés, Notation Favori/Art/Concert) ; vidéos MP4/MOV : writeMp4Metadata ; autres formats : copie telle quelle ;
+   3) RETOUCHÉ ou ROGNÉ : le fichier d'Imago n'est pas touché ; l'original est déposé à côté sous « <nom>_O.<ext> ».
+   Est jugée retouchée une photo dont : pixelsEdited est vrai (modifiée dans Imago), ou rotation/filtre renseigné(e) au catalogue, ou dont les
+   proportions (rognage) ou le contenu (retouche) diffèrent de la version actuelle (copie interne d'Imago, sinon fichier déjà présent dans la
+   cible) — comparaison sur une vignette 48×48 en gris. Les vidéos ne sont jamais « retouchées » dans Imago.
+   Cible : dossier Drive du catalogue (à plat, comme « Sauver sur Drive ») ou dossier local (arborescence « sousDossier » reproduite).
+   Rejouable : un fichier déjà identique dans la cible (même taille que ce qui serait écrit) est ignoré. */
+const RO = {origin: null, targetDir: null, running: false, stop: false, report: []};
+const RO_DIFF_THRESHOLD = 5;   // écart moyen de gris (0-255) au-delà duquel le contenu est jugé retouché
+const RO_ASPECT_TOLERANCE = 0.02; // écart relatif de proportions au-delà duquel l'image est jugée rognée
+function roEl(id){ return document.getElementById(id); }
+function roTargetMode(){ const r = document.querySelector('input[name="roTarget"]:checked'); return r ? r.value : "drive"; }
+function roLog(msg){
+  const el = roEl("roLog"); el.style.display = "block";
+  el.textContent += (el.textContent ? "\n" : "") + msg;
+  el.scrollTop = el.scrollHeight;
+}
+function roRefreshUi(){
+  const rows = State.photos.filter(p=> !p.corbeille).length;
+  roEl("roIntro").textContent = rows
+    ? `Catalogue chargé : ${rows} ligne(s) à traiter.`
+    : "⚠️ Aucun catalogue chargé : chargez d'abord le catalogue (.csv) — chaque ligne sera lue pour retrouver son fichier d'origine.";
+  const local = roTargetMode() === "local";
+  roEl("btnRoPickTarget").classList.toggle("hidden", !local);
+  if(local) roEl("roTargetStatus").textContent = RO.targetDir ? `Dossier cible : « ${RO.targetDir.name} »` : "Aucun dossier cible choisi.";
+  else roEl("roTargetStatus").textContent = State.drive.token
+    ? `Dossier Drive : « ${driveMediaFolderId() ? driveMediaFolderLabel() : "IMAGINES"} » (les originaux y sont déposés à plat, comme « Sauver sur Drive »).`
+    : "⚠️ Drive n'est pas connecté : utilisez « Connecter à Drive » dans le menu, ou choisissez un dossier de cet ordinateur.";
+  roEl("roOriginStatus").textContent = RO.origin ? `Répertoire d'origine : « ${RO.origin.name} »` : "Aucun répertoire d'origine choisi.";
+}
+roEl("btnRestoreOriginals").addEventListener("click", ()=>{ roRefreshUi(); openModal("modalRestoreOriginals"); });
+document.querySelectorAll('input[name="roTarget"]').forEach(r=> r.addEventListener("change", roRefreshUi));
+async function roPickDir(id, mode){
+  if(typeof window.showDirectoryPicker !== "function"){
+    toast("Le choix d'un dossier n'est possible que sur Chrome ou Edge, sur ordinateur.", 7000);
+    return null;
+  }
+  try{ return await window.showDirectoryPicker({id, mode}); }
+  catch(e){ if(!(e && e.name === "AbortError")) toast(`⚠️ Dossier inaccessible (${(e && e.message) || e}).`, 7000); return null; }
+}
+roEl("btnRoPickOrigin").addEventListener("click", async ()=>{
+  const d = await roPickDir("imago-originals", "read");
+  if(d){ RO.origin = d; roRefreshUi(); }
+});
+roEl("btnRoPickTarget").addEventListener("click", async ()=>{
+  const d = await roPickDir("imago-restore-target", "readwrite");
+  if(d){ RO.targetDir = d; roRefreshUi(); }
+});
+// Index nom -> [{handle, parts}] de tout le répertoire d'origine (un seul parcours, plutôt qu'une recherche par photo).
+async function roIndexOrigin(dir, onProgress){
+  const idx = new Map(); let n = 0;
+  const stack = [{h: dir, parts: []}];
+  while(stack.length){
+    const {h, parts} = stack.pop();
+    try{
+      for await (const [name, eh] of h.entries()){
+        if(eh.kind === "directory"){ if(!name.startsWith(".")) stack.push({h: eh, parts: parts.concat(name)}); }
+        else{
+          const k = catalogLooseKey(name); let a = idx.get(k);
+          if(!a){ a = []; idx.set(k, a); }
+          a.push({handle: eh, parts}); n++;
+        }
+      }
+    }catch(e){ console.warn("[Imago] Dossier d'origine illisible :", parts.join("/"), e); }
+    if(onProgress) onProgress(n);
+    if(RO.stop) break;
+  }
+  return idx;
+}
+// Plusieurs fichiers de même nom : celui dont le chemin finit comme « sousDossier » (le plus long suffixe commun).
+function roPickCandidate(list, sousDossier){
+  if(list.length === 1) return list[0];
+  const want = String(sousDossier || "").split("/").filter(Boolean).map(catalogLooseKey);
+  let best = list[0], bestScore = -1;
+  for(const c of list){
+    const have = c.parts.map(catalogLooseKey); let s = 0;
+    while(s < want.length && s < have.length && want[want.length - 1 - s] === have[have.length - 1 - s]) s++;
+    if(s > bestScore){ best = c; bestScore = s; }
+  }
+  return best;
+}
+function roSuffixO(name){
+  const m = String(name).match(/^(.*?)(\.[A-Za-z0-9]+)?$/);
+  return (m[1] || name) + "_O" + (m[2] || "");
+}
+function roMime(file, name, isVideo){
+  if(file && file.type) return file.type;
+  if(isVideo) return videoMimeFor(name);
+  const e = (String(name).match(/\.([a-z0-9]+)$/i) || [])[1];
+  return ({jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png", webp:"image/webp", gif:"image/gif", heic:"image/heic", heif:"image/heif", tif:"image/tiff", tiff:"image/tiff"})[(e || "").toLowerCase()] || "application/octet-stream";
+}
+async function roTinyGray(blob, size){
+  let bmp;
+  try{ bmp = await createImageBitmap(blob, {imageOrientation: "from-image"}); }
+  catch(_){ bmp = await createImageBitmap(blob); }
+  const w = bmp.width, h = bmp.height;
+  const cv = document.createElement("canvas"); cv.width = cv.height = size;
+  const ctx = cv.getContext("2d", {willReadFrequently: true});
+  ctx.drawImage(bmp, 0, 0, size, size);
+  if(bmp.close) bmp.close();
+  const d = ctx.getImageData(0, 0, size, size).data, g = new Float32Array(size * size);
+  for(let i = 0; i < g.length; i++) g[i] = 0.299 * d[4*i] + 0.587 * d[4*i+1] + 0.114 * d[4*i+2];
+  cv.width = cv.height = 0;
+  return {w, h, g};
+}
+// L'original est-il plus « large » que la version actuelle (rognage) ou son contenu diffère-t-il (retouche, rotation) ?
+async function roCompareWithReference(origBlob, refBlob){
+  const a = await roTinyGray(origBlob, 48), b = await roTinyGray(refBlob, 48);
+  const ar1 = a.w / a.h, ar2 = b.w / b.h;
+  if(Math.abs(ar1 - ar2) / ar2 > RO_ASPECT_TOLERANCE) return {retouched: true, why: "rognée (proportions différentes de l'original)"};
+  let s = 0; for(let i = 0; i < a.g.length; i++) s += Math.abs(a.g[i] - b.g[i]);
+  const m = s / a.g.length;
+  if(m > RO_DIFF_THRESHOLD) return {retouched: true, why: `retouchée (contenu différent de l'original, écart ${m.toFixed(1)}/255)`};
+  return {retouched: false, why: ""};
+}
+async function roGetReference(p, tgt){
+  if(p.hasFullImage){ try{ const u = await getFullDataUrl(p); if(u) return dataURLtoBlob(u); }catch(_){} } // copie interne d'Imago
+  if(tgt.file) return tgt.file;                                                                          // fichier déjà dans la cible (local)
+  if(tgt.hit && tgt.hit.id){ try{ return await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${tgt.hit.id}?alt=media`)).blob(); }catch(_){} }
+  return null;
+}
+async function roRun(){
+  const rows = State.photos.filter(p=> !p.corbeille);
+  if(!rows.length){ toast("Aucun catalogue chargé : rien à traiter."); return; }
+  if(!RO.origin){ toast("Choisissez d'abord le répertoire d'origine."); return; }
+  const mode = roTargetMode(), dry = roEl("roDryRun").checked, exifOnO = roEl("roExifOnO").checked;
+  let folderId = "", folderLabel = "", driveIdx = null;
+  if(mode === "local"){
+    if(!RO.targetDir){ toast("Choisissez d'abord le dossier cible."); return; }
+    try{ if(await RO.targetDir.isSameEntry(RO.origin)){ toast("⚠️ Le répertoire cible est le répertoire d'origine : choisissez un autre dossier (les originaux ne doivent jamais être remplacés)."); return; } }catch(_){}
+    if(!dry && (await RO.targetDir.requestPermission({mode: "readwrite"})) !== "granted"){ toast("Écriture refusée dans le dossier cible."); return; }
+    folderLabel = RO.targetDir.name;
+  }else{
+    if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (menu « Connecter à Drive »)."); return; }
+    folderId = driveMediaFolderId() || await ensureImaginesFolder();
+    folderLabel = driveMediaFolderId() ? driveMediaFolderLabel() : "IMAGINES";
+  }
+  RO.running = true; RO.stop = false; RO.report = [];
+  roEl("roLog").textContent = ""; roEl("roLog").style.display = "none";
+  ["btnRoRun","btnRoPickOrigin","btnRoPickTarget","roDryRun","roExifOnO","btnRoClose"].forEach(id=> roEl(id).disabled = true);
+  document.querySelectorAll('input[name="roTarget"]').forEach(r=> r.disabled = true);
+  roEl("btnRoStop").classList.remove("hidden"); roEl("btnRoReport").classList.add("hidden");
+  const st = {restored: 0, withO: 0, already: 0, notFound: 0, failed: 0, noCompare: 0, dry};
+  const note = (p, result, detail)=>{ RO.report.push([p.sousDossier || "", p.fileName, result, detail || ""]); };
+  try{
+    roEl("roProgress").textContent = `Lecture du répertoire d'origine « ${RO.origin.name} »…`;
+    const originIdx = await roIndexOrigin(RO.origin, n=>{ roEl("roProgress").textContent = `Lecture du répertoire d'origine « ${RO.origin.name} »… ${n} fichier(s)`; });
+    if(mode === "drive"){
+      roEl("roProgress").textContent = `Lecture du dossier Drive « ${folderLabel} »…`;
+      driveMediaIndexPromise = null; driveMediaIndexFolder = "";
+      driveIdx = await getDriveMediaIndex(folderId);
+    }
+    const dirCache = new Map();
+    for(let i = 0; i < rows.length && !RO.stop; i++){
+      const p = rows[i], name = p.fileName || "";
+      roEl("roProgress").textContent = `${dry ? "Simulation" : "Récupération"} vers « ${folderLabel} »… ${i + 1}/${rows.length} — ${name}`;
+      try{
+        const list = originIdx.get(catalogLooseKey(name));
+        if(!list){ st.notFound++; note(p, "introuvable dans l'origine"); roLog(`❓ ${name} : introuvable dans le répertoire d'origine`); continue; }
+        const cand = roPickCandidate(list, p.sousDossier);
+        const orig = await cand.handle.getFile();
+        const isVideo = !!p.isVideo || VIDEO_NAME_RE.test(name);
+        // --- cible actuelle (fichier de même nom) ---
+        const tgt = {file: null, size: 0, hit: null, dir: null};
+        if(mode === "local"){
+          tgt.dir = await getExportTargetDir(RO.targetDir, exportSubdirParts(p, RO.targetDir.name), dirCache);
+          try{ tgt.file = await (await tgt.dir.getFileHandle(name)).getFile(); tgt.size = tgt.file.size; }catch(_){}
+        }else{
+          tgt.hit = driveIdx.get(catalogLooseKey(name)) || null; tgt.size = tgt.hit ? +tgt.hit.size || 0 : 0;
+        }
+        // --- retouchée / rognée ? ---
+        let retouched = false, why = "";
+        if(!isVideo){
+          if(p.pixelsEdited === true){ retouched = true; why = "modifiée dans Imago (recadrage, retouche ou rotation)"; }
+          else if(hasPendingRotation(p.rotation)){ retouched = true; why = "rotation enregistrée au catalogue"; }
+          else if(p.filterKey){ retouched = true; why = "filtre enregistré au catalogue"; }
+          else{
+            const ref = await roGetReference(p, tgt);
+            if(ref){
+              try{ const c = await roCompareWithReference(orig, ref); retouched = c.retouched; why = c.why; }
+              catch(e){ st.noCompare++; console.warn(`[Imago] Comparaison impossible pour "${name}" (format non décodable ?) :`, e); }
+            }else st.noCompare++;
+          }
+        }
+        // --- contenu à écrire ---
+        let blob = orig;
+        if(!retouched || exifOnO){
+          if(isVideo){
+            if(MP4_META_EXT_RE.test(name)){
+              try{ blob = (await writeMp4Metadata(orig, videoMetaEntries(p))) || orig; }
+              catch(e){ blob = orig; roLog(`⚠️ ${name} : métadonnées vidéo non écrites (${(e && e.message) || e}) — original copié tel quel`); }
+            }
+          }else blob = await losslessWithMetadata(orig, exportMetaFields(p));
+        }
+        const outName = retouched ? roSuffixO(name) : name;
+        // --- déjà fait ? (même taille que ce qui serait écrit) ---
+        let existing = null;
+        if(retouched){
+          if(mode === "local"){ try{ existing = await (await tgt.dir.getFileHandle(outName)).getFile(); }catch(_){} }
+          else existing = driveIdx.get(catalogLooseKey(outName)) || null;
+        }else existing = mode === "local" ? tgt.file : tgt.hit;
+        const existingSize = existing ? (existing.size !== undefined ? +existing.size : 0) : -1;
+        if(existing && existingSize === blob.size){ st.already++; note(p, "déjà à jour", outName); continue; }
+        if(retouched){ st.withO++; note(p, "retouchée : original ajouté en _O", `${outName} — ${why}`); roLog(`✂️ ${name} → ${outName} (${why})`); }
+        else{ st.restored++; note(p, "original restauré", outName); }
+        if(dry) continue;
+        // --- écriture ---
+        if(mode === "local") await writeFileToLocalDirectory(tgt.dir, outName, blob);
+        else{
+          const up = await driveResumableUpload(blob, {name: outName, parentId: folderId, mimeType: roMime(orig, outName, isVideo), existingId: existing && existing.id ? existing.id : undefined});
+          driveIdx.set(catalogLooseKey(outName), {id: up.id, name: outName, size: blob.size});
+        }
+        if(!retouched) p.poids = Math.round(blob.size / 1024); // la rubrique « poids » suit le fichier désormais présent dans la cible
+      }catch(e){
+        st.failed++; note(p, "échec", (e && e.message) || String(e));
+        roLog(`❌ ${name} : ${(e && e.message) || e}`);
+        console.warn(`[Imago] Récupération de l'original impossible pour "${name}" :`, e);
+      }
+      await delay(10);
+    }
+    if(!dry && st.restored){ autoBuildCsv(); renderGrid(); }
+  }catch(e){
+    roLog(`❌ ${(e && e.message) || e}`);
+    console.warn("[Imago] Récupération des originaux interrompue :", e);
+  }finally{
+    RO.running = false;
+    ["btnRoRun","btnRoPickOrigin","btnRoPickTarget","roDryRun","roExifOnO","btnRoClose"].forEach(id=> roEl(id).disabled = false);
+    document.querySelectorAll('input[name="roTarget"]').forEach(r=> r.disabled = false);
+    roEl("btnRoStop").classList.add("hidden"); roEl("btnRoReport").classList.remove("hidden");
+  }
+  roEl("roProgress").textContent = (RO.stop ? "⏹ Arrêté. " : "✅ Terminé. ") +
+    `${st.restored} original(aux) restauré(s)${dry ? " (simulation)" : ""}, ${st.withO} copie(s) « _O » ajoutée(s), ${st.already} déjà à jour, ${st.notFound} introuvable(s), ${st.failed} échec(s)` +
+    (st.noCompare ? `, ${st.noCompare} sans comparaison possible (considérée(s) non retouchée(s))` : "") + ".";
+  if(!dry && st.restored) roLog(`ℹ️ La rubrique « poids » du catalogue a été mise à jour : pensez à « Sauver les MàJ du catalogue ».`);
+  toast(roEl("roProgress").textContent, 12000);
+}
+roEl("btnRoRun").addEventListener("click", ()=>{ if(!RO.running) roRun(); });
+roEl("btnRoStop").addEventListener("click", ()=>{ RO.stop = true; roEl("roProgress").textContent = "Arrêt en cours…"; });
+roEl("btnRoReport").addEventListener("click", ()=>{
+  const head = ["sousDossier","fileName","resultat","detail"].join(";");
+  downloadCsvFile([head].concat(RO.report.map(r=> r.map(csvEscape).join(";"))).join("\n"), "Rapport-originaux.csv");
 });
 
 async function mergeCsvIntoCatalog(text){
