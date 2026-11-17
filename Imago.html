@@ -11241,9 +11241,9 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     if(cameraModel) zeroth[piexif.ImageIFD.Model] = asciiTag(cameraModel);
     // "Titre" (Windows) provient d'ImageDescription — et non de XPTitle, qui
     // est ignoré par l'Explorateur Windows dès qu'ImageDescription existe.
-    // Repli : sans personnage, le titre de la photo (rubrique « titre ») alimente « Titre » plutôt que de le laisser vide.
-    const windowsTitle = personnage || motsCles;
-    if(windowsTitle) zeroth[piexif.ImageIFD.ImageDescription] = asciiTag(windowsTitle);
+    // « Titre » = personnage UNIQUEMENT. Personnage vide au catalogue → « Titre » reste vide (pas de repli sur la rubrique « titre »,
+    // qui alimente seulement « Mots clés »), et un « Titre » hérité du fichier d'origine est retiré (voir plus bas).
+    if(personnage) zeroth[piexif.ImageIFD.ImageDescription] = asciiTag(personnage);
     // "Droits d'auteur"/Copyright (Windows) — tag EXIF standard, ASCII simple.
     if(auteur){
       zeroth[piexif.ImageIFD.Copyright] = asciiTag(auteur);   // « Droits d'auteur »
@@ -11288,6 +11288,7 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     try{ exifObj = piexif.load(jpegDataUrl); }
     catch(e){ exifObj = {"0th":{}, "Exif":{}, "GPS":{}, "1st":{}, "thumbnail":null}; }
     exifObj["0th"] = Object.assign({}, exifObj["0th"], zeroth);
+    if(!personnage) delete exifObj["0th"][piexif.ImageIFD.ImageDescription]; // personnage vide au catalogue : « Titre » laissé vide (pas de valeur périmée du fichier)
     // Plus ni favori, ni Art, ni Concert : une notation de 5 ou 3 étoiles (celles qu'Imago attribue) devenue
     // fausse est retirée ; toute autre notation (1, 2, 4 étoiles, posée à la main) est laissée intacte.
     if(!rating){
@@ -19944,7 +19945,7 @@ async function writeMp4Metadata(file, entries){
 function videoMetaEntries(p){
   const e = [];
   const add = (t, v)=>{ v = (v == null ? "" : String(v)).trim(); if(v) e.push([t, v]); };
-  add("\u00A9nam", p.personnage || p.titre);
+  add("\u00A9nam", p.personnage); // personnage vide : titre vidéo laissé vide (pas de repli sur « titre »)
   const q = p.map ? (mapEmbedQueryFromMapField(p.map) || p.map) : "";
   add("\u00A9cmt", [p.lieu, q].filter(Boolean).join(" \u2014 "));
   add("\u00A9ART", p.auteur);
