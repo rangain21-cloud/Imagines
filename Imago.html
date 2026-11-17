@@ -9316,7 +9316,7 @@ async function importOneFile(file, csvRowByFileName, stats){
                    : (!isVideo) ? await readFileAsDataURLWithHeicSupport(file, stats)
                    : null; // grosse vidéo : jamais lue en base64 à l'import
     let dims, exif = null, videoMeta = null, finalDataUrl = dataUrl, encodedSize = file.size;
-    let resizedThumb = null;
+    let resizedThumb = null, resizedLossless = false;
     if(isVideo && deferVideo){
       // Vignette + métadonnées seulement, via une URL objet temporaire
       // (aucune conversion en base64, donc aucun coût mémoire proportionnel
@@ -9342,6 +9342,7 @@ async function importOneFile(file, csvRowByFileName, stats){
       const resized = await loadAndMaybeDownscaleImage(dataUrl);
       finalDataUrl = resized.dataUrl;
       resizedThumb = resized.thumbDataUrl || null;
+      resizedLossless = !!resized.lossless;
       dims = {width: resized.width, height: resized.height};
       encodedSize = Math.round(finalDataUrl.length * 0.75); // taille réellement conservée (proche de l'originale si aucun redimensionnement n'a eu lieu)
     }
@@ -9433,6 +9434,11 @@ async function importOneFile(file, csvRowByFileName, stats){
     // passe par un mécanisme entièrement différent, loadPendingVideoFile().
     rec.hasFullImage = !deferVideo && !!finalDataUrl;
     if(stripRoot){ rec.noSubfolderOK = !sousDossier; State.dirty = true; } // nouveauté créée dans le catalogue : à enregistrer au prochain « Sauver »
+    if(!isVideo){
+      ORIGINAL_FILES.set(rec.id, file);      // fichier d'origine (simple référence, rien n'est copié en mémoire) : source de toute sauvegarde SANS PERTE
+      rec.pixelsEdited = false;              // pixels = ceux du fichier d'origine ; passe à true au premier recadrage/retouche/rotation gravée
+      rec.storedLossless = resizedLossless;  // la copie conservée dans Imago EST le fichier d'origine (octets identiques)
+    }
     let savedToIdb = false;
     try{
       await idbPut("photos", rec); // enregistrement COMPLET (avec dataUrl) — seule copie durable de l'image
@@ -10483,6 +10489,8 @@ let IMPORT_MAX_DIM = IMAGO_LOW_MEMORY ? 1600 : 2400; // modifiable via « Qualit
    d'épuiser la mémoire disponible sur un import de plusieurs dizaines de
    photos (voir l'avertissement Android "Mémoire insuffisante" observé). */
 let IMPORT_JPEG_QUALITY = 0.86;
+/* Qualité JPEG des modifications EXPLICITES de pixels (recadrage, rotation, retouche) : inévitablement ré-encodées, donc au maximum (≈ sans perte visible). */
+const EDIT_JPEG_QUALITY = 0.97;
 /* Décode une photo pour mesurer ses dimensions et, si nécessaire, la
    redimensionne via <canvas> pour ramener son plus grand côté à
    IMPORT_MAX_DIM (ré-encodée en JPEG). Ne touche PAS aux photos déjà sous
@@ -10501,6 +10509,16 @@ function canvasToJpegDataUrl(canvas, quality){
       fr.readAsDataURL(blob);
     }, "image/jpeg", quality);
   });
+}
+/* Orientation EXIF « normale » (absente ou = 1) ? Seule lecture de l'en-tête (≈ 100 Ko) : inutile de décoder tout le fichier. Une photo dont les
+   pixels bruts ne sont pas à l'endroit (portrait de smartphone, étiquette 6/8…) est ré-encodée à l'import comme avant (pixels redressés). */
+function jpegOrientationIsNormal(dataUrl){
+  try{
+    const comma = dataUrl.indexOf(",");
+    const bin = atob(dataUrl.slice(comma + 1, comma + 1 + 140000)); // 140 000 caractères base64 (multiple de 4)
+    const o = (piexif.load(bin)["0th"] || {})[piexif.ImageIFD.Orientation];
+    return o === undefined || o === 1;
+  }catch(e){ return false; }
 }
 function loadAndMaybeDownscaleImage(dataUrl){
   return new Promise((resolve)=>{
@@ -10529,7 +10547,12 @@ function loadAndMaybeDownscaleImage(dataUrl){
         // fil principal, l'interface (clics sur les miniatures pendant
         // l'import, défilement) ne fige plus ~60 ms par photo comme avec
         // toDataURL (synchrone).
-        const out = await canvasToJpegDataUrl(canvas, IMPORT_JPEG_QUALITY);
+        // SANS PERTE : photo déjà sous la limite, vrai JPEG, pixels à l'endroit → on garde les octets ORIGINAUX tels quels (aucun ré-encodage,
+        // EXIF d'origine compris). Seules les photos à réduire (> IMPORT_MAX_DIM) ou à redresser passent par le canvas — et leur fichier d'origine
+        // reste utilisé pour toute sauvegarde (voir getLosslessImageSource).
+        let out, keptOriginal = false;
+        if(scale === 1 && /^data:image\/jpe?g/i.test(dataUrl) && looksLikeGenuineJpeg(dataUrl) && jpegOrientationIsNormal(dataUrl)){ out = dataUrl; keptOriginal = true; }
+        else out = await canvasToJpegDataUrl(canvas, IMPORT_JPEG_QUALITY);
         // Miniature dérivée du MÊME canvas déjà redimensionné : évite de
         // redécoder l'image de 2400 px depuis son dataUrl (makeThumbnail),
         // soit ~17 ms de moins par photo (mesuré) sur 30 000 photos.
@@ -10548,7 +10571,7 @@ function loadAndMaybeDownscaleImage(dataUrl){
         // repérer — utile sur un appareil à mémoire limitée où plusieurs
         // photos s'enchaînent (voir IMPORT_MAX_DIM ci-dessus).
         img.src = ""; canvas.width = 0; canvas.height = 0;
-        resolve({dataUrl: out, width: nw, height: nh, thumbDataUrl});
+        resolve({dataUrl: out, width: nw, height: nh, thumbDataUrl, lossless: keptOriginal});
       }catch(e){
         // Échec du redimensionnement (image corrompue pour le canvas,
         // restriction navigateur…) : on garde l'original plutôt que de
@@ -11085,7 +11108,7 @@ function reencodeAsGenuineJpeg(dataUrl){
         const canvas = document.createElement("canvas");
         canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
         canvas.getContext("2d").drawImage(img, 0, 0);
-        resolve(canvas.toDataURL("image/jpeg", 0.92));
+        resolve(canvas.toDataURL("image/jpeg", EDIT_JPEG_QUALITY));
       }catch(e){ resolve(dataUrl); }
     };
     img.onerror = ()=> resolve(dataUrl);
@@ -11128,7 +11151,7 @@ function asciiTag(str){
 function exifFail(reason){ lastExifWriteStatus = {ok: false, reason}; }
 /* motsCles = rubrique « titre » (« Mots clés » Windows). favori/art/concert pilotent la « Notation »
    Windows : favori → 5 étoiles ; sinon Art et/ou Concert → 3 étoiles ; sinon aucune notation écrite. */
-async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage, motsCles, dateAchat, favori, art, concert}){
+async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapField, auteur, personnage, motsCles, dateAchat, favori, art, concert, preserveOrientation}){
   lastExifWriteStatus = {ok: true, reason: ""};
   if(!dataUrl) return dataUrl;
   // Étiquette « image/jpeg » MAIS aussi « image/jpg », « application/octet-stream » ou vide (fichiers venus de Drive/USB sans type MIME) :
@@ -11180,7 +11203,8 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
     // sur des pixels déjà correctement orientés — d'où l'impression que la
     // rotation "ne se fixe jamais", même en repassant par la modale
     // Modifier.
-    zeroth[piexif.ImageIFD.Orientation] = 1;
+    // preserveOrientation : écriture dans le fichier D'ORIGINE (pixels bruts, pas redressés) — son étiquette d'orientation doit rester intacte.
+    if(!preserveOrientation) zeroth[piexif.ImageIFD.Orientation] = 1;
     if(cameraModel) zeroth[piexif.ImageIFD.Model] = asciiTag(cameraModel);
     // "Titre" (Windows) provient d'ImageDescription — et non de XPTitle, qui
     // est ignoré par l'Explorateur Windows dès qu'ImageDescription existe.
@@ -11251,13 +11275,13 @@ async function writeMetadataIntoJpegDataUrl(dataUrl, {cameraModel, lieu, mapFiel
        ENTIER et le fichier partait sans aucune donnée. On réessaie donc par paliers, en sacrifiant d'abord le moins important :
        1) tout conservé ; 2) sans miniature intégrée ; 3) seulement les balises courantes d'origine + les nôtres ; 4) seulement les nôtres. */
     const keep = (obj, ids)=>{ const o = {}; for(const k of ids){ if(obj && obj[k] !== undefined) o[k] = obj[k]; } return o; };
-    const SAFE_0TH = [271, 272, 305, 306, 315, 33432];                                              // Make, Model, Software, DateTime, Artist, Copyright
+    const SAFE_0TH = [271, 272, 274, 305, 306, 315, 33432];                                              // Make, Model, Software, DateTime, Artist, Copyright
     const SAFE_EXIF = [33434, 33437, 34855, 36867, 36868, 37377, 37378, 37380, 37383, 37385, 37386, 41986, 41987, 42036]; // exposition, ISO, dates, focale, objectif…
     const attempts = [
       ()=> exifObj,
       ()=> Object.assign({}, exifObj, {"1st": {}, "thumbnail": null}),
       ()=> ({"0th": Object.assign(keep(exifObj["0th"], SAFE_0TH), zeroth), "Exif": Object.assign(keep(exifObj["Exif"], SAFE_EXIF), oursExif), "GPS": Object.assign(keep(exifObj["GPS"], [1,2,3,4,5,6]), gps), "1st": {}, "thumbnail": null}),
-      ()=> ({"0th": zeroth, "Exif": oursExif, "GPS": gps, "1st": {}, "thumbnail": null})
+      ()=> ({"0th": Object.assign(preserveOrientation ? keep(exifObj["0th"], [274]) : {}, zeroth), "Exif": oursExif, "GPS": gps, "1st": {}, "thumbnail": null})
     ];
     let exifBytes = null, lastErr = null, level = -1;
     for(let i = 0; i < attempts.length && exifBytes === null; i++){
@@ -11331,7 +11355,7 @@ async function readFileAsDataURLWithHeicSupport(file, stats){
       cv.width = bmp.width; cv.height = bmp.height;
       cv.getContext("2d").drawImage(bmp, 0, 0);
       if(bmp.close) bmp.close();
-      const out = cv.toDataURL("image/jpeg", 0.92);
+      const out = cv.toDataURL("image/jpeg", EDIT_JPEG_QUALITY);
       cv.width = 0; cv.height = 0;
       return out;
     }catch(_nativeErr){ /* pas décodable non plus nativement : on retombe sur l'échec habituel ci-dessous */ }
@@ -13417,7 +13441,11 @@ async function ac3EnsureWorker(){
 async function ac3Convert(blob, onProgress){
   await ac3EnsureWorker();
   ac3ProgressCb = onProgress;
-  const args = ["-i", "/in/in.mp4", "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-movflags", "+faststart", "/out.mp4"];
+  // Image copiée telle quelle (aucun ré-encodage). Son : une piste AAC (lue par tous les navigateurs, par défaut) AJOUTÉE à la piste AC3 d'origine,
+  // elle aussi COPIÉE à l'identique (rien n'est perdu : le fichier enregistré garde le Dolby Digital intact pour les lecteurs qui le lisent).
+  // AAC à 384 kb/s en conservant les canaux d'origine (5.1 compris) : plus de mixage forcé en stéréo.
+  const args = ["-i", "/in/in.mp4", "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-c:v", "copy", "-c:a:0", "aac", "-b:a:0", "384k", "-c:a:1", "copy",
+    "-disposition:a:0", "default", "-disposition:a:1", "0", "-movflags", "+faststart", "/out.mp4"];
   const out = await ac3Call("convert", { blob, args });
   return new Blob([out], {type: "video/mp4"});
 }
@@ -15118,7 +15146,7 @@ document.getElementById("edMirrorBtn").addEventListener("click", async ()=>{
     const ctx = canvas.getContext("2d");
     ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
     ctx.drawImage(img, 0, 0);
-    const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    const newDataUrl = canvas.toDataURL("image/jpeg", EDIT_JPEG_QUALITY);
     pushEditHistory();
     editDraft.dataUrl = newDataUrl;
     editDraft.width = canvas.width; editDraft.height = canvas.height;
@@ -15349,7 +15377,7 @@ document.getElementById("cropApplyBtn").addEventListener("click", ()=>{
   canvas.height = Math.round(sh);
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  const newDataUrl = canvas.toDataURL("image/jpeg", EDIT_JPEG_QUALITY);
 
   pushEditHistory();
   editDraft.dataUrl = newDataUrl;
@@ -15527,7 +15555,7 @@ function applyRedEyeFix(cx, cy){
     return; // rien n'est modifié : pas de tache parasite ni de recompression inutile
   }
   ctx.putImageData(imgData, x0, y0);
-  const newDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  const newDataUrl = canvas.toDataURL("image/jpeg", EDIT_JPEG_QUALITY);
   pushEditHistory();
   editDraft.dataUrl = newDataUrl;
   editDraft.width = canvas.width;
@@ -15755,7 +15783,7 @@ window.addEventListener("mouseup", ()=>{
   cloneDragging = false;
   // Validation du trait : un seul ré-encodage en dataURL, ici, pour tout le
   // trait qui vient de se terminer (voir note en tête de section).
-  const newDataUrl = cloneStrokeCanvas.toDataURL("image/jpeg", 0.92);
+  const newDataUrl = cloneStrokeCanvas.toDataURL("image/jpeg", EDIT_JPEG_QUALITY);
   pushEditHistory(); // un trait de Baguette magique = une étape de l'historique (« Défaire » l'annule seul)
   editDraft.dataUrl = newDataUrl;
   editDraft.width = cloneStrokeCanvas.width;
@@ -16105,7 +16133,7 @@ function bakeRotationIntoDataUrl(dataUrl, deg, cropInside){
         ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cw, ch);
         ctx.translate(cw/2, ch/2); ctx.rotate(rad);
         ctx.drawImage(img, -W/2, -H/2);
-        resolve({dataUrl: c.toDataURL("image/jpeg", 0.92), width: cw, height: ch});
+        resolve({dataUrl: c.toDataURL("image/jpeg", EDIT_JPEG_QUALITY), width: cw, height: ch});
       }catch(e){ reject(e); }
     };
     img.src = dataUrl;
@@ -16132,6 +16160,7 @@ async function getPhotoDataUrlForExport(p){
       cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert
     });
     p.width = r.width; p.height = r.height; p.rotation = 0;
+    p.pixelsEdited = true; // rotation gravée dans les pixels
     p.sizeBytes = Math.round(full.length * 0.75); p.poids = Math.round(p.sizeBytes / 1024);
     p.hasFullImage = true;
     p.thumbDataUrl = await makeThumbnail(full);
@@ -16194,6 +16223,7 @@ async function applyEditFormToSelectedPhoto(){
   // complète en permanence (voir le commentaire de fin de fonction).
   let fullDataUrl = editDraft.dataUrl; // image de travail complète (chargée à l'ouverture, éventuellement recadrée/pivotée depuis)
   if(editDraft.cropped && editDraft.dataUrl){
+    p.pixelsEdited = true; // recadrage/retouche : la copie d'Imago n'est plus le fichier d'origine
     p.width = editDraft.width;
     p.height = editDraft.height;
     // ré-estime le poids depuis la nouvelle image (taille du base64 ≈ 3/4 de sa longueur)
@@ -16211,6 +16241,7 @@ async function applyEditFormToSelectedPhoto(){
       p.poids = Math.round((fullDataUrl.length * 0.75) / 1024);
       p.sizeBytes = Math.round(fullDataUrl.length * 0.75);
       p.rotation = 0;
+      p.pixelsEdited = true; // rotation gravée dans les pixels
     }catch(e){
       console.warn("[Imago] Rotation non gravée dans les pixels :", e);
       toast("⚠️ Rotation non gravée dans le fichier (conservée à l'affichage seulement).");
@@ -16269,6 +16300,10 @@ document.getElementById("btnSaveEdit").addEventListener("click", async ()=>{
   autoBuildCsv();
 });
 document.getElementById("btnSaveEditDownload").addEventListener("click", async ()=>{
+  // Photo dont les pixels ne sont PAS modifiés dans cette session d'édition (ni recadrage/retouche, ni rotation, ni filtre) : le fichier
+  // téléchargé est le FICHIER D'ORIGINE, octet pour octet, avec seulement ses métadonnées mises à jour (voir getLosslessImageSource).
+  const pre = getSelected();
+  const pristine = !!pre && isLosslessCandidate(pre) && !editDraft.cropped && !editDraft.filterCss && !hasPendingRotation(totalEditRotation());
   const result = await applyEditFormToSelectedPhoto(); if(!result) return;
   const {p, fullDataUrl} = result;
   await saveEditedPhoto(p, fullDataUrl);
@@ -16277,20 +16312,28 @@ document.getElementById("btnSaveEditDownload").addEventListener("click", async (
   closeModal("modalEdit");
   autoBuildCsv();
   let finalUrl = fullDataUrl;
+  let losslessBlob = null;
+  if(pristine){
+    try{
+      const src = await getLosslessImageSource(p, null);
+      if(src) losslessBlob = await losslessWithMetadata(src.file, exportMetaFields(p));
+      else if(!p.storedLossless) toast("ℹ️ Fichier d'origine introuvable : la copie interne d'Imago (de qualité réduite) est téléchargée. Réimportez le dossier d'origine pour obtenir le fichier sans perte.", 12000);
+    }catch(e){ console.warn("Téléchargement sans perte impossible, repli sur la copie d'Imago :", e); }
+  }
   try{
-    if((p.rotation||0) % 360 !== 0 || (p.filterCss && p.filterCss !== "none")){
+    if(!losslessBlob && ((p.rotation||0) % 360 !== 0 || (p.filterCss && p.filterCss !== "none"))){
       finalUrl = await renderFinalImageDataUrl(p, fullDataUrl);
     }
   }catch(e){ console.warn("Aplatissement impossible, téléchargement de l'original :", e); }
   const a = document.createElement("a");
   // Téléchargement via un Blob plutôt qu'un très long lien « data: » (Chrome peut refuser ou tronquer les gros liens data: ; les octets, EXIF compris, sont identiques).
   let href = finalUrl, blobHref = "";
-  try{ blobHref = URL.createObjectURL(await (await fetch(finalUrl)).blob()); href = blobHref; }catch(e){ /* repli : lien data: */ }
+  try{ blobHref = URL.createObjectURL(losslessBlob || await (await fetch(finalUrl)).blob()); href = blobHref; }catch(e){ /* repli : lien data: */ }
   a.href = href; a.download = p.fileName || "image.jpg";
   document.body.appendChild(a); a.click(); a.remove();
   if(blobHref) setTimeout(()=> URL.revokeObjectURL(blobHref), 60000);
-  toast("Modifications enregistrées et image téléchargée localement (rotation/filtre/recadrage inclus).");
-  warnIfExifNotWritten(p);
+  toast(losslessBlob ? "Modifications enregistrées. Fichier d'origine téléchargé SANS aucune perte de qualité (seules les métadonnées ont changé)." : "Modifications enregistrées et image téléchargée localement (rotation/filtre/recadrage inclus).");
+  if(!losslessBlob) warnIfExifNotWritten(p);
 });
 
 document.getElementById("btnInfo").addEventListener("click", ()=>{
@@ -17479,7 +17522,7 @@ async function renderFinalImageDataUrl(p, sourceDataUrl){
       ctx.translate(w/2, h/2);
       ctx.rotate(rad);
       ctx.drawImage(img, -img.naturalWidth/2, -img.naturalHeight/2);
-      let out = canvas.toDataURL("image/jpeg", 0.92);
+      let out = canvas.toDataURL("image/jpeg", EDIT_JPEG_QUALITY);
       // canvas.toDataURL() efface systématiquement tout l'EXIF de la photo
       // d'origine (aucune métadonnée ne "survit" à un passage par un canvas)
       // — sans cette réinjection, une photo tournée/filtrée perdait Caméra/
@@ -18492,6 +18535,50 @@ async function getExportTargetDir(rootHandle, parts, cache){
    La valeur « voulue » est calculée avec la MÊME fonction que celle qui écrit (writeMetadataIntoJpegDataUrl) sur un JPEG minuscule : la comparaison
    ne peut donc pas diverger de l'écriture réelle (mêmes remplacements de caractères, mêmes notations 5/3 étoiles…). Une balise que le catalogue
    ne renseigne pas (champ vide) n'est jamais comparée : on n'écrit pas de valeur vide, donc vider un champ n'est pas une « évolution » à propager. */
+/* -----------------------------------------------------------------
+   ENREGISTREMENT SANS PERTE de qualité
+   -----------------------------------------------------------------
+   Imago garde pour l'affichage une copie interne de chaque photo (réduite à IMPORT_MAX_DIM et recompressée quand le fichier est plus grand). Écrire
+   CETTE copie dans un fichier dégraderait la photo. Règles à l'enregistrement d'une photo dont les pixels n'ont pas été modifiés dans Imago :
+   - on repart du FICHIER D'ORIGINE (celui du dossier de destination s'il s'y trouve déjà ; sinon celui de la session d'import ; sinon celui d'un
+     dossier mémorisé) et on n'y change QUE les métadonnées : piexif ne remplace que le segment EXIF, les octets de l'image (le flux JPEG compressé)
+     restent strictement identiques — aucune recompression, aucune perte ;
+   - orientation EXIF d'origine conservée (les pixels bruts ne sont pas redressés) ;
+   - format non JPEG (PNG, WebP…) : octets d'origine recopiés tels quels ;
+   - fichier d'origine introuvable : on n'écrit PAS la copie réduite à la place (elle dégraderait la photo) — sauf si cette copie EST le fichier d'origine
+     (rec.storedLossless) ; le nombre de photos concernées est annoncé.
+   Une photo dont les pixels ont été modifiés dans Imago (recadrage, retouche, rotation gravée) est une VERSION MODIFIÉE voulue : elle est écrite depuis
+   la copie modifiée, ré-encodée à la qualité maximale (EDIT_JPEG_QUALITY). Les vidéos ne sont jamais ré-encodées (copie directe / réécriture des seules
+   métadonnées du conteneur). */
+const ORIGINAL_FILES = new Map(); // id de la photo -> File d'origine (session d'import en cours)
+function fileToDataUrl(blob){
+  return new Promise((resolve, reject)=>{ const fr = new FileReader(); fr.onload = ()=> resolve(fr.result); fr.onerror = ()=> reject(fr.error); fr.readAsDataURL(blob); });
+}
+async function isJpegBlob(blob){ const u = new Uint8Array(await blob.slice(0, 2).arrayBuffer()); return u[0] === 0xFF && u[1] === 0xD8; }
+function isLosslessCandidate(p){ return !p.isVideo && p.pixelsEdited === false && !hasPendingRotation(p.rotation); }
+// Trouve les octets d'origine d'une photo : {file, origin} ou null. destDir = dossier de destination (son fichier de même nom est prioritaire).
+async function getLosslessImageSource(p, destDir){
+  const name = p.fileName;
+  if(destDir){ try{ return {file: await (await destDir.getFileHandle(name)).getFile(), origin: "destination"}; }catch(_){} }
+  const f = ORIGINAL_FILES.get(p.id);
+  if(f){ try{ await f.slice(0, 1).arrayBuffer(); return {file: f, origin: "session"}; }catch(_){ ORIGINAL_FILES.delete(p.id); } } // fichier déplacé/supprimé depuis
+  try{
+    for(const h of await vdirLoadAll()){
+      if(!(await vdirGranted(h, false))) continue; // jamais de demande d'autorisation ici (pas de clic en cours)
+      const file = await vdirFind(h, {sousDossier: p.sousDossier, fileName: name, videoSizeBytes: 0});
+      if(file) return {file, origin: "dossier mémorisé"};
+    }
+  }catch(_){}
+  if(p.storedLossless){ try{ const url = await getFullDataUrl(p); if(url) return {file: dataURLtoBlob(url), origin: "copie interne identique"}; }catch(_){} }
+  return null;
+}
+// Métadonnées du catalogue écrites dans les octets d'origine (segment EXIF seul). Retourne un Blob ; le flux JPEG n'est jamais retouché.
+async function losslessWithMetadata(file, fields){
+  if(!(await isJpegBlob(file))) return file; // PNG, WebP… : octets d'origine inchangés
+  const url = await fileToDataUrl(file);
+  const out = await writeMetadataIntoJpegDataUrl(url, Object.assign({}, fields, {preserveOrientation: true}));
+  return out === url ? file : dataURLtoBlob(out);
+}
 const EXPORT_TINY_JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwAooooA/9k=";
 function exportMetaFields(p){
   return {cameraModel: p.optique, lieu: p.lieu, mapField: p.map, auteur: p.auteur, personnage: p.personnage, motsCles: p.titre, dateAchat: p.dateAchat, favori: p.favori, art: p.art, concert: p.concert};
@@ -18563,36 +18650,51 @@ async function exportAllPhotosAsZip(targets, btn){
     return;
   }
   const zip = new JSZip();
-  let failed = 0, written = 0, unchanged = 0;
+  let failed = 0, written = 0, unchanged = 0, noOriginal = 0;
   for(let i=0;i<targets.length;i++){
     const p = targets[i];
     // Chargée à la demande (une seule photo complète en mémoire à la fois —
     // voir getFullDataUrl) plutôt que de supposer p.dataUrl déjà disponible,
     // qui n'est plus le cas depuis le chantier "miniatures en mémoire".
     const hadRotation = hasPendingRotation(p.rotation); // pixels modifiés par l'export : à écrire quoi qu'il arrive
-    const full = await getPhotoDataUrlForExport(p);
-    if(!full){ failed++; console.warn(`[Imago] Export .zip : image introuvable pour "${p.fileName}".`); }
-    else{
-      try{
-        let out = full, skip = false;
-        if(isJpegDataUrl(full)){
-          const fields = exportMetaFields(p);
-          if(!hadRotation){
-            const have = exifSnapshotOfBinary(full); // métadonnées déjà portées par l'image conservée dans Imago
-            if(have && !snapshotNeedsUpdate(await desiredExifSnapshot(fields), have)) skip = true;
-          }
-          if(!skip) out = await writeMetadataIntoJpegDataUrl(full, fields);
+    const zipPath = exportSubdirParts(p, "").concat(p.fileName || `photo_${i+1}.jpg`).join("/"); // arborescence d'origine conservée dans le .zip
+    try{
+      if(isLosslessCandidate(p)){
+        // ---- CHEMIN SANS PERTE : octets d'origine, seules les métadonnées changent ----
+        const src = await getLosslessImageSource(p, null);
+        if(!src) noOriginal++;
+        else if(!(await isJpegBlob(src.file))){ zip.file(zipPath, src.file); written++; } // PNG, WebP… : tels quels
+        else{
+          const have = exifSnapshotOfBinary(await blobHeadToBinaryString(src.file, 262144));
+          if(have && !snapshotNeedsUpdate(await desiredExifSnapshot(exportMetaFields(p)), have)) unchanged++;
+          else{ zip.file(zipPath, await losslessWithMetadata(src.file, exportMetaFields(p))); written++; }
         }
-        if(skip) unchanged++;
-        else{ zip.file(exportSubdirParts(p, "").concat(p.fileName || `photo_${i+1}.jpg`).join("/"), dataURLtoBlob(out)); written++; } // arborescence d'origine conservée dans le .zip
-      }catch(e){ failed++; console.warn(`[Imago] Export .zip impossible pour "${p.fileName}" :`, e); }
-    }
+      }else{
+        // ---- Version MODIFIÉE dans Imago (recadrage, retouche, rotation) ou fiche ancienne : copie modifiée, qualité maximale ----
+        const full = await getPhotoDataUrlForExport(p);
+        if(!full){ failed++; console.warn(`[Imago] Export .zip : image introuvable pour "${p.fileName}".`); }
+        else{
+          let out = full, skip = false;
+          if(isJpegDataUrl(full)){
+            const fields = exportMetaFields(p);
+            if(!hadRotation){
+              const have = exifSnapshotOfBinary(full); // métadonnées déjà portées par l'image conservée dans Imago
+              if(have && !snapshotNeedsUpdate(await desiredExifSnapshot(fields), have)) skip = true;
+            }
+            if(!skip) out = await writeMetadataIntoJpegDataUrl(full, fields);
+          }
+          if(skip) unchanged++;
+          else{ zip.file(zipPath, dataURLtoBlob(out)); written++; }
+        }
+      }
+    }catch(e){ failed++; console.warn(`[Imago] Export .zip impossible pour "${p.fileName}" :`, e); }
     btn.textContent = `📦 Préparation du .zip… (${i+1}/${targets.length})`;
     if(i % 20 === 0) await delay(10); // laisse l'interface respirer sur un gros catalogue
   }
   finalizeExportBake();
   if(written === 0){
-    toast(unchanged ? `ℹ️ Aucune métadonnée n'a évolué : aucun fichier sauvegardé (${unchanged} inchangé(s)).` + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "") : "⚠️ Aucun fichier à sauvegarder." + (failed ? ` ${failed} échec(s) — voir la console.` : ""), 9000);
+    const tail = (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "") + (noOriginal ? ` ⚠️ ${noOriginal} photo(s) NON écrites : fichier d'origine introuvable (la copie interne, de qualité réduite, n'est volontairement pas utilisée) — réimportez leur dossier d'origine.` : "");
+    toast((unchanged ? `ℹ️ Aucune métadonnée n'a évolué : aucun fichier sauvegardé (${unchanged} inchangé(s)).` : "⚠️ Aucun fichier à sauvegarder.") + tail, 12000);
     return;
   }
   btn.textContent = "📦 Compression…";
@@ -18602,7 +18704,7 @@ async function exportAllPhotosAsZip(targets, btn){
   a.download = "Imago-export.zip";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=> URL.revokeObjectURL(a.href), 30000);
-  toast(`✅ ${written} photo(s) exportée(s) dans « Imago-export.zip »` + (unchanged ? `, ${unchanged} inchangée(s) non sauvegardée(s)` : "") + "." + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 9000);
+  toast(`✅ ${written} photo(s) exportée(s) dans « Imago-export.zip » sans aucune perte de qualité` + (unchanged ? `, ${unchanged} inchangée(s) non sauvegardée(s)` : "") + "." + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "") + (noOriginal ? ` ⚠️ ${noOriginal} photo(s) NON écrites : fichier d'origine introuvable (copie interne de qualité réduite non utilisée) — réimportez leur dossier d'origine.` : ""), 14000);
 }
 document.getElementById("btnExportAllPhotos").addEventListener("click", async ()=>{
   const targets = State.photos.filter(p=> !p.isVideo && p.hasFullImage);
@@ -18629,29 +18731,46 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
       return;
     }
     btn.disabled = true;
-    let done = 0, failed = 0, written = 0, unchanged = 0;
+    let done = 0, failed = 0, written = 0, unchanged = 0, noOriginal = 0;
     const dirCache = new Map();
     for(const p of targets){
       try{
         const hadRotation = hasPendingRotation(p.rotation); // pixels modifiés par l'export : à écrire quoi qu'il arrive
-        const full = await getPhotoDataUrlForExport(p);
-        if(!full) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
         const targetDir = await getExportTargetDir(dirHandle, exportSubdirParts(p, dirHandle.name), dirCache); // sous-dossiers d'origine reproduits (avant : tout à la racine)
         const name = p.fileName || `photo_${done+1}.jpg`;
-        const jpeg = isJpegDataUrl(full);
-        let skip = false;
-        if(!hadRotation){
-          const dest = await readDestExifSnapshot(targetDir, name); // le fichier est-il déjà là, et que contient-il ?
-          if(dest.exists){
-            if(!jpeg) skip = true; // aucune métadonnée écrivable dans ce format : rien n'a pu évoluer
-            else if(dest.snap) skip = !snapshotNeedsUpdate(await desiredExifSnapshot(exportMetaFields(p)), dest.snap);
+        if(isLosslessCandidate(p)){
+          // ---- CHEMIN SANS PERTE : on repart des octets d'origine, seules les métadonnées changent ----
+          const dest = await readDestExifSnapshot(targetDir, name);
+          const src = await getLosslessImageSource(Object.assign({}, p, {fileName: name}), targetDir);
+          if(!src){ noOriginal++; }
+          else if(!(await isJpegBlob(src.file))){
+            if(dest.exists) unchanged++; // aucune métadonnée écrivable dans ce format : rien n'a pu évoluer
+            else{ await writeFileToLocalDirectory(targetDir, name, src.file); written++; }
+          }else if(dest.exists && dest.snap && !snapshotNeedsUpdate(await desiredExifSnapshot(exportMetaFields(p)), dest.snap)){
+            unchanged++;
+          }else{
+            await writeFileToLocalDirectory(targetDir, name, await losslessWithMetadata(src.file, exportMetaFields(p)));
+            written++;
           }
-        }
-        if(skip) unchanged++;
-        else{
-          const out = jpeg ? await writeMetadataIntoJpegDataUrl(full, exportMetaFields(p)) : full; // métadonnées du catalogue à jour dans le fichier écrit
-          await writeFileToLocalDirectory(targetDir, name, dataURLtoBlob(out));
-          written++;
+        }else{
+          // ---- Version MODIFIÉE dans Imago (recadrage, retouche, rotation) ou fiche ancienne : écrite depuis la copie modifiée ----
+          const full = await getPhotoDataUrlForExport(p);
+          if(!full) throw new Error("image introuvable (ni en mémoire, ni dans IndexedDB)");
+          const jpeg = isJpegDataUrl(full);
+          let skip = false;
+          if(!hadRotation){
+            const dest = await readDestExifSnapshot(targetDir, name); // le fichier est-il déjà là, et que contient-il ?
+            if(dest.exists){
+              if(!jpeg) skip = true; // aucune métadonnée écrivable dans ce format : rien n'a pu évoluer
+              else if(dest.snap) skip = !snapshotNeedsUpdate(await desiredExifSnapshot(exportMetaFields(p)), dest.snap);
+            }
+          }
+          if(skip) unchanged++;
+          else{
+            const out = jpeg ? await writeMetadataIntoJpegDataUrl(full, exportMetaFields(p)) : full; // métadonnées du catalogue à jour dans le fichier écrit
+            await writeFileToLocalDirectory(targetDir, name, dataURLtoBlob(out));
+            written++;
+          }
         }
       }catch(e){
         failed++;
@@ -18664,9 +18783,10 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
     finalizeExportBake();
     resetLabel();
     btn.classList.toggle("done", (written + unchanged) > 0 && failed === 0); // fond vert : tout est à jour dans le dossier
+    const warnTail = (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "") + (noOriginal ? ` ⚠️ ${noOriginal} photo(s) NON écrites : leur fichier d'origine est introuvable et la copie interne (de qualité réduite) n'est volontairement pas utilisée — réimportez leur dossier d'origine puis recommencez.` : "");
     toast(written
-      ? `✅ ${written} photo(s) sauvegardée(s) vers « ${dirHandle.name} »` + (unchanged ? `, ${unchanged} inchangée(s) non réécrite(s)` : "") + "." + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : "")
-      : (unchanged ? `ℹ️ Aucune métadonnée n'a évolué : aucun fichier sauvegardé (${unchanged} inchangé(s)).` : "⚠️ Aucun fichier sauvegardé.") + (failed ? ` ⚠️ ${failed} échec(s) — voir la console.` : ""), 9000);
+      ? `✅ ${written} photo(s) sauvegardée(s) vers « ${dirHandle.name} » sans aucune perte de qualité` + (unchanged ? `, ${unchanged} inchangée(s) non réécrite(s)` : "") + "." + warnTail
+      : (unchanged ? `ℹ️ Aucune métadonnée n'a évolué : aucun fichier sauvegardé (${unchanged} inchangé(s)).` : "⚠️ Aucun fichier sauvegardé.") + warnTail, 14000);
   } else {
     // Navigateur sans File System Access API (Firefox, Safari…) : seul le
     // .zip est possible.
