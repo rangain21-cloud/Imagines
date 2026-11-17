@@ -16352,11 +16352,15 @@ document.getElementById("btnSaveEditDownload").addEventListener("click", async (
   closeModal("modalEdit");
   autoBuildCsv();
   let finalUrl = fullDataUrl;
-  let losslessBlob = null;
+  let losslessBlob = null, nonJpegOriginal = false;
   if(pristine){
     try{
       const src = await getLosslessImageSource(p, null);
-      if(src){
+      if(src && !(await isJpegBlob(src.file))){
+        // BMP, PNG, HEIC… : ces formats n'acceptent pas l'EXIF. Télécharger l'original tel quel donnait un fichier SANS aucune métadonnée du
+        // catalogue : on télécharge à la place la copie interne d'Imago, en JPEG, qui les porte (extension .jpg, voir plus bas).
+        nonJpegOriginal = true;
+      }else if(src){
         losslessBlob = await losslessWithMetadata(src.file, exportMetaFields(p));
         warnIfExifNotWritten(p); // échec d'écriture dans l'original : signalé (avant, le fichier partait sans métadonnées, sans aucun message)
       }
@@ -16372,10 +16376,13 @@ document.getElementById("btnSaveEditDownload").addEventListener("click", async (
   // Téléchargement via un Blob plutôt qu'un très long lien « data: » (Chrome peut refuser ou tronquer les gros liens data: ; les octets, EXIF compris, sont identiques).
   let href = finalUrl, blobHref = "";
   try{ blobHref = URL.createObjectURL(losslessBlob || await (await fetch(finalUrl)).blob()); href = blobHref; }catch(e){ /* repli : lien data: */ }
-  a.href = href; a.download = p.fileName || "image.jpg";
+  let dlName = p.fileName || "image.jpg";
+  if(!losslessBlob && isJpegDataUrl(finalUrl) && !/\.jpe?g$/i.test(dlName)) dlName = dlName.replace(/\.[A-Za-z0-9]+$/, "") + ".jpg"; // contenu JPEG (seul format à porter l'EXIF) : extension cohérente
+  a.href = href; a.download = dlName;
   document.body.appendChild(a); a.click(); a.remove();
   if(blobHref) setTimeout(()=> URL.revokeObjectURL(blobHref), 60000);
-  toast(losslessBlob ? "Modifications enregistrées. Fichier d'origine téléchargé SANS aucune perte de qualité (seules les métadonnées ont changé)." : "Modifications enregistrées et image téléchargée localement (rotation/filtre/recadrage inclus).");
+  if(nonJpegOriginal) toast(`ℹ️ Le format d'origine (${(String(p.fileName).match(/\.([A-Za-z0-9]+)$/)||[,"?"])[1].toUpperCase()}) ne peut pas contenir de métadonnées : l'image est téléchargée en JPEG (« ${dlName} ») avec Caméra, Lieu, Map, Date, Auteur, Personnage, Titre et Favori dans l'EXIF.`, 12000);
+  else toast(losslessBlob ? "Modifications enregistrées. Fichier d'origine téléchargé SANS aucune perte de qualité (seules les métadonnées ont changé)." : "Modifications enregistrées et image téléchargée localement (rotation/filtre/recadrage inclus).");
   if(!losslessBlob) warnIfExifNotWritten(p);
 });
 
@@ -18849,6 +18856,7 @@ document.getElementById("btnExportAllPhotos").addEventListener("click", async ()
    2) NON retouché (image ou vidéo) : l'original est déposé dans le RÉPERTOIRE CIBLE sous son nom, à la place de la copie réduite, avec les
       métadonnées du catalogue — mêmes règles que « Sauver les métadonnées » (exportMetaFields : Caméra, Lieu, Map/GPS, Date cliché, Auteur,
       Personnage, Titre/Mots clés, Notation Favori/Art/Concert) ; vidéos MP4/MOV : writeMp4Metadata ; autres formats : copie telle quelle ;
+   2bis) BMP et PNG (formats sans EXIF) : convertis en JPEG qualité maximale (.jpg) puis dotés des métadonnées ; le catalogue prend le nom .jpg ;
    3) RETOUCHÉ ou ROGNÉ : le fichier d'Imago n'est pas touché ; l'original est déposé à côté sous « <nom>_O.<ext> ».
    Est jugée retouchée une photo dont : pixelsEdited est vrai (modifiée dans Imago), ou rotation/filtre renseigné(e) au catalogue, ou dont les
    proportions (rognage) ou le contenu (retouche) diffèrent de la version actuelle (copie interne d'Imago, sinon fichier déjà présent dans la
@@ -18963,6 +18971,18 @@ async function roCompareWithReference(origBlob, refBlob){
   if(m > RO_DIFF_THRESHOLD) return {retouched: true, why: `retouchée (contenu différent de l'original, écart ${m.toFixed(1)}/255)`};
   return {retouched: false, why: ""};
 }
+// BMP/PNG -> JPEG qualité maximale, fond blanc sous les transparences.
+async function roToJpegDataUrl(blob){
+  const bmp = await createImageBitmap(blob);
+  const cv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(bmp, 0, 0);
+  if(bmp.close) bmp.close();
+  const out = cv.toDataURL("image/jpeg", EDIT_JPEG_QUALITY);
+  cv.width = cv.height = 0;
+  return out;
+}
 async function roGetReference(p, tgt){
   if(p.hasFullImage){ try{ const u = await getFullDataUrl(p); if(u) return dataURLtoBlob(u); }catch(_){} } // copie interne d'Imago
   if(tgt.file) return tgt.file;                                                                          // fichier déjà dans la cible (local)
@@ -19005,11 +19025,16 @@ async function roRun(){
       const p = rows[i], name = p.fileName || "";
       roEl("roProgress").textContent = `${dry ? "Simulation" : "Récupération"} vers « ${folderLabel} »… ${i + 1}/${rows.length} — ${name}`;
       try{
-        const list = originIdx.get(catalogLooseKey(name));
+        let list = originIdx.get(catalogLooseKey(name));
+        if(!list && /\.jpe?g$/i.test(name)){ // nom déjà converti lors d'un passage précédent (.bmp/.png → .jpg) : on retrouve l'original BMP/PNG
+          const base = name.replace(/\.[A-Za-z0-9]+$/, "");
+          list = originIdx.get(catalogLooseKey(base + ".bmp")) || originIdx.get(catalogLooseKey(base + ".png"));
+        }
         if(!list){ st.notFound++; note(p, "introuvable dans l'origine"); roLog(`❓ ${name} : introuvable dans le répertoire d'origine`); continue; }
         const cand = roPickCandidate(list, p.sousDossier);
         const orig = await cand.handle.getFile();
         const isVideo = !!p.isVideo || VIDEO_NAME_RE.test(name);
+        const toJpg = !isVideo && /\.(bmp|png)$/i.test(cand.handle.name || name); // BMP/PNG : pas d'EXIF possible -> convertis en JPEG (qualité maximale)
         // --- cible actuelle (fichier de même nom) ---
         const tgt = {file: null, size: 0, hit: null, dir: null};
         if(mode === "local"){
@@ -19034,7 +19059,13 @@ async function roRun(){
         }
         // --- contenu à écrire ---
         let blob = orig;
-        if(!retouched || exifOnO){
+        if(toJpg){
+          blob = dataURLtoBlob(await roToJpegDataUrl(orig));
+          if(!retouched || exifOnO){
+            blob = dataURLtoBlob(await writeMetadataIntoJpegDataUrl(await fileToDataUrl(blob), exportMetaFields(p)));
+            if(!lastExifWriteStatus.ok) roLog(`⚠️ ${name} : EXIF non écrit (${lastExifWriteStatus.reason})`);
+          }
+        }else if(!retouched || exifOnO){
           if(isVideo){
             if(MP4_META_EXT_RE.test(name)){
               try{ blob = (await writeMp4Metadata(orig, videoMetaEntries(p))) || orig; }
@@ -19042,15 +19073,14 @@ async function roRun(){
             }
           }else blob = await losslessWithMetadata(orig, exportMetaFields(p));
         }
-        const outName = retouched ? roSuffixO(name) : name;
+        const baseOut = toJpg ? name.replace(/\.[A-Za-z0-9]+$/, "") + ".jpg" : name;
+        const outName = retouched ? roSuffixO(baseOut) : baseOut;
         // --- déjà fait ? (même taille que ce qui serait écrit) ---
         let existing = null;
-        if(retouched){
-          if(mode === "local"){ try{ existing = await (await tgt.dir.getFileHandle(outName)).getFile(); }catch(_){} }
-          else existing = driveIdx.get(catalogLooseKey(outName)) || null;
-        }else existing = mode === "local" ? tgt.file : tgt.hit;
+        if(mode === "local"){ try{ existing = await (await tgt.dir.getFileHandle(outName)).getFile(); }catch(_){} }
+        else existing = driveIdx.get(catalogLooseKey(outName)) || null;
         const existingSize = existing ? (existing.size !== undefined ? +existing.size : 0) : -1;
-        if(existing && existingSize === blob.size){ st.already++; note(p, "déjà à jour", outName); continue; }
+        if(existing && existingSize === blob.size){ st.already++; note(p, "déjà à jour", outName); if(!retouched && toJpg && !dry && p.fileName !== outName){ p.fileName = outName; p.support = "jpg"; st.restored++; } continue; }
         if(retouched){ st.withO++; note(p, "retouchée : original ajouté en _O", `${outName} — ${why}`); roLog(`✂️ ${name} → ${outName} (${why})`); }
         else{ st.restored++; note(p, "original restauré", outName); }
         if(dry) continue;
@@ -19060,7 +19090,13 @@ async function roRun(){
           const up = await driveResumableUpload(blob, {name: outName, parentId: folderId, mimeType: roMime(orig, outName, isVideo), existingId: existing && existing.id ? existing.id : undefined});
           driveIdx.set(catalogLooseKey(outName), {id: up.id, name: outName, size: blob.size});
         }
-        if(!retouched) p.poids = Math.round(blob.size / 1024); // la rubrique « poids » suit le fichier désormais présent dans la cible
+        if(!retouched){
+          p.poids = Math.round(blob.size / 1024);
+          if(toJpg && p.fileName !== outName){ // BMP/PNG converti : le catalogue suit le nouveau fichier .jpg (l'ancien reste en place dans la cible, supprimez-le à la main)
+            roLog(`🔄 ${name} → ${outName} (converti en JPEG, EXIF du catalogue écrits ; l'ancien « ${name} » reste dans la cible)`);
+            p.fileName = outName; p.support = "jpg"; p.driveFileId = null; p.driveWebViewLink = "";
+          }
+        } // la rubrique « poids » suit le fichier désormais présent dans la cible
       }catch(e){
         st.failed++; note(p, "échec", (e && e.message) || String(e));
         roLog(`❌ ${name} : ${(e && e.message) || e}`);
