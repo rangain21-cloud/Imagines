@@ -18910,30 +18910,95 @@ function roStem(n){ return String(n == null ? "" : n).replace(/\.[A-Za-z0-9]{1,5
 const RO_EXT_CLASS = {jpg:"jpg", jpeg:"jpg", jpe:"jpg", jfif:"jpg", png:"png", bmp:"bmp", gif:"gif", webp:"webp", heic:"heic", heif:"heic", tif:"tif", tiff:"tif", mpg:"mpg", mpeg:"mpg", mp4:"mp4", m4v:"mp4", mov:"mov", avi:"avi"};
 function roExtClass(n){ const e = (String(n).match(/\.([A-Za-z0-9]+)$/) || [])[1]; return e ? (RO_EXT_CLASS[e.toLowerCase()] || e.toLowerCase()) : ""; }
 // Index nom -> [{handle, parts}] de tout le répertoire d'origine (un seul parcours, plutôt qu'une recherche par photo).
-async function roIndexOrigin(dir, onProgress){
+// Lecture robuste : le contenu d'un dossier est d'abord lu en entier (3 essais si le disque renvoie une erreur passagère) ;
+// si la lecture échoue malgré tout, ce qui a déjà été lu est conservé et les SOUS-DOSSIERS sont parcourus quand même
+// (avant, une erreur au milieu d'un dossier faisait perdre tout le reste de ce dossier, sous-dossiers compris).
+// baseParts : chemin relatif de « dir » par rapport au répertoire d'origine (utilisé par le rattrapage ciblé).
+async function roIndexOrigin(dir, onProgress, baseParts){
   const idx = new Map(); let n = 0;
   idx.errors = []; idx.byTop = new Map(); // diagnostic : dossiers illisibles, nombre de fichiers par dossier de 1er niveau
   idx.aggr = new Map(); idx.stem = new Map(); // index de repli : nom « aplati » (accents, espaces, ponctuation ignorés) et nom sans extension
-  const stack = [{h: dir, parts: []}];
+  const stack = [{h: dir, parts: baseParts || []}];
   while(stack.length){
     const {h, parts} = stack.pop();
-    try{
-      for await (const [name, eh] of h.entries()){
-        if(eh.kind === "directory"){ if(!name.startsWith(".")) stack.push({h: eh, parts: parts.concat(name)}); }
-        else{
-          const k = catalogLooseKey(name); let a = idx.get(k);
-          if(!a){ a = []; idx.set(k, a); }
-          const ent = {handle: eh, parts, name}; a.push(ent); n++;
-          const top = parts[0] || "(racine)"; idx.byTop.set(top, (idx.byTop.get(top) || 0) + 1);
-          const ak = roAggrKey(name); let b = idx.aggr.get(ak); if(!b){ b = []; idx.aggr.set(ak, b); } b.push(ent);
-          const sk = roAggrKey(roStem(name)); let c = idx.stem.get(sk); if(!c){ c = []; idx.stem.set(sk, c); } c.push(ent);
-        }
-      }
-    }catch(e){ idx.errors.push(`${parts.join("/") || "(racine)"} : ${(e && e.name) || ""} ${(e && e.message) || e}`); console.warn("[Imago] Dossier d'origine illisible :", parts.join("/"), e); }
+    let entries = [], lastErr = null;
+    for(let attempt = 0; attempt < 3; attempt++){
+      entries = []; lastErr = null;
+      try{ for await (const [name, eh] of h.entries()) entries.push([name, eh]); }
+      catch(e){ lastErr = e; }
+      if(!lastErr) break;
+      await delay(150 * (attempt + 1));
+    }
+    if(lastErr){
+      idx.errors.push(`${parts.join("/") || "(racine)"} : ${(lastErr && lastErr.name) || ""} ${(lastErr && lastErr.message) || lastErr} (${entries.length} élément(s) tout de même lus)`);
+      console.warn("[Imago] Dossier d'origine lu partiellement :", parts.join("/"), lastErr);
+    }
+    for(const [name, eh] of entries){ // sous-dossiers d'abord : jamais perdus, même si la suite du dossier pose problème
+      if(eh.kind === "directory" && !name.startsWith(".") && !/^(\$RECYCLE\.BIN|System Volume Information)$/i.test(name)) stack.push({h: eh, parts: parts.concat(name)});
+    }
+    for(const [name, eh] of entries){
+      if(eh.kind === "directory") continue;
+      const k = catalogLooseKey(name); let a = idx.get(k);
+      if(!a){ a = []; idx.set(k, a); }
+      const ent = {handle: eh, parts, name}; a.push(ent); n++;
+      const top = parts[0] || "(racine)"; idx.byTop.set(top, (idx.byTop.get(top) || 0) + 1);
+      const ak = roAggrKey(name); let b2 = idx.aggr.get(ak); if(!b2){ b2 = []; idx.aggr.set(ak, b2); } b2.push(ent);
+      const sk = roAggrKey(roStem(name)); let c = idx.stem.get(sk); if(!c){ c = []; idx.stem.set(sk, c); } c.push(ent);
+    }
     if(onProgress) onProgress(n);
     if(RO.stop) break;
   }
   return idx;
+}
+// Recherche d'un nom dans un index : nom exact (casse/accents NFC), ancien nom .bmp/.png, puis replis « nom voisin » et « extension voisine ».
+function roLookupName(idx, name){
+  let list = idx.get(catalogLooseKey(name));
+  if(!list && /\.jpe?g$/i.test(name)){ // nom déjà converti lors d'un passage précédent (.bmp/.png → .jpg) : on retrouve l'original BMP/PNG
+    const base = name.replace(/\.[A-Za-z0-9]+$/, "");
+    list = idx.get(catalogLooseKey(base + ".bmp")) || idx.get(catalogLooseKey(base + ".png"));
+  }
+  let fuzzy = "", other = null;
+  if(!list){ // repli 1 : nom « aplati » identique (accents/espaces/ponctuation) ; repli 2 : même nom sans extension ET même famille d'extension (jpg/jpeg, mpg/mpeg…)
+    const byAggr = idx.aggr.get(roAggrKey(name));
+    if(byAggr){ list = byAggr; fuzzy = "nom voisin"; }
+    else{
+      const cls = roExtClass(name), same = (idx.stem.get(roAggrKey(roStem(name))) || []);
+      const ok = same.filter(e=> roExtClass(e.name) === cls);
+      if(ok.length){ list = ok; fuzzy = "extension voisine"; }
+      else if(same.length) other = same;
+    }
+  }
+  return {list, fuzzy, other};
+}
+// Rattrapage ciblé pour un fichier introuvable dans l'index global : on redescend dans le répertoire d'origine le long du
+// « sousDossier » du catalogue (noms de dossiers comparés sans accents/ponctuation), puis on RELIT tout ce sous-arbre
+// (sous-sous-dossiers compris, ex. « 1999/1999.Egypte » → « 1999.Egypte/Part #2 »). Le résultat est mis en cache par dossier.
+async function roRescue(p, name, cache){
+  let parts = String(p.sousDossier || "").split("/").filter(Boolean);
+  if(parts.length && roAggrKey(parts[0]) === roAggrKey(RO.origin.name)) parts.shift();
+  let cur = RO.origin; const used = [];
+  for(const seg of parts){
+    let next = null;
+    try{ next = await cur.getDirectoryHandle(seg); }catch(_){}
+    if(!next){
+      try{ const k = roAggrKey(seg); for await (const [nm, eh] of cur.entries()){ if(eh.kind === "directory" && roAggrKey(nm) === k){ next = eh; break; } } }catch(_){}
+    }
+    if(!next) break;
+    cur = next; used.push(next.name);
+  }
+  if(!used.length) return null; // sous-dossier du catalogue inconnu dans l'origine : l'index global a déjà tout vu
+  const key = used.join("/");
+  if(!cache.has(key)) cache.set(key, await roIndexOrigin(cur, null, used));
+  return roLookupName(cache.get(key), name);
+}
+// Quelques noms proches (aide au diagnostic d'un fichier vraiment introuvable).
+function roNearNames(idx, name){
+  const k = roAggrKey(roStem(name)); if(k.length < 4) return [];
+  const out = [];
+  for(const [ak, l] of idx.stem){
+    if(ak.includes(k) || (ak.length >= 4 && k.includes(ak))){ out.push(l[0].parts.concat(l[0].name).join("/")); if(out.length >= 3) break; }
+  }
+  return out;
 }
 // Plusieurs fichiers de même nom : celui dont le chemin finit comme « sousDossier » (le plus long suffixe commun).
 function roPickCandidate(list, sousDossier){
@@ -19033,28 +19098,24 @@ async function roRun(){
       driveMediaIndexPromise = null; driveMediaIndexFolder = "";
       driveIdx = await getDriveMediaIndex(folderId);
     }
-    const dirCache = new Map();
+    const dirCache = new Map(), rescueCache = new Map();
     for(let i = 0; i < rows.length && !RO.stop; i++){
       const p = rows[i], name = p.fileName || "";
       roEl("roProgress").textContent = `${dry ? "Simulation" : "Récupération"} vers « ${folderLabel} »… ${i + 1}/${rows.length} — ${name}`;
       try{
-        let list = originIdx.get(catalogLooseKey(name));
-        if(!list && /\.jpe?g$/i.test(name)){ // nom déjà converti lors d'un passage précédent (.bmp/.png → .jpg) : on retrouve l'original BMP/PNG
-          const base = name.replace(/\.[A-Za-z0-9]+$/, "");
-          list = originIdx.get(catalogLooseKey(base + ".bmp")) || originIdx.get(catalogLooseKey(base + ".png"));
+        let {list, fuzzy, other} = roLookupName(originIdx, name);
+        if(!list){ // rattrapage : on relit directement le sous-dossier indiqué par le catalogue (sous-sous-dossiers compris)
+          const rs = await roRescue(p, name, rescueCache);
+          if(rs && rs.list){ list = rs.list; fuzzy = (rs.fuzzy ? rs.fuzzy + ", " : "") + "relu dans le sous-dossier du catalogue"; other = null; }
+          else if(!other && rs && rs.other) other = rs.other;
         }
-        let fuzzy = "";
-        if(!list){ // repli 1 : nom « aplati » identique (accents/espaces/ponctuation) ; repli 2 : même nom sans extension ET même famille d'extension (jpg/jpeg, mpg/mpeg…)
-          const byAggr = originIdx.aggr.get(roAggrKey(name));
-          if(byAggr){ list = byAggr; fuzzy = "nom voisin"; }
-          else{
-            const cls = roExtClass(name), same = (originIdx.stem.get(roAggrKey(roStem(name))) || []);
-            const ok = same.filter(e=> roExtClass(e.name) === cls);
-            if(ok.length){ list = ok; fuzzy = "extension voisine"; }
-            else if(same.length){ st.notFound++; note(p, "introuvable (autre format)", same.map(e=>e.name).join(" | ")); roLog(`❓ ${name} : seul un fichier de même nom mais d'un autre format existe dans l'origine (${same.map(e=>e.name).join(", ")}) — non traité`); continue; }
-          }
+        if(!list && other){ st.notFound++; note(p, "introuvable (autre format)", other.map(e=>e.name).join(" | ")); roLog(`❓ ${name} : seul un fichier de même nom mais d'un autre format existe dans l'origine (${other.map(e=>e.name).join(", ")}) — non traité`); continue; }
+        if(!list){
+          const near = roNearNames(originIdx, name);
+          st.notFound++; note(p, "introuvable dans l'origine", near.length ? "noms proches : " + near.join(" | ") : "");
+          roLog(`❓ ${name} : introuvable dans le répertoire d'origine (catalogue : sous-dossier « ${p.sousDossier || ""} »)` + (near.length ? `\n   noms proches : ${near.join(" | ")}` : "") + (originIdx.errors.length ? `\n   ⚠️ ${originIdx.errors.length} dossier(s) illisible(s) dans l'origine : voir le haut du journal` : ""));
+          continue;
         }
-        if(!list){ st.notFound++; note(p, "introuvable dans l'origine"); roLog(`❓ ${name} : introuvable dans le répertoire d'origine (catalogue : sous-dossier « ${p.sousDossier || ""} »)`); continue; }
         const cand = roPickCandidate(list, p.sousDossier);
         if(fuzzy) roLog(`🔎 ${name} : trouvé sous « ${cand.name || cand.handle.name} » (${fuzzy})`);
         const orig = await cand.handle.getFile();
