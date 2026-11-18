@@ -7484,17 +7484,44 @@ hofMergeInput.addEventListener("change", async ()=>{
    absente de l'album à jour est conservée avec sa ligne d'origine (rien n'est perdu), et signalée. */
 const hofFilterInputA = document.createElement("input"), hofFilterInputB = document.createElement("input");
 for(const el of [hofFilterInputA, hofFilterInputB]){ el.type = "file"; el.accept = ".csv"; el.style.display = "none"; document.body.appendChild(el); }
+hofFilterInputA.multiple = true; // les DEUX fichiers peuvent être choisis d'un coup (Ctrl/Maj + clic) ; sinon on procède en deux clics
 let hofFilterFull = null;
-document.getElementById("btnHOFFilter").addEventListener("click", ()=>{
-  hofFilterFull = null;
-  document.getElementById("hofStatus").textContent = "① Choisissez l'album COMPLET À JOUR (celui regénéré, ex. 10 647 lignes). Une seconde fenêtre vous demandera ensuite la liste à conserver.";
-  hofFilterInputA.click();
+const hofFilterBtn = document.getElementById("btnHOFFilter");
+const HOF_FILTER_LABEL = hofFilterBtn.textContent;
+function hofFilterReset(){ hofFilterFull = null; hofFilterBtn.textContent = HOF_FILTER_LABEL; }
+// Le navigateur refuse d'ouvrir une 2e fenêtre de choix sans nouveau clic : on s'appuie donc sur un 2e clic du même bouton.
+hofFilterBtn.addEventListener("click", ()=>{
+  const statusEl = document.getElementById("hofStatus");
+  if(hofFilterFull){
+    statusEl.textContent = `② « ${hofFilterFull.name} » est l'album à jour. Choisissez maintenant la LISTE À CONSERVER (triée à la main).`;
+    hofFilterInputB.click();
+  }else{
+    statusEl.textContent = "Choisissez les DEUX fichiers d'un coup (Ctrl + clic) : l'album complet regénéré et votre liste triée — le plus volumineux (en lignes) est pris pour l'album complet. Ou choisissez-en un seul, puis cliquez à nouveau sur le bouton pour le second.";
+    hofFilterInputA.click();
+  }
 });
-hofFilterInputA.addEventListener("change", ()=>{
-  hofFilterFull = hofFilterInputA.files[0] || null; hofFilterInputA.value = "";
-  if(!hofFilterFull) return;
-  document.getElementById("hofStatus").textContent = `② « ${hofFilterFull.name} » retenu comme album à jour. Choisissez maintenant la LISTE À CONSERVER (celle triée à la main, ex. 3 710 lignes).`;
-  hofFilterInputB.click();
+hofFilterInputA.addEventListener("change", async ()=>{
+  const files = [...hofFilterInputA.files]; hofFilterInputA.value = "";
+  const statusEl = document.getElementById("hofStatus");
+  if(!files.length) return;
+  if(files.length >= 2){
+    const [f1, f2] = files;
+    const n1 = splitCsvRecords(await f1.text()).length, n2 = splitCsvRecords(await f2.text()).length;
+    const f1IsFull = n1 !== n2 ? n1 > n2 : (f1.lastModified || 0) >= (f2.lastModified || 0);
+    hofFilterReset();
+    await hofFilterRun(f1IsFull ? f1 : f2, f1IsFull ? f2 : f1);
+    return;
+  }
+  hofFilterFull = files[0];
+  hofFilterBtn.textContent = "② Choisir la liste triée à conserver…";
+  statusEl.textContent = `① Album à jour : « ${hofFilterFull.name} ». Cliquez sur « ② Choisir la liste triée à conserver… » pour choisir votre liste (3 710 lignes, par ex.).`;
+});
+hofFilterInputB.addEventListener("cancel", hofFilterReset); // fenêtre fermée sans choix : on repart de zéro au prochain clic
+hofFilterInputB.addEventListener("change", async ()=>{
+  const keepFile = hofFilterInputB.files[0] || null; hofFilterInputB.value = "";
+  const fullFile = hofFilterFull; hofFilterReset();
+  if(!keepFile || !fullFile) return;
+  await hofFilterRun(fullFile, keepFile);
 });
 async function hofReadCsvTable(file){
   const lines = splitCsvRecords(await file.text());
@@ -7504,11 +7531,8 @@ async function hofReadCsvTable(file){
   const rows = []; for(let i = 1; i < lines.length; i++) rows.push(parseCsvLine(lines[i], delim));
   return {cols, rows, fn: cols.indexOf("fileName"), id: cols.indexOf("id"), sd: cols.indexOf("sousDossier")};
 }
-hofFilterInputB.addEventListener("change", async ()=>{
-  const keepFile = hofFilterInputB.files[0] || null; hofFilterInputB.value = "";
-  const fullFile = hofFilterFull; hofFilterFull = null;
+async function hofFilterRun(fullFile, keepFile){
   const statusEl = document.getElementById("hofStatus");
-  if(!keepFile || !fullFile) return;
   if(keepFile === fullFile || (keepFile.name === fullFile.name && keepFile.size === fullFile.size && keepFile.lastModified === fullFile.lastModified)){ statusEl.textContent = "Restriction impossible : c'est le même fichier qui a été choisi deux fois."; return; }
   statusEl.textContent = "Restriction de l'album en cours…"; await nextFrame();
   try{
@@ -7557,7 +7581,7 @@ hofFilterInputB.addEventListener("change", async ()=>{
   }catch(e){
     statusEl.textContent = `Restriction impossible : ${e && e.message ? e.message : e}`;
   }
-});
+}
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates, animauxPrefix){
   // "animaux" est différent des autres rubriques : ce n'est pas une case à
   // cocher par photo (colonne booléenne "true"/"false" dans le catalogue),
