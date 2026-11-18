@@ -1272,6 +1272,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div id="hofAnimauxPrefixWrap" class="hidden" style="display:flex; align-items:center; gap:6px; margin:-4px 0 10px; font-size:12px;">Titre commençant par <input type="text" id="hofAnimauxPrefix" value="Anima" style="width:90px; font-size:12px; padding:2px 6px;"></div>
     <div class="hof-step"><b>1</b><button class="btn" id="btnHOFGenerate" title="Construit (ou récupère) le fichier Album-….csv de la rubrique choisie à partir des catalogues. Déplacez-le ensuite dans le dossier de vos photos avant l'étape 2.">Générer l'album</button></div>
     <div class="hof-step"><b>＋</b><button class="btn" id="btnHOFMerge" title="Fusionne plusieurs fichiers .csv (par ex. un catalogue de Hall of fame que vous avez épuré à la main + un Album généré pour d'autres années) en UN seul Album, SANS relire les catalogues d'année : vos retouches (Favoris décochés…) sont conservées à l'identique. Le fichier produit porte le nom de l'album de la rubrique choisie ci-dessus (ex. Album-Favori.csv).">🔗 Fusionner des fichiers .csv en un seul album…</button></div>
+    <div class="hof-step"><b>✂</b><button class="btn" id="btnHOFFilter" title="Garde, dans un album complet à jour (ex. 10 647 lignes regénérées), SEULEMENT les photos listées dans un album que vous avez trié à la main (ex. 3 710 lignes). Pour chaque photo conservée, la ligne à jour est reprise ; si elle n'existe plus dans l'album à jour, votre ligne triée est gardée telle quelle. Le fichier produit porte le nom de l'album de la rubrique choisie ci-dessus (ex. Album-Favori.csv).">✂️ Restreindre l'album à ma liste triée…</button></div>
     <div class="hof-step"><b>2</b><button class="btn" id="btnHOFPickFolder" title="Choisissez le dossier de vos photos : seules les images de l'album sont chargées.">📁 Afficher : choisir le dossier…</button></div>
     <div class="hof-step"><b>3</b><div>
       <div class="hof-opts"><label><input type="radio" name="hofShareDest" value="drive" checked> ☁️ Drive</label><label><input type="radio" name="hofShareDest" value="local"> 💾 Local / USB</label></div>
@@ -7475,6 +7476,87 @@ hofMergeInput.addEventListener("change", async ()=>{
           ? " — cliquez sur « 💾 Enregistrer l'Album… » (dossier racine de vos photos), puis « Afficher », puis la copie en mode « Passer »."
           : " — déposez ce fichier dans le dossier de vos photos, puis « Afficher »."));
   toast(`✅ ${statusEl.textContent}`);
+});
+/* ---- Restreindre un album complet à une liste triée à la main ----
+   Cas d'usage : l'album regénéré (Générer l'album) contient TOUS les favoris des catalogues (ex. 10 647 lignes), alors que le tri fait à la main
+   n'en retient que quelques-uns (ex. 3 710). On garde, dans l'ordre de la liste triée, les lignes À JOUR de l'album complet pour ces seules photos
+   (appariement par « id », sinon par sous-dossier + nom de fichier, sinon par nom de fichier s'il est unique). Une photo de la liste triée
+   absente de l'album à jour est conservée avec sa ligne d'origine (rien n'est perdu), et signalée. */
+const hofFilterInputA = document.createElement("input"), hofFilterInputB = document.createElement("input");
+for(const el of [hofFilterInputA, hofFilterInputB]){ el.type = "file"; el.accept = ".csv"; el.style.display = "none"; document.body.appendChild(el); }
+let hofFilterFull = null;
+document.getElementById("btnHOFFilter").addEventListener("click", ()=>{
+  hofFilterFull = null;
+  document.getElementById("hofStatus").textContent = "① Choisissez l'album COMPLET À JOUR (celui regénéré, ex. 10 647 lignes). Une seconde fenêtre vous demandera ensuite la liste à conserver.";
+  hofFilterInputA.click();
+});
+hofFilterInputA.addEventListener("change", ()=>{
+  hofFilterFull = hofFilterInputA.files[0] || null; hofFilterInputA.value = "";
+  if(!hofFilterFull) return;
+  document.getElementById("hofStatus").textContent = `② « ${hofFilterFull.name} » retenu comme album à jour. Choisissez maintenant la LISTE À CONSERVER (celle triée à la main, ex. 3 710 lignes).`;
+  hofFilterInputB.click();
+});
+async function hofReadCsvTable(file){
+  const lines = splitCsvRecords(await file.text());
+  if(lines.length < 2) return null;
+  const delim = detectCsvDelimiter(lines[0]);
+  const cols = parseCsvLine(lines[0], delim).map(canonicalCatalogColumn);
+  const rows = []; for(let i = 1; i < lines.length; i++) rows.push(parseCsvLine(lines[i], delim));
+  return {cols, rows, fn: cols.indexOf("fileName"), id: cols.indexOf("id"), sd: cols.indexOf("sousDossier")};
+}
+hofFilterInputB.addEventListener("change", async ()=>{
+  const keepFile = hofFilterInputB.files[0] || null; hofFilterInputB.value = "";
+  const fullFile = hofFilterFull; hofFilterFull = null;
+  const statusEl = document.getElementById("hofStatus");
+  if(!keepFile || !fullFile) return;
+  if(keepFile === fullFile || (keepFile.name === fullFile.name && keepFile.size === fullFile.size && keepFile.lastModified === fullFile.lastModified)){ statusEl.textContent = "Restriction impossible : c'est le même fichier qui a été choisi deux fois."; return; }
+  statusEl.textContent = "Restriction de l'album en cours…"; await nextFrame();
+  try{
+    const full = await hofReadCsvTable(fullFile), keep = await hofReadCsvTable(keepFile);
+    if(!full || full.fn < 0) throw new Error(`« ${fullFile.name} » est vide ou sans colonne « fileName »`);
+    if(!keep || keep.fn < 0) throw new Error(`« ${keepFile.name} » est vide ou sans colonne « fileName »`);
+    const lc = v => String(v == null ? "" : v).normalize("NFC").trim().toLowerCase();
+    const byId = new Map(), byPath = new Map(), byName = new Map();
+    for(const r of full.rows){
+      const fn = lc(r[full.fn]); if(!fn) continue;
+      if(full.id >= 0 && r[full.id]) byId.set(r[full.id], r);
+      if(full.sd >= 0) byPath.set(lc(r[full.sd]) + "|" + fn, r);
+      byName.set(fn, byName.has(fn) ? null : r); // null = nom présent plusieurs fois : ambigu, non utilisé seul
+    }
+    const ALBUM_COLS = [...CSV_COLUMNS, ALBUM_SOURCE_COLUMN];
+    const out = [], seen = new Set(); let fromFull = 0, fromKeep = 0, dup = 0; const missing = [];
+    for(const r of keep.rows){
+      const fn = lc(r[keep.fn]); if(!fn) continue;
+      const id = keep.id >= 0 ? r[keep.id] : "";
+      const key = id || ((keep.sd >= 0 ? lc(r[keep.sd]) : "") + "|" + fn);
+      if(seen.has(key)){ dup++; continue; }
+      seen.add(key);
+      let hit = (id && byId.get(id)) || (keep.sd >= 0 && byPath.get(lc(r[keep.sd]) + "|" + fn)) || byName.get(fn) || null;
+      let cells, cols;
+      if(hit){ cells = hit; cols = full.cols; fromFull++; }
+      else{ cells = r; cols = keep.cols; fromKeep++; if(missing.length < 5) missing.push(r[keep.fn]); }
+      out.push(ALBUM_COLS.map(name=>{ const k = cols.indexOf(name); return k >= 0 ? (cells[k] ?? "") : ""; }).map(csvEscape).join(";"));
+    }
+    if(!out.length) throw new Error("aucune ligne exploitable dans la liste à conserver");
+    const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
+    const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "Anima").trim() || "Anima";
+    const targetName = hofAlbumFileName(criterion, animauxPrefix);
+    hofLastAlbum = { name: targetName, text: [ALBUM_COLS.join(";"), ...out].join("\r\n") };
+    let savedTo = "";
+    if(hofCanSaveAlbumDirectly()){
+      try{ savedTo = await hofSaveAlbumDirect(false) || ""; }catch(e){ console.warn("[Imago/HOF] Enregistrement direct automatique impossible :", e); }
+      await hofRefreshAlbumSaveRow();
+    }else downloadCsvFile(hofLastAlbum.text, targetName);
+    statusEl.textContent =
+      `« ${targetName} » restreint : ${out.length} photo(s) conservée(s) sur ${full.rows.length} de « ${fullFile.name} » (${fromFull} lignes à jour` +
+      (fromKeep ? `, ${fromKeep} reprise(s) telles quelles de « ${keepFile.name} » car absentes de l'album à jour — ex. ${missing.join(", ")}` : "") + ")." +
+      (dup ? ` ${dup} doublon(s) de la liste ignoré(s).` : "") +
+      (savedTo ? ` — enregistré dans « ${savedTo} » (il remplace l'Album précédent de ce dossier : gardez une copie de l'ancien si besoin).` : " — déposez ce fichier dans le dossier de vos photos.") +
+      " Étape suivante : « Afficher », puis Sauvegarde ▸ Récupérer les originaux… vers le dossier cible.";
+    toast(`✅ ${statusEl.textContent}`);
+  }catch(e){
+    statusEl.textContent = `Restriction impossible : ${e && e.message ? e.message : e}`;
+  }
 });
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates, animauxPrefix){
   // "animaux" est différent des autres rubriques : ce n'est pas une case à
