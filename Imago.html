@@ -1272,7 +1272,7 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div id="hofAnimauxPrefixWrap" class="hidden" style="display:flex; align-items:center; gap:6px; margin:-4px 0 10px; font-size:12px;">Titre commençant par <input type="text" id="hofAnimauxPrefix" value="Anima" style="width:90px; font-size:12px; padding:2px 6px;"></div>
     <div class="hof-step"><b>1</b><button class="btn" id="btnHOFGenerate" title="Construit (ou récupère) le fichier Album-….csv de la rubrique choisie à partir des catalogues. Déplacez-le ensuite dans le dossier de vos photos avant l'étape 2.">Générer l'album</button></div>
     <div class="hof-step"><b>＋</b><button class="btn" id="btnHOFMerge" title="Fusionne plusieurs fichiers .csv (par ex. un catalogue de Hall of fame que vous avez épuré à la main + un Album généré pour d'autres années) en UN seul Album, SANS relire les catalogues d'année : vos retouches (Favoris décochés…) sont conservées à l'identique. Le fichier produit porte le nom de l'album de la rubrique choisie ci-dessus (ex. Album-Favori.csv).">🔗 Fusionner des fichiers .csv en un seul album…</button></div>
-    <div class="hof-step"><b>✂</b><button class="btn" id="btnHOFFilter" title="Garde, dans un album complet à jour (ex. 10 647 lignes regénérées), SEULEMENT les photos listées dans un album que vous avez trié à la main (ex. 3 710 lignes). Pour chaque photo conservée, la ligne à jour est reprise ; si elle n'existe plus dans l'album à jour, votre ligne triée est gardée telle quelle. Le fichier produit porte le nom de l'album de la rubrique choisie ci-dessus (ex. Album-Favori.csv).">✂️ Restreindre l'album à ma liste triée…</button></div>
+    <div class="hof-step"><b>⭐</b><button class="btn copper" id="btnHOFFavFolder" title="Une seule fenêtre : vous désignez 3 dossiers (votre liste triée, vos photos + album complet, la destination). Imago ne garde que les photos de votre liste triée, avec les rubriques/EXIF à jour de l'album complet, et les dépose dans le dossier de destination.">⭐ Constituer mon dossier de favoris…</button></div>
     <div class="hof-step"><b>2</b><button class="btn" id="btnHOFPickFolder" title="Choisissez le dossier de vos photos : seules les images de l'album sont chargées.">📁 Afficher : choisir le dossier…</button></div>
     <div class="hof-step"><b>3</b><div>
       <div class="hof-opts"><label><input type="radio" name="hofShareDest" value="drive" checked> ☁️ Drive</label><label><input type="radio" name="hofShareDest" value="local"> 💾 Local / USB</label></div>
@@ -1531,6 +1531,32 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     <div class="modal-foot">
       <button class="btn reset" id="btnCatalogPickNone">Aucun (nouveau catalogue)</button>
       <button class="btn copper" id="btnCatalogPickLoad">Charger</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: CONSTITUER UN DOSSIER DE FAVORIS (liste triée + album complet → dossier cible) ============== -->
+<div class="modal-overlay" id="modalFavFolders">
+  <div class="modal wide">
+    <div class="modal-head"><h2>Constituer mon dossier de favoris</h2><button class="modal-close" data-close="modalFavFolders">×</button></div>
+    <div class="modal-body">
+      <p class="drive-note" style="margin-bottom:12px;">Désignez simplement <b>3 dossiers</b> : Imago y trouve tout seul les albums (.csv), n'a rien à copier ailleurs, et ne garde que les photos de votre <b>liste triée</b>.
+        Chaque photo est reprise <b>depuis vos photos d'origine</b> (sous-dossiers compris), avec les rubriques et EXIF <b>à jour</b> de l'album complet, et déposée à plat dans le dossier de destination (avec un <b>Album-Favori.csv</b> à jour).</p>
+      <button class="btn" id="btnFavPickKeep" type="button">📁 1. Dossier de ma liste triée (ex. ALBUM PARTAGE)…</button>
+      <p class="drive-note" id="favKeepStatus" style="margin:4px 0 12px;">Pas encore choisi. Il doit contenir l'album .csv que vous avez trié à la main.</p>
+      <button class="btn" id="btnFavPickSrc" type="button">📁 2. Dossier de mes photos et de l'album complet (ex. ALBUMS PHOTO)…</button>
+      <p class="drive-note" id="favSrcStatus" style="margin:4px 0 12px;">Pas encore choisi. Il doit contenir l'album complet (Album-Favori.csv) et vos photos (sous-dossiers compris).</p>
+      <button class="btn" id="btnFavPickDest" type="button">📂 3. Dossier de destination (ex. Favoris Rangain)…</button>
+      <p class="drive-note" id="favDestStatus" style="margin:4px 0 12px;">Pas encore choisi. Il doit être différent des deux autres.</p>
+      <label style="display:flex; align-items:flex-start; gap:6px; margin-bottom:12px;"><input type="checkbox" id="favDryRun" style="width:auto; margin-top:3px;"> <span>Simulation : analyser et lister ce qui serait fait, sans rien écrire</span></label>
+      <p class="drive-note" id="favProgress" style="margin-bottom:8px; font-weight:600;"></p>
+      <div id="favLog" style="max-height:220px; overflow-y:auto; font-size:12.5px; line-height:1.55; background:var(--bg-panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:none; white-space:pre-wrap;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn hidden" id="btnFavReport" type="button">📄 Rapport (.csv)</button>
+      <button class="btn reset hidden" id="btnFavStop" type="button">⏹ Arrêter</button>
+      <button class="btn reset" data-close="modalFavFolders" id="btnFavClose">Fermer</button>
+      <button class="btn copper" id="btnFavRun" type="button" disabled>▶ Lancer</button>
     </div>
   </div>
 </div>
@@ -7477,110 +7503,165 @@ hofMergeInput.addEventListener("change", async ()=>{
           : " — déposez ce fichier dans le dossier de vos photos, puis « Afficher »."));
   toast(`✅ ${statusEl.textContent}`);
 });
-/* ---- Restreindre un album complet à une liste triée à la main ----
-   Cas d'usage : l'album regénéré (Générer l'album) contient TOUS les favoris des catalogues (ex. 10 647 lignes), alors que le tri fait à la main
-   n'en retient que quelques-uns (ex. 3 710). On garde, dans l'ordre de la liste triée, les lignes À JOUR de l'album complet pour ces seules photos
-   (appariement par « id », sinon par sous-dossier + nom de fichier, sinon par nom de fichier s'il est unique). Une photo de la liste triée
-   absente de l'album à jour est conservée avec sa ligne d'origine (rien n'est perdu), et signalée. */
-const hofFilterInputA = document.createElement("input"), hofFilterInputB = document.createElement("input");
-for(const el of [hofFilterInputA, hofFilterInputB]){ el.type = "file"; el.accept = ".csv"; el.style.display = "none"; document.body.appendChild(el); }
-hofFilterInputA.multiple = true; // les DEUX fichiers peuvent être choisis d'un coup (Ctrl/Maj + clic) ; sinon on procède en deux clics
-let hofFilterFull = null;
-const hofFilterBtn = document.getElementById("btnHOFFilter");
-const HOF_FILTER_LABEL = hofFilterBtn.textContent;
-function hofFilterReset(){ hofFilterFull = null; hofFilterBtn.textContent = HOF_FILTER_LABEL; }
-// Le navigateur refuse d'ouvrir une 2e fenêtre de choix sans nouveau clic : on s'appuie donc sur un 2e clic du même bouton.
-hofFilterBtn.addEventListener("click", ()=>{
-  const statusEl = document.getElementById("hofStatus");
-  if(hofFilterFull){
-    statusEl.textContent = `② « ${hofFilterFull.name} » est l'album à jour. Choisissez maintenant la LISTE À CONSERVER (triée à la main).`;
-    hofFilterInputB.click();
-  }else{
-    statusEl.textContent = "Choisissez les DEUX fichiers d'un coup (Ctrl + clic) : l'album complet regénéré et votre liste triée — le plus volumineux (en lignes) est pris pour l'album complet. Ou choisissez-en un seul, puis cliquez à nouveau sur le bouton pour le second.";
-    hofFilterInputA.click();
-  }
-});
-hofFilterInputA.addEventListener("change", async ()=>{
-  const files = [...hofFilterInputA.files]; hofFilterInputA.value = "";
-  const statusEl = document.getElementById("hofStatus");
-  if(!files.length) return;
-  if(files.length >= 2){
-    const [f1, f2] = files;
-    const n1 = splitCsvRecords(await f1.text()).length, n2 = splitCsvRecords(await f2.text()).length;
-    const f1IsFull = n1 !== n2 ? n1 > n2 : (f1.lastModified || 0) >= (f2.lastModified || 0);
-    hofFilterReset();
-    await hofFilterRun(f1IsFull ? f1 : f2, f1IsFull ? f2 : f1);
-    return;
-  }
-  hofFilterFull = files[0];
-  hofFilterBtn.textContent = "② Choisir la liste triée à conserver…";
-  statusEl.textContent = `① Album à jour : « ${hofFilterFull.name} ». Cliquez sur « ② Choisir la liste triée à conserver… » pour choisir votre liste (3 710 lignes, par ex.).`;
-});
-hofFilterInputB.addEventListener("cancel", hofFilterReset); // fenêtre fermée sans choix : on repart de zéro au prochain clic
-hofFilterInputB.addEventListener("change", async ()=>{
-  const keepFile = hofFilterInputB.files[0] || null; hofFilterInputB.value = "";
-  const fullFile = hofFilterFull; hofFilterReset();
-  if(!keepFile || !fullFile) return;
-  await hofFilterRun(fullFile, keepFile);
-});
+/* ---- Constituer un dossier de favoris : liste triée (dossier 1) + album complet et photos (dossier 2) → dossier cible (3) ----
+   Aucune copie manuelle de .csv : les albums sont retrouvés à la racine des dossiers choisis. Pour chaque photo de la liste triée, on prend la
+   ligne À JOUR de l'album complet (appariement par « id », sinon sous-dossier + nom, sinon nom unique ; à défaut, la ligne de la liste triée),
+   on cherche le fichier d'origine dans le dossier 2 (sous-dossiers compris, puis dans le dossier 1) et on le dépose à plat dans le dossier 3
+   avec ses EXIF/rubriques à jour. */
 async function hofReadCsvTable(file){
   const lines = splitCsvRecords(await file.text());
   if(lines.length < 2) return null;
   const delim = detectCsvDelimiter(lines[0]);
   const cols = parseCsvLine(lines[0], delim).map(canonicalCatalogColumn);
-  const rows = []; for(let i = 1; i < lines.length; i++) rows.push(parseCsvLine(lines[i], delim));
-  return {cols, rows, fn: cols.indexOf("fileName"), id: cols.indexOf("id"), sd: cols.indexOf("sousDossier")};
+  const rows = []; for(let i = 1; i < lines.length; i++){ const cells = parseCsvLine(lines[i], delim), o = {}; cols.forEach((c, k)=> o[c] = cells[k]); rows.push(o); }
+  return {cols, rows, hasId: cols.includes("id"), hasSd: cols.includes("sousDossier"), hasFn: cols.includes("fileName")};
 }
-async function hofFilterRun(fullFile, keepFile){
-  const statusEl = document.getElementById("hofStatus");
-  if(keepFile === fullFile || (keepFile.name === fullFile.name && keepFile.size === fullFile.size && keepFile.lastModified === fullFile.lastModified)){ statusEl.textContent = "Restriction impossible : c'est le même fichier qui a été choisi deux fois."; return; }
-  statusEl.textContent = "Restriction de l'album en cours…"; await nextFrame();
+const FAV = {keep: null, src: null, dest: null, running: false, stop: false, report: []};
+const favEl = id => document.getElementById(id);
+function favLog(t){ const el = favEl("favLog"); el.style.display = "block"; el.textContent += t + "\n"; el.scrollTop = el.scrollHeight; }
+function favRefreshRun(){ favEl("btnFavRun").disabled = FAV.running || !(FAV.keep && FAV.src && FAV.dest); }
+document.getElementById("btnHOFFavFolder").addEventListener("click", ()=> openModal("modalFavFolders"));
+for(const [btn, slot, status] of [["btnFavPickKeep","keep","favKeepStatus"], ["btnFavPickSrc","src","favSrcStatus"], ["btnFavPickDest","dest","favDestStatus"]]){
+  favEl(btn).addEventListener("click", async ()=>{
+    if(typeof window.showDirectoryPicker !== "function"){ toast("Le choix de dossiers nécessite Chrome ou Edge."); return; }
+    try{
+      const h = await window.showDirectoryPicker({id: "imago-fav-" + slot, mode: slot === "dest" ? "readwrite" : "read"});
+      FAV[slot] = h; favEl(status).textContent = `✅ Dossier choisi : « ${h.name} »`;
+    }catch(e){ if(!e || e.name !== "AbortError") toast(`Dossier inutilisable : ${(e && e.message) || e}`); }
+    favRefreshRun();
+  });
+}
+// Album .csv à la racine d'un dossier : « Album-Favori.csv » (ou « Album-Favori (2).csv »…) le plus récent ; sinon un .csv commençant par « Album » ; sinon n'importe quel .csv.
+async function favFindAlbumCsv(dir){
+  const files = [];
+  for await (const [name, eh] of dir.entries()){ if(eh.kind === "file" && /\.csv$/i.test(name)) files.push(await eh.getFile()); }
+  if(!files.length) return null;
+  const c = findLatestAlbumCandidate(files, "Album-Favori.csv", "favori");
+  if(c) return c.file;
+  const alb = files.filter(f=> /^Album/i.test(f.name)), pool = alb.length ? alb : files;
+  pool.sort((a, b)=> (b.lastModified || 0) - (a.lastModified || 0));
+  return pool[0];
+}
+favEl("btnFavStop").addEventListener("click", ()=>{ FAV.stop = true; RO.stop = true; favEl("favProgress").textContent = "Arrêt en cours…"; });
+favEl("btnFavReport").addEventListener("click", ()=>{
+  downloadCsvFile([RO_REPORT_HEAD.join(";")].concat(FAV.report.map(r=> r.map(csvEscape).join(";"))).join("\n"), "Rapport-favoris.csv");
+});
+favEl("btnFavRun").addEventListener("click", ()=>{ if(!FAV.running) favRun(); });
+async function favRun(){
+  if(!(FAV.keep && FAV.src && FAV.dest)){ toast("Choisissez d'abord les trois dossiers."); return; }
+  const same = async (a, b)=>{ try{ return await a.isSameEntry(b); }catch(_){ return false; } };
+  if(await same(FAV.keep, FAV.src)){ toast("⚠️ Les dossiers 1 et 2 sont identiques : choisissez deux dossiers différents."); return; }
+  if(await same(FAV.dest, FAV.src) || await same(FAV.dest, FAV.keep)){ toast("⚠️ Le dossier de destination doit être différent des dossiers 1 et 2 (vos originaux ne sont jamais remplacés)."); return; }
+  const dry = favEl("favDryRun").checked, prog = favEl("favProgress");
+  if(!dry && (await FAV.dest.requestPermission({mode: "readwrite"})) !== "granted"){ toast("Écriture refusée dans le dossier de destination."); return; }
+  FAV.running = true; FAV.stop = false; RO.stop = false; FAV.report = [];
+  favEl("favLog").textContent = ""; favEl("favLog").style.display = "none";
+  ["btnFavPickKeep","btnFavPickSrc","btnFavPickDest","favDryRun","btnFavRun","btnFavClose"].forEach(id=> favEl(id).disabled = true);
+  favEl("btnFavStop").classList.remove("hidden"); favEl("btnFavReport").classList.add("hidden");
+  const st = {done: 0, already: 0, notFound: 0, failed: 0, fromFull: 0, fromKeep: 0, renamed: 0};
+  const note = (p, result, detail, info)=>{ FAV.report.push([p.sousDossier || "", p.fileName, result, detail || ""].concat(roReportCells(info))); };
   try{
-    const full = await hofReadCsvTable(fullFile), keep = await hofReadCsvTable(keepFile);
-    if(!full || full.fn < 0) throw new Error(`« ${fullFile.name} » est vide ou sans colonne « fileName »`);
-    if(!keep || keep.fn < 0) throw new Error(`« ${keepFile.name} » est vide ou sans colonne « fileName »`);
+    prog.textContent = "Recherche des albums (.csv) dans les dossiers 1 et 2…";
+    const keepCsv = await favFindAlbumCsv(FAV.keep), fullCsv = await favFindAlbumCsv(FAV.src);
+    if(!keepCsv) throw new Error(`aucun fichier .csv à la racine de « ${FAV.keep.name} » (liste triée).`);
+    if(!fullCsv) throw new Error(`aucun fichier .csv à la racine de « ${FAV.src.name} » (album complet).`);
+    const keepT = await hofReadCsvTable(keepCsv), fullT = await hofReadCsvTable(fullCsv);
+    if(!keepT || !keepT.hasFn) throw new Error(`« ${keepCsv.name} » est vide ou sans colonne « fileName ».`);
+    if(!fullT || !fullT.hasFn) throw new Error(`« ${fullCsv.name} » est vide ou sans colonne « fileName ».`);
+    favLog(`📄 Liste triée : « ${FAV.keep.name} / ${keepCsv.name} » — ${keepT.rows.length} ligne(s)`);
+    favLog(`📄 Album complet : « ${FAV.src.name} / ${fullCsv.name} » — ${fullT.rows.length} ligne(s)`);
+    if(keepT.rows.length >= fullT.rows.length) favLog("⚠️ La liste triée n'est pas plus courte que l'album complet : vérifiez que les dossiers 1 et 2 ne sont pas inversés.");
     const lc = v => String(v == null ? "" : v).normalize("NFC").trim().toLowerCase();
     const byId = new Map(), byPath = new Map(), byName = new Map();
-    for(const r of full.rows){
-      const fn = lc(r[full.fn]); if(!fn) continue;
-      if(full.id >= 0 && r[full.id]) byId.set(r[full.id], r);
-      if(full.sd >= 0) byPath.set(lc(r[full.sd]) + "|" + fn, r);
-      byName.set(fn, byName.has(fn) ? null : r); // null = nom présent plusieurs fois : ambigu, non utilisé seul
+    for(const r of fullT.rows){
+      const fn = lc(r.fileName); if(!fn) continue;
+      if(r.id) byId.set(r.id, r);
+      byPath.set(lc(r.sousDossier) + "|" + fn, r);
+      byName.set(fn, byName.has(fn) ? null : r); // null : nom présent plusieurs fois, inutilisable seul
     }
-    const ALBUM_COLS = [...CSV_COLUMNS, ALBUM_SOURCE_COLUMN];
-    const out = [], seen = new Set(); let fromFull = 0, fromKeep = 0, dup = 0; const missing = [];
-    for(const r of keep.rows){
-      const fn = lc(r[keep.fn]); if(!fn) continue;
-      const id = keep.id >= 0 ? r[keep.id] : "";
-      const key = id || ((keep.sd >= 0 ? lc(r[keep.sd]) : "") + "|" + fn);
-      if(seen.has(key)){ dup++; continue; }
-      seen.add(key);
-      let hit = (id && byId.get(id)) || (keep.sd >= 0 && byPath.get(lc(r[keep.sd]) + "|" + fn)) || byName.get(fn) || null;
-      let cells, cols;
-      if(hit){ cells = hit; cols = full.cols; fromFull++; }
-      else{ cells = r; cols = keep.cols; fromKeep++; if(missing.length < 5) missing.push(r[keep.fn]); }
-      out.push(ALBUM_COLS.map(name=>{ const k = cols.indexOf(name); return k >= 0 ? (cells[k] ?? "") : ""; }).map(csvEscape).join(";"));
+    const items = [], seen = new Set();
+    for(const r of keepT.rows){
+      const fn = lc(r.fileName); if(!fn) continue;
+      const key = r.id || (lc(r.sousDossier) + "|" + fn);
+      if(seen.has(key)) continue; seen.add(key);
+      const hit = (r.id && byId.get(r.id)) || byPath.get(lc(r.sousDossier) + "|" + fn) || byName.get(fn) || null;
+      if(hit) st.fromFull++; else st.fromKeep++;
+      items.push(hit || r);
     }
-    if(!out.length) throw new Error("aucune ligne exploitable dans la liste à conserver");
-    const criterion = document.querySelector('input[name="hofCriterion"]:checked').value;
-    const animauxPrefix = (document.getElementById("hofAnimauxPrefix").value || "Anima").trim() || "Anima";
-    const targetName = hofAlbumFileName(criterion, animauxPrefix);
-    hofLastAlbum = { name: targetName, text: [ALBUM_COLS.join(";"), ...out].join("\r\n") };
-    let savedTo = "";
-    if(hofCanSaveAlbumDirectly()){
-      try{ savedTo = await hofSaveAlbumDirect(false) || ""; }catch(e){ console.warn("[Imago/HOF] Enregistrement direct automatique impossible :", e); }
-      await hofRefreshAlbumSaveRow();
-    }else downloadCsvFile(hofLastAlbum.text, targetName);
-    statusEl.textContent =
-      `« ${targetName} » restreint : ${out.length} photo(s) conservée(s) sur ${full.rows.length} de « ${fullFile.name} » (${fromFull} lignes à jour` +
-      (fromKeep ? `, ${fromKeep} reprise(s) telles quelles de « ${keepFile.name} » car absentes de l'album à jour — ex. ${missing.join(", ")}` : "") + ")." +
-      (dup ? ` ${dup} doublon(s) de la liste ignoré(s).` : "") +
-      (savedTo ? ` — enregistré dans « ${savedTo} » (il remplace l'Album précédent de ce dossier : gardez une copie de l'ancien si besoin).` : " — déposez ce fichier dans le dossier de vos photos.") +
-      " Étape suivante : « Afficher », puis Sauvegarde ▸ Récupérer les originaux… vers le dossier cible.";
-    toast(`✅ ${statusEl.textContent}`);
+    favLog(`🎯 ${items.length} photo(s) à constituer (${st.fromFull} avec la ligne à jour de l'album complet, ${st.fromKeep} reprises de la liste triée car absentes de l'album complet).`);
+    prog.textContent = `Lecture des photos de « ${FAV.src.name} »…`;
+    const srcIdx = await roIndexOrigin(FAV.src, n=>{ prog.textContent = `Lecture des photos de « ${FAV.src.name} »… ${n} fichier(s)`; });
+    if(srcIdx.errors.length) favLog(`⚠️ ${srcIdx.errors.length} dossier(s) illisible(s) dans « ${FAV.src.name} » :\n   ` + srcIdx.errors.slice(0, 10).join("\n   "));
+    prog.textContent = `Lecture des photos de « ${FAV.keep.name} »…`;
+    const keepIdx = await roIndexOrigin(FAV.keep, null);
+    favLog(`📂 Photos trouvées : ${[...srcIdx.values()].reduce((a, l)=> a + l.length, 0)} dans « ${FAV.src.name} », ${[...keepIdx.values()].reduce((a, l)=> a + l.length, 0)} dans « ${FAV.keep.name} ».`);
+    const usedNames = new Set(), albumLines = [], ALBUM_COLS = [...CSV_COLUMNS, ALBUM_SOURCE_COLUMN];
+    for(let i = 0; i < items.length && !FAV.stop; i++){
+      const row = items[i], name = row.fileName;
+      const p = buildOrphanRecordFromCsvRow(row, name); p.corbeille = false;
+      prog.textContent = `${dry ? "Simulation" : "Constitution"} vers « ${FAV.dest.name} »… ${i + 1}/${items.length} — ${name}`;
+      try{
+        let r = roLookupName(srcIdx, name), from = FAV.src.name;
+        if(!r.list){ r = roLookupName(keepIdx, name); from = FAV.keep.name; }
+        if(!r.list){
+          st.notFound++;
+          const near = roNearNames(srcIdx, name);
+          note(p, r.other ? "introuvable (autre format)" : "introuvable", near.length ? "noms proches : " + near.join(" | ") : "");
+          favLog(`❓ ${name} : introuvable dans « ${FAV.src.name} » ni dans « ${FAV.keep.name} »` + (near.length ? `\n   noms proches : ${near.join(" | ")}` : ""));
+          continue;
+        }
+        if(r.fuzzy) favLog(`🔎 ${name} : trouvé sous un nom voisin (${r.fuzzy})`);
+        const cand = roPickCandidate(r.list, p.sousDossier);
+        const orig = await cand.handle.getFile();
+        const isVideo = !!p.isVideo || VIDEO_NAME_RE.test(name);
+        const toJpg = !isVideo && /\.(bmp|png)$/i.test(cand.handle.name || name);
+        let blob = orig;
+        if(toJpg){
+          blob = dataURLtoBlob(await roToJpegDataUrl(orig));
+          blob = dataURLtoBlob(await writeMetadataIntoJpegDataUrl(await fileToDataUrl(blob), exportMetaFields(p)));
+          if(!lastExifWriteStatus.ok) favLog(`⚠️ ${name} : EXIF non écrit (${lastExifWriteStatus.reason})`);
+        }else if(isVideo){
+          if(MP4_META_EXT_RE.test(name)){
+            try{ blob = (await writeMp4Metadata(orig, videoMetaEntries(p))) || orig; }
+            catch(e){ blob = orig; favLog(`⚠️ ${name} : métadonnées vidéo non écrites (${(e && e.message) || e}) — original copié tel quel`); }
+          }
+        }else blob = await losslessWithMetadata(orig, exportMetaFields(p));
+        let outName = toJpg ? name.replace(/\.[A-Za-z0-9]+$/, "") + ".jpg" : name;
+        if(usedNames.has(outName.toLowerCase())){ // même nom venant d'un autre sous-dossier : dépôt à plat, on ne remplace pas
+          const m = /^(.*?)(\.[A-Za-z0-9]+)?$/.exec(outName); let k = 2, cand2;
+          do{ cand2 = `${m[1]} (${k++})${m[2] || ""}`; }while(usedNames.has(cand2.toLowerCase()));
+          favLog(`🔁 ${outName} existe déjà dans la sélection : déposé sous « ${cand2} »`); outName = cand2; st.renamed++;
+        }
+        usedNames.add(outName.toLowerCase());
+        const info = await roReportInfo(outName, blob, orig, isVideo);
+        let existing = null; try{ existing = await (await FAV.dest.getFileHandle(outName)).getFile(); }catch(_){}
+        const fullRow = Object.assign({}, row, {fileName: outName});
+        albumLines.push(ALBUM_COLS.map(c=> csvEscape(fullRow[c] ?? "")).join(";"));
+        if(existing && existing.size === blob.size){ st.already++; note(p, "déjà à jour", outName, info); continue; }
+        st.done++; note(p, "déposé", `${outName} (depuis « ${from} »)`, info);
+        if(dry) continue;
+        await writeFileToLocalDirectory(FAV.dest, outName, blob);
+      }catch(e){
+        st.failed++; note(p, "échec", (e && e.message) || String(e));
+        favLog(`❌ ${name} : ${(e && e.message) || e}`);
+        console.warn(`[Imago] Dossier de favoris : échec pour « ${name} » :`, e);
+      }
+      await delay(10);
+    }
+    if(!dry && !FAV.stop && albumLines.length){
+      try{ await writeFileToLocalDirectory(FAV.dest, "Album-Favori.csv", new Blob(["\uFEFF" + [ALBUM_COLS.join(";"), ...albumLines].join("\r\n")], {type: "text/csv;charset=utf-8"})); favLog(`📄 « Album-Favori.csv » (${albumLines.length} ligne(s) à jour) écrit dans « ${FAV.dest.name} ».`); }
+      catch(e){ favLog(`⚠️ Album-Favori.csv non écrit dans la destination : ${(e && e.message) || e}`); }
+    }
   }catch(e){
-    statusEl.textContent = `Restriction impossible : ${e && e.message ? e.message : e}`;
+    favLog(`❌ ${(e && e.message) || e}`);
+    console.warn("[Imago] Dossier de favoris interrompu :", e);
+  }finally{
+    FAV.running = false;
+    ["btnFavPickKeep","btnFavPickSrc","btnFavPickDest","favDryRun","btnFavClose"].forEach(id=> favEl(id).disabled = false);
+    favRefreshRun();
+    favEl("btnFavStop").classList.add("hidden"); favEl("btnFavReport").classList.remove("hidden");
   }
+  prog.textContent = (FAV.stop ? "⏹ Arrêté. " : "✅ Terminé. ") + `${st.done} photo(s) déposée(s)${dry ? " (simulation)" : ""}, ${st.already} déjà à jour, ${st.notFound} introuvable(s), ${st.failed} échec(s)` + (st.renamed ? `, ${st.renamed} renommée(s) (même nom)` : "") + ".";
 }
 async function generateAlbumFromCsvFiles(files, existingAlbumFile, criterion, staleDuplicates, staleCatalogDuplicates, animauxPrefix){
   // "animaux" est différent des autres rubriques : ce n'est pas une case à
