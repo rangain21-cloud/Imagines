@@ -9096,6 +9096,9 @@ document.getElementById("btnImportReport").addEventListener("click", downloadImp
    imprévisible. importCheckpointNext est réarmé à chaque nouvel import
    (voir handleFilesSelected) — voir maybeShowImportCheckpoint(). */
 const IMPORT_CHECKPOINT_EVERY = 5000;
+// false (défaut) : à chaque palier, l'import CONTINUE sans rien demander (simple message discret, aucune pause) ;
+// true : ancienne fenêtre « Continuer / Arrêter ici » à chaque palier.
+const IMPORT_CHECKPOINT_ASK = false;
 let importCheckpointNext = IMPORT_CHECKPOINT_EVERY;
 
 /* Seuil "petite vidéo" (voir importOneFile ci-dessous) : en dessous, une
@@ -9637,6 +9640,10 @@ function markImportButtonDone(sourceButtonId, stats){
 async function maybeShowImportCheckpoint(token){
   if(importDoneCount < importCheckpointNext) return true;
   importCheckpointNext += IMPORT_CHECKPOINT_EVERY;
+  if(!IMPORT_CHECKPOINT_ASK){ // par défaut : on continue sans interrompre ni ralentir l'import
+    toast(`Import en cours : ${importDoneCount} / ${importTotalCount} fichier(s) traités (déjà enregistrés).`, 2500);
+    return true;
+  }
   const choice = await confirmChoice(
     "Point d'étape de l'import",
     `${importDoneCount} / ${importTotalCount} fichier(s) traités — déjà enregistrés (IndexedDB) : rien n'est perdu même si vous vous arrêtez maintenant.\n\nContinuer l'import, ou l'arrêter ici en toute sécurité pour reprendre plus tard (relancez simplement l'import du même dossier : les fichiers déjà présents seront automatiquement ignorés) ?`,
