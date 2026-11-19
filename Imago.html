@@ -1306,6 +1306,14 @@ details.pave .btn{width:100%; margin-bottom:8px;}
         <option value="auto">Automatique (textes + icônes)</option>
         <option value="icons">Icônes seules (compacte)</option>
       </select></div>
+    <div class="search-field"><label for="mapProviderSelect">Fournisseur de cartes</label>
+      <select id="mapProviderSelect">
+        <option value="google">Google Maps</option>
+        <option value="osm">OpenStreetMap (gratuit, sans clé)</option>
+        <option value="leaflet">Leaflet + OpenStreetMap (carte interactive)</option>
+        <option value="topo">Leaflet + OpenTopoMap (relief, gratuit)</option>
+      </select>
+      <div id="mapProviderHint" style="font-size:11.5px; color:var(--ink-dim); margin-top:4px;"></div></div>
     <div class="search-field"><label style="text-transform:none; letter-spacing:0; font-size:12px; cursor:pointer; display:flex; gap:7px; align-items:flex-start; color:var(--ink);"><input type="checkbox" id="noZoomChk" style="width:auto; margin-top:2px;"> Ne pas zoomer l'affichage (ignore l'échelle des préréglages)</label></div>
     <button class="btn" id="layoutRescueBtn" type="button" style="width:100%;" title="Remet l'affichage à 100 % avec la barre du haut en icônes seules">↺ Retrouver IMAGO en entier</button>
   </details>
@@ -10521,6 +10529,93 @@ function mapEmbedQueryFromMapField(url){
   }catch(e){ /* URL non standard : pas d'aperçu extrait, on retombe sur lieu */ }
   return "";
 }
+/* ---- Fournisseur de cartes (menu Agencement) : Google Maps (défaut), OpenStreetMap, Leaflet + OpenStreetMap, Leaflet + OpenTopoMap ----
+   Ne change QUE l'affichage (aperçu de la fiche et lien « Ouvrir dans… ») : la rubrique « map » du catalogue et les EXIF restent inchangés. */
+const MAP_PROVIDERS = {
+  google:  {label: "Google Maps",                  hint: "Aperçu et lien Google Maps."},
+  osm:     {label: "OpenStreetMap",                hint: "Carte OpenStreetMap intégrée (gratuite, sans clé)."},
+  leaflet: {label: "OpenStreetMap",                hint: "Carte interactive Leaflet sur fond OpenStreetMap (gratuite, sans clé)."},
+  topo:    {label: "OpenTopoMap",                  hint: "Carte interactive Leaflet, fond OpenTopoMap (relief, gratuit)."}
+};
+function mapProviderKey(){
+  let v = null; try{ v = localStorage.getItem("imago_map_provider"); }catch(e){}
+  return MAP_PROVIDERS[v] ? v : "google";
+}
+// Cible à afficher : coordonnées (GPS de la photo, sinon « map » du catalogue en ?q=lat,lon ou @lat,lon) ou, à défaut, texte à chercher (rubrique « map » puis « lieu »).
+function mapTargetFor(p){
+  if(p.gpsLat != null && p.gpsLon != null) return {lat: p.gpsLat, lon: p.gpsLon, query: ""};
+  const q = isValidMapUrl(p.map) ? mapEmbedQueryFromMapField(p.map) : "";
+  const m = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(q || "");
+  if(m) return {lat: parseFloat(m[1]), lon: parseFloat(m[2]), query: ""};
+  const text = (q || p.lieu || "").trim();
+  return text ? {lat: null, lon: null, query: text} : null;
+}
+// Lien « Ouvrir dans … » selon le fournisseur choisi
+function mapOpenLinkFor(p){
+  const prov = mapProviderKey(), t = mapTargetFor(p);
+  if(!t) return null;
+  if(prov === "google"){
+    if(t.lat != null) return {href: mapUrlFromCoords(t.lat, t.lon), label: "Google Maps"};
+    return {href: mapUrlFromLieu(t.query), label: "Google Maps"};
+  }
+  if(prov === "topo"){
+    if(t.lat != null) return {href: `https://opentopomap.org/#map=14/${t.lat.toFixed(5)}/${t.lon.toFixed(5)}`, label: "OpenTopoMap"};
+    return {href: `https://www.openstreetmap.org/search?query=${encodeURIComponent(t.query)}`, label: "OpenStreetMap"};
+  }
+  if(t.lat != null) return {href: `https://www.openstreetmap.org/?mlat=${t.lat.toFixed(6)}&mlon=${t.lon.toFixed(6)}#map=15/${t.lat.toFixed(5)}/${t.lon.toFixed(5)}`, label: "OpenStreetMap"};
+  return {href: `https://www.openstreetmap.org/search?query=${encodeURIComponent(t.query)}`, label: "OpenStreetMap"};
+}
+// Nom de lieu → coordonnées (Nominatim d'OpenStreetMap, gratuit, 1 requête à la fois, résultats mémorisés)
+const mapGeocodeCache = new Map();
+async function mapGeocodeText(text){
+  const key = text.toLowerCase();
+  if(mapGeocodeCache.has(key)) return mapGeocodeCache.get(key);
+  let out = null;
+  try{
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&accept-language=fr&q=${encodeURIComponent(text)}`);
+    if(res.ok){ const j = await res.json(); if(j && j[0]) out = {lat: parseFloat(j[0].lat), lon: parseFloat(j[0].lon)}; }
+  }catch(e){ console.warn("[Imago] Géocodage OpenStreetMap impossible :", e); }
+  mapGeocodeCache.set(key, out);
+  return out;
+}
+function mapLeafletSrcdoc(lat, lon, topo){
+  const tiles = topo ? "https://tile.opentopomap.org/{z}/{x}/{y}.png" : "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const attr = topo ? "© OpenTopoMap (CC-BY-SA), données © contributeurs OpenStreetMap" : "© contributeurs OpenStreetMap";
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="referrer" content="origin"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"><style>html,body,#m{height:100%;margin:0}</style></head><body><div id="m"></div><script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"><\/script><script>var m=L.map("m").setView([${lat},${lon}],${topo ? 13 : 15});L.tileLayer(${JSON.stringify(tiles)},{maxZoom:${topo ? 17 : 19},attribution:${JSON.stringify(attr)}}).addTo(m);L.marker([${lat},${lon}]).addTo(m);<\/script></body></html>`;
+}
+// Remplit l'emplacement de l'aperçu carte de la fiche (déjà dans le DOM) selon le fournisseur choisi
+async function mapFillPreview(slot, p){
+  const prov = mapProviderKey(), t = mapTargetFor(p);
+  if(!slot) return;
+  if(!t){ slot.innerHTML = ""; return; }
+  if(prov === "google"){ const src = mapEmbedSrcFor(p); slot.innerHTML = src ? `<iframe class="info-map" loading="lazy" src="${src}"></iframe>` : ""; return; }
+  let {lat, lon} = t;
+  if(lat == null){
+    slot.innerHTML = `<div class="sub-line" style="margin:2px 0 14px;">Recherche de « ${escapeHtml(t.query)} » sur OpenStreetMap…</div>`;
+    const g = await mapGeocodeText(t.query);
+    if(!slot.isConnected) return; // la fiche a changé entre-temps
+    if(!g){ slot.innerHTML = `<div class="sub-line" style="margin:2px 0 14px;">Lieu « ${escapeHtml(t.query)} » non trouvé sur OpenStreetMap (utilisez le lien ci-dessous).</div>`; return; }
+    lat = g.lat; lon = g.lon;
+  }
+  if(prov === "osm"){
+    const dx = 0.012, dy = 0.007, bbox = [lon - dx, lat - dy, lon + dx, lat + dy].map(v=> v.toFixed(5)).join("%2C");
+    slot.innerHTML = `<iframe class="info-map" loading="lazy" src="https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat.toFixed(5)}%2C${lon.toFixed(5)}"></iframe>`;
+  }else{
+    slot.innerHTML = `<iframe class="info-map" loading="lazy" srcdoc="${escapeHtml(mapLeafletSrcdoc(lat.toFixed(6), lon.toFixed(6), prov === "topo"))}"></iframe>`;
+  }
+}
+(function initMapProvider(){
+  const sel = document.getElementById("mapProviderSelect"), hint = document.getElementById("mapProviderHint");
+  if(!sel) return;
+  sel.value = mapProviderKey();
+  const refresh = ()=>{ if(hint) hint.textContent = MAP_PROVIDERS[sel.value].hint; };
+  refresh();
+  sel.addEventListener("change", ()=>{
+    try{ localStorage.setItem("imago_map_provider", sel.value); }catch(e){}
+    refresh();
+    toast("Cartes : " + sel.options[sel.selectedIndex].text.split(" (")[0] + " — appliqué à la prochaine ouverture d'une fiche.", 3500);
+  });
+})();
 /* Aperçu carte de la modale Infos : construit systématiquement une URL
    d'intégration (Google Maps "output=embed", sans clé API), en priorité à
    partir de la rubrique "map" du catalogue CSV (qui contient déjà, dès
@@ -16692,8 +16787,7 @@ function renderInfoModal(p){
   // rubrique "lieu" (recherche par nom). Seul un enregistrement sans "map"
   // NI "lieu" ne propose aucun aperçu.
   const hasGps = (p.gpsLat!=null && p.gpsLon!=null);
-  const mapEmbedSrc = mapEmbedSrcFor(p);
-  const mapLinkHref = hasGps ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : (p.lieu ? mapUrlFromLieu(p.lieu) : null);
+  const mapOpenLink = mapOpenLinkFor(p); // aperçu et lien selon le « Fournisseur de cartes » (menu Agencement)
 
   rows.innerHTML = `
     <div class="info-row">
@@ -16781,11 +16875,12 @@ function renderInfoModal(p){
       </div>
       <button class="info-pencil" data-edit="lieu" title="Modifier le lieu">✎</button>
     </div>
-    ${mapEmbedSrc
-      ? `<iframe class="info-map" loading="lazy" src="${mapEmbedSrc}"></iframe>`
+    ${mapTargetFor(p)
+      ? `<div id="infoMapSlot"></div>`
       : `<div class="info-row"><div class="info-ic"></div><div class="info-content sub-line" style="flex:1;">Aucune information de carte (rubrique « map » ou « lieu ») pour ce fichier.</div></div>`}
-    ${mapLinkHref ? `<div class="sub-line" style="margin:6px 0 14px;"><a href="${escapeHtml(mapLinkHref)}" target="_blank" rel="noopener" class="small-link">Ouvrir dans Google Maps ↗</a></div>` : ""}
+    ${mapOpenLink ? `<div class="sub-line" style="margin:6px 0 14px;"><a href="${escapeHtml(mapOpenLink.href)}" target="_blank" rel="noopener" class="small-link">Ouvrir dans ${mapOpenLink.label} ↗</a></div>` : ""}
   `;
+  mapFillPreview(document.getElementById("infoMapSlot"), p);
 
   rows.querySelector('[data-edit="date"]').addEventListener("click", ()=> startInlineEdit("infoRowDate", "date", p));
   rows.querySelector('[data-edit="optique"]').addEventListener("click", ()=> startInlineEdit("infoRowOptique", "optique", p));
