@@ -11384,6 +11384,8 @@ const MapTileCache = (function(){
   const mo = n => (n / 1048576).toFixed(n >= 10485760 ? 0 : 1).replace(".", ",");
   const refresh = ()=>{ const st = MapTileCache.stats(); if(info) info.textContent = `Utilisé : ${mo(st.bytes)} Mo sur ${mo(st.limit)} Mo (${st.count} tuile${st.count > 1 ? "s" : ""}) — stocké sur disque, pas en mémoire vive.`; };
   MapTileCache.setOnStats(refresh); refresh();
+  // Demande au navigateur (Chrome Android surtout) de ne pas purger ces cartes quand le téléphone manque de place
+  try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
   sel.addEventListener("change", ()=>{ try{ localStorage.setItem("imago_map_cache_mb", sel.value); }catch(e){} MapTileCache.trim(); refresh(); });
   btn.addEventListener("click", async ()=>{ await MapTileCache.clear(); toast("Mémoire des cartes vidée.", 2500); });
 })();
