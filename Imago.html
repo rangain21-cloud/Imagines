@@ -1029,8 +1029,16 @@ details.pave .btn{width:100%; margin-bottom:8px;}
 }
 /* Mode immersif : après quelques secondes sans bouger la souris, tout ce qui n'est pas l'image s'efface (boutons, bande de miniatures,
    curseur). L'opacité seule est modifiée : rien ne bouge, l'image ne change donc pas de taille. Un mouvement de souris ou une touche ramène tout. */
-.slideshow-fill-toggle, .slideshow-fullscreen-toggle, .slideshow-rail, .slideshow-rail-resizer{ transition:opacity .5s ease; }
+.slideshow-fill-toggle, .slideshow-fullscreen-toggle, .slideshow-close, .slideshow-rail, .slideshow-rail-resizer{ transition:opacity .5s ease; }
+.slideshow-close{
+  position:absolute; top:14px; right:160px; z-index:6;
+  background:rgba(20,20,20,.78); border:1px solid rgba(255,255,255,.35); color:#e8dcc2;
+  font-size:16px; width:36px; height:36px; border-radius:50%; cursor:pointer;
+  backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center;
+}
+.slideshow-close:hover{border-color:var(--copper-hi); color:var(--copper-hi);}
 .slideshow.idle .slideshow-fill-toggle,
+.slideshow.idle .slideshow-close,
 .slideshow.idle .slideshow-fullscreen-toggle,
 .slideshow.idle .slideshow-rail,
 .slideshow.idle .slideshow-rail-resizer{ opacity:0; pointer-events:none; }
@@ -2911,6 +2919,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <div class="slide-caption slide-caption-date" id="slideCaptionDate"></div>
     <div class="slide-caption slide-caption-lieu" id="slideCaptionLieu"></div>
     <div class="slide-caption slide-caption-titre" id="slideCaptionTitre"></div>
+    <button class="slideshow-close" id="slideshowCloseBtn" title="Quitter le diaporama / la loupe" aria-label="Quitter">✕</button>
     <button class="slideshow-fullscreen-toggle" id="slideshowFullscreenToggle" title="Basculer le plein écran du navigateur">⛶</button>
     <button class="slideshow-fill-toggle" id="slideshowFillToggle" title="Basculer entre image entière (bandes noires possibles), équilibré et plein écran (léger recadrage)">⛶ Ajusté</button>
     <div class="slideshow-hint" id="slideshowHint">Échap (PC) ou Retour (Android) pour quitter — flèches ← → pour naviguer</div>
@@ -5957,10 +5966,10 @@ function getDriveMediaIndexDeep(){
   if(driveDeepIndexPromise && driveDeepIndexFolder === fid) return driveDeepIndexPromise;
   driveDeepIndexFolder = fid;
   driveDeepIndexPromise = (async ()=>{
-    const idx = new Map(); idx.aggr = new Map(); idx.listed = 0;
+    const idx = new Map(); idx.aggr = new Map(); idx.stem = new Map(); idx.listed = 0; idx.folders = 0;
     const FOLDER = "application/vnd.google-apps.folder", queue = [fid]; let scanned = 0;
     while(queue.length && scanned < 300){
-      const cur = queue.shift(); scanned++; let tok = "";
+      const cur = queue.shift(); scanned++; idx.folders = scanned; let tok = "";
       do{
         const q = encodeURIComponent(`'${cur}' in parents and trashed=false and (mimeType='${FOLDER}' or mimeType contains 'image/' or mimeType contains 'video/')`);
         const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime,size,thumbnailLink)` + (tok ? "&pageToken=" + tok : ""))).json();
@@ -5969,6 +5978,7 @@ function getDriveMediaIndexDeep(){
           idx.listed++;
           const k = catalogLooseKey(x.name); if(!idx.has(k)) idx.set(k, x);
           const ak = roAggrKey(x.name); if(!idx.aggr.has(ak)) idx.aggr.set(ak, x);
+          const sk = roAggrKey(roStem(x.name)); let sl = idx.stem.get(sk); if(!sl){ sl = []; idx.stem.set(sk, sl); } sl.push(x);
         });
         tok = j.nextPageToken || "";
       }while(tok);
@@ -5978,7 +5988,23 @@ function getDriveMediaIndexDeep(){
   return driveDeepIndexPromise;
 }
 // nom exact (casse/accents), puis nom « aplati » (espaces, ponctuation) dans l'index profond
-function driveIndexFind(idx, name){ return idx.get(catalogLooseKey(name)) || (idx.aggr && idx.aggr.get(roAggrKey(name))) || null; }
+// puis même nom sans extension ET même famille d'extension (.jpg / .jpeg, .tif / .tiff…)
+function driveIndexFind(idx, name){
+  const hit = idx.get(catalogLooseKey(name)) || (idx.aggr && idx.aggr.get(roAggrKey(name)));
+  if(hit) return hit;
+  if(!idx.stem) return null;
+  const cls = roExtClass(name);
+  return (idx.stem.get(roAggrKey(roStem(name))) || []).find(x=> roExtClass(x.name) === cls) || null;
+}
+// Quelques noms proches vus dans le dossier Drive (aide au diagnostic)
+function driveNearNames(idx, name){
+  const k = roAggrKey(roStem(name)), out = [];
+  if(!idx.stem || k.length < 4) return out;
+  for(const [sk, list] of idx.stem){
+    if(sk.includes(k) || (sk.length >= 4 && k.includes(sk))){ out.push(list[0].name); if(out.length >= 3) break; }
+  }
+  return out;
+}
 // Dernier recours : le fichier est-il ailleurs sur le Drive ? (une seule requête, par nom exact)
 async function driveFindByName(name){
   try{
@@ -6097,8 +6123,16 @@ function requestDriveImage(p){
   if(!State.drive.token){ setText("📷 Image à récupérer depuis Drive", "Connectez-vous à Drive (menu ☰ › Connexion) : « " + p.fileName + " » sera alors téléchargée automatiquement depuis « " + driveMediaFolderLabel() + " »."); return; }
   if(driveMissInfo.has(p.id)){ setText("📷 Image non récupérée depuis Drive", driveMissInfo.get(p.id)); return; }
   setText("⏳ Récupération depuis Drive…", "« " + p.fileName + " » est téléchargée à la demande depuis « " + driveMediaFolderLabel() + " ».");
-  hydratePhotoFromDrive(p).then(ok=>{
-    if(!ok) driveMissInfo.set(p.id, "« " + p.fileName + " » n'a été trouvée ni dans « " + driveMediaFolderLabel() + " » (sous-dossiers compris) ni ailleurs sur votre Drive, sous ce nom exact. Vérifiez qu'elle y est bien, ou ajoutez-la avec « Choisir un dossier d'images… » ou « Importer depuis Drive ».");
+  hydratePhotoFromDrive(p).then(async ok=>{
+    if(ok) return;
+    let diag = "";
+    try{
+      const ix = await getDriveMediaIndexDeep(), near = driveNearNames(ix, p.fileName);
+      diag = ` Drive renvoie ${ix.listed} fichier(s) image/vidéo dans ${ix.folders} dossier(s).`
+        + (ix.listed === 0 ? " Aucun : si ces fichiers apparaissent dans G:\\ mais pas ici, la synchronisation de Google Drive pour ordinateur n'est sans doute pas terminée (ou ils sont dans un autre dossier de drive.google.com)." : "")
+        + (near.length ? ` Noms proches : ${near.join(" | ")}.` : "");
+    }catch(e){}
+    driveMissInfo.set(p.id, "« " + p.fileName + " » n'a été trouvée ni dans « " + driveMediaFolderLabel() + " » (sous-dossiers compris) ni ailleurs sur votre Drive, sous ce nom exact." + diag);
   }).catch(err=>{
     driveMissInfo.set(p.id, "Téléchargement impossible : " + ((err && err.message) || err) + ". Rouvrez la photo pour réessayer.");
     setTimeout(()=> driveMissInfo.delete(p.id), 15000); // nouvel essai possible plus tard (réseau, jeton expiré…)
@@ -18400,6 +18434,13 @@ function exitSlideshowFullscreen(){
     if(result && result.catch) result.catch(()=>{});
   }catch(e){}
 }
+/* Bouton Retour d'Android : le diaporama/la loupe empile UN état d'historique à l'ouverture ; Retour le dépile (= ferme le diaporama)
+   sans quitter l'application. Avant, Retour fermait le diaporama PUIS déclenchait la « garde de sortie » qui faisait quitter Imago. */
+let slideshowHistoryPushed = false, slideshowIgnorePop = false, popConsumedBySlideshow = false;
+function slideshowPushHistory(){
+  if(slideshowHistoryPushed) return;
+  try{ history.pushState({imagoSlideshow: true}, "", location.href); slideshowHistoryPushed = true; }catch(e){}
+}
 function openLoupe(id){
   State.slideshowMode = "loupe";
   State.slideshowList = activePhotos();
@@ -18409,6 +18450,7 @@ function openLoupe(id){
   showSlideshowFrame(true);
   loupeZoom=1; loupeX=0; loupeY=0; applyLoupeTransform();
   slideshowEl.classList.add("show");
+  slideshowPushHistory();
   armSlideshowHint();
   armSlideshowIdle();
 }
@@ -18437,6 +18479,7 @@ function openDiaporama(id){
   buildSlideshowRail();
   showSlideshowFrame(true);
   slideshowEl.classList.add("show");
+  slideshowPushHistory();
   requestSlideshowFullscreen();
   armSlideshowHint();
   armSlideshowIdle();
@@ -18653,6 +18696,10 @@ function closeSlideshow(){
   slideshowImgA.classList.remove("active", "exiting");
   slideshowImgB.classList.remove("active", "exiting");
   resetSlideTransforms();
+  if(slideshowHistoryPushed){ // fermeture par ✕ / Échap / clic : on dépile l'état d'historique empilé à l'ouverture (son popstate sera ignoré)
+    slideshowHistoryPushed = false; slideshowIgnorePop = true;
+    try{ history.back(); }catch(e){ slideshowIgnorePop = false; }
+  }
 }
 /* Bande de miniatures du diaporama : construite une fois à l'ouverture (à
    partir de State.slideshowList), permet de cliquer pour aller directement
@@ -18815,8 +18862,12 @@ document.addEventListener("keydown", (e)=>{
   if(e.key==="ArrowRight" || e.key==="ArrowLeft") updateSlideshowRailHighlight(true);
 });
 // "Retour" Android -> historique
-window.addEventListener("popstate", ()=>{ if(slideshowEl.classList.contains("show")) closeSlideshow(); });
+window.addEventListener("popstate", ()=>{
+  if(slideshowIgnorePop){ slideshowIgnorePop = false; popConsumedBySlideshow = true; return; } // retour provoqué par closeSlideshow lui-même
+  if(slideshowEl.classList.contains("show")){ slideshowHistoryPushed = false; popConsumedBySlideshow = true; closeSlideshow(); } // Retour Android : ferme le diaporama, sans quitter l'app
+});
 slideshowEl.addEventListener("click", (e)=>{ if(e.target===slideshowEl) closeSlideshow(); });
+document.getElementById("slideshowCloseBtn").addEventListener("click", (e)=>{ e.stopPropagation(); closeSlideshow(); });
 
 slideshowEl.addEventListener("wheel", (e)=>{
   if(State.slideshowMode!=="loupe") return;
@@ -21576,6 +21627,7 @@ function markCsvClean(){
   State.dirty = false;
 }
 window.addEventListener("popstate", ()=>{
+  if(popConsumedBySlideshow){ popConsumedBySlideshow = false; return; } // ce « Retour » a seulement fermé le diaporama : ne pas quitter l'application
   if(State.dirty){
     const leave = confirm(
       "Le catalogue contient des modifications non sauvegardées sur Google Drive (CSV).\n\n" +
