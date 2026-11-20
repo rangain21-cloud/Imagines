@@ -12528,6 +12528,26 @@ async function readFileAsDataURLWithHeicSupport(file, stats){
    menu ☰ (nécessite une clé API Claude et une connexion internet).
    ----------------------------------------------------------------- */
 const LIEU_ARTICLES = ["la","le","les","l","saint","sainte","st","ste","mont","val","les-","d","du","de"];
+/* Mots connus des références de visages (Imago-Visages.json / FaceAlbum.refs) : prénoms/noms complets ET chacun de leurs mots,
+   sans accents ni casse. Renvoie null si AUCUNE référence n'est chargée (on ne peut alors rien juger : aucun mot n'est écarté).
+   Mémorisé tant que les références ne changent pas (faceRefVersion / saveFaceAlbum). */
+let knownNamesCache = {ver: -1, set: null};
+function knownFaceNameKeys(){
+  try{
+    const ver = typeof faceRefVersion === "number" ? faceRefVersion : 0;
+    if(knownNamesCache.set !== undefined && knownNamesCache.ver === ver && knownNamesCache.valid) return knownNamesCache.set;
+    const set = new Set();
+    for(const k in FaceAlbum.refs){
+      const r = FaceAlbum.refs[k]; if(!r || !r.name) continue;
+      const full = faceNameKey(r.name); if(full) set.add(full);
+      for(const w of full.split(" ")) if(w.length >= 2) set.add(w);
+    }
+    knownNamesCache = {ver, set: set.size ? set : null, valid: true};
+    return knownNamesCache.set;
+  }catch(e){ return null; } // références pas encore initialisées : pas de filtrage
+}
+// Le mot a-t-il été conservé dans Personnage ? (connu des références de visages, ou aucune référence chargée)
+function wordKeptAsPersonnage(word){ const k = knownFaceNameKeys(); return !k || k.has(faceNameKey(word)); }
 function parseFileNameMeta(fileName){
   const noExt = (fileName||"").replace(/\.[a-zA-Z0-9]{2,5}$/, "");
   let rest = noExt;
@@ -12585,9 +12605,13 @@ function parseFileNameMeta(fileName){
     // contient en réalité aucun lieu (ex. "2026-02-07 Léo 2.jpeg"). Il sera
     // retiré automatiquement d'ici si/quand le lieu est confirmé.
     // Bannit "et", toute ponctuation résiduelle et tout chiffre.
+    // Seuls les mots CONNUS des références de visages (Imago-Visages.json) deviennent des personnages : un mot inconnu
+    // (« Voyage », « Italie »… ) n'est jamais chargé dans la rubrique personnage. Sans aucune référence chargée : pas de filtrage.
+    const knownNames = knownFaceNameKeys();
     personnage = tokens
       .map(t => t.replace(/[^\p{L}]/gu, ""))
       .filter(t => t && t.toLowerCase() !== "et")
+      .filter(t => !knownNames || knownNames.has(faceNameKey(t)))
       .join(", ");
   }
   // Le lieu n'est qu'une PROPOSITION à ce stade : voir verifyCommuneWikipedia()
@@ -12890,6 +12914,7 @@ const FaceAlbum = { refs: (function(){
   catch(e){ return {}; }
 })() };
 function saveFaceAlbum(){
+  knownNamesCache = {ver: -1, set: null, valid: false}; // les références ont changé : mots connus à recalculer
   try{ localStorage.setItem(FACE_ALBUM_LS_KEY, JSON.stringify({v:1, refs:FaceAlbum.refs})); return true; }
   catch(e){ console.warn("Références Album non sauvegardées (localStorage plein ?)", e); return false; }
 }
@@ -17223,7 +17248,7 @@ document.getElementById("edRecalcBtn").addEventListener("click", async ()=>{
       const mapEl = document.getElementById("edMap");
       if(!mapEl.value || mapEl.value === mapUrl(p.exif, p.lieu)) mapEl.value = mapUrlFromLieu(verified.name);
     } else {
-      changed.push(`« ${meta.lieuCandidate} » non confirmé comme commune — conservé dans Personnage`);
+      changed.push(wordKeptAsPersonnage(meta.lieuCandidate) ? `« ${meta.lieuCandidate} » non confirmé comme commune — conservé dans Personnage` : `« ${meta.lieuCandidate} » non confirmé comme commune et inconnu des visages — non chargé`);
     }
   }
   btn.textContent = originalLabel; btn.disabled = false;
@@ -17736,7 +17761,7 @@ function renderInfoModal(p){
         p.personnage = removeTokenFromPersonnage(p.personnage, candidate); // ce n'était pas un prénom
         if(!p.titre || p.titre === buildTitre("", p.personnage)) p.titre = buildTitre(p.lieu, p.personnage);
       } else {
-        toast(`« ${p.lieuCandidate} » non confirmé comme commune sur Wikipédia — conservé dans Personnage. Voir la console (F12) pour le détail ; vous pouvez aussi le saisir manuellement (crayon).`);
+        toast(`« ${p.lieuCandidate} » non confirmé comme commune sur Wikipédia — ${wordKeptAsPersonnage(p.lieuCandidate) ? "conservé dans Personnage" : "inconnu des visages, non chargé dans Personnage"}. Voir la console (F12) pour le détail ; vous pouvez aussi le saisir manuellement (crayon).`);
       }
       await idbPut("photos", p);
       populateFilterOptions();
