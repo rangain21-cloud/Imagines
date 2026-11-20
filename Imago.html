@@ -5928,7 +5928,7 @@ function setDriveMediaFolder(id, label){
   State.drive.mediaFolderId = id;
   localStorage.setItem("imago_drive_media_folder", id);
   localStorage.setItem("imago_drive_media_folder_name", label || "");
-  driveMediaIndexPromise = null; driveMediaIndexFolder = ""; driveMissInfo.clear();
+  driveMediaIndexPromise = null; driveMediaIndexFolder = ""; driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
 }
 /* Index nom de fichier -> fichier Drive, pour UN seul listing du dossier (pas une requête par photo). */
 function getDriveMediaIndex(folderIdOverride){
@@ -5947,6 +5947,60 @@ function getDriveMediaIndex(folderIdOverride){
     return idx;
   })().catch(e=>{ driveMediaIndexPromise = null; throw e; });
   return driveMediaIndexPromise;
+}
+/* Index « profond » pour LIRE les images d'un catalogue chargé depuis Drive : le dossier du CSV ET tous ses sous-dossiers
+   (jusqu'à 300 dossiers). L'index plat ci-dessus reste utilisé tel quel pour les écritures (envoi, anti-doublons). */
+let driveDeepIndexPromise = null, driveDeepIndexFolder = "";
+function getDriveMediaIndexDeep(){
+  const fid = driveMediaFolderId();
+  if(!fid) return Promise.resolve(new Map());
+  if(driveDeepIndexPromise && driveDeepIndexFolder === fid) return driveDeepIndexPromise;
+  driveDeepIndexFolder = fid;
+  driveDeepIndexPromise = (async ()=>{
+    const idx = new Map(); idx.aggr = new Map(); idx.listed = 0;
+    const FOLDER = "application/vnd.google-apps.folder", queue = [fid]; let scanned = 0;
+    while(queue.length && scanned < 300){
+      const cur = queue.shift(); scanned++; let tok = "";
+      do{
+        const q = encodeURIComponent(`'${cur}' in parents and trashed=false and (mimeType='${FOLDER}' or mimeType contains 'image/' or mimeType contains 'video/')`);
+        const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime,size,thumbnailLink)` + (tok ? "&pageToken=" + tok : ""))).json();
+        (j.files || []).forEach(x=>{
+          if(x.mimeType === FOLDER){ queue.push(x.id); return; }
+          idx.listed++;
+          const k = catalogLooseKey(x.name); if(!idx.has(k)) idx.set(k, x);
+          const ak = roAggrKey(x.name); if(!idx.aggr.has(ak)) idx.aggr.set(ak, x);
+        });
+        tok = j.nextPageToken || "";
+      }while(tok);
+    }
+    return idx;
+  })().catch(e=>{ driveDeepIndexPromise = null; throw e; });
+  return driveDeepIndexPromise;
+}
+// nom exact (casse/accents), puis nom « aplati » (espaces, ponctuation) dans l'index profond
+function driveIndexFind(idx, name){ return idx.get(catalogLooseKey(name)) || (idx.aggr && idx.aggr.get(roAggrKey(name))) || null; }
+// Dernier recours : le fichier est-il ailleurs sur le Drive ? (une seule requête, par nom exact)
+async function driveFindByName(name){
+  try{
+    const q = encodeURIComponent(`name='${String(name).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}' and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')`);
+    const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=5&fields=files(id,name,mimeType,modifiedTime,size,thumbnailLink)&spaces=drive`)).json();
+    return (j.files || [])[0] || null;
+  }catch(e){ return null; }
+}
+function driveReducedPref(){
+  let v = null; try{ v = localStorage.getItem("imago_drive_reduced"); }catch(e){}
+  return v === null ? /Android/i.test(navigator.userAgent) : v === "1";
+}
+// Contenu d'une image Drive : version réduite fabriquée par Drive (≈ IMPORT_MAX_DIM px) si l'option est active, sinon (ou en cas de refus) l'original
+async function driveImageBlob(hit){
+  if(driveReducedPref() && hit.thumbnailLink && /^image\//.test(hit.mimeType || "")){
+    try{
+      const url = /=s\d+/.test(hit.thumbnailLink) ? hit.thumbnailLink.replace(/=s\d+[^=]*$/, "=s" + IMPORT_MAX_DIM) : hit.thumbnailLink + "=s" + IMPORT_MAX_DIM;
+      const res = await fetch(url, {mode: "cors"});
+      if(res.ok){ const b = await res.blob(); if(b.size && /^image\//.test(b.type)) return b; }
+    }catch(e){ /* refusé : on retombe sur l'original */ }
+  }
+  return (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
 }
 const VIDEO_NAME_RE = /\.(mp4|m4v|mov|avi|mpe?g)$/i;
 /* Un enregistrement créé depuis un CSV (« Charger depuis Drive », anciennes sessions comprises) n'a ni isVideo ni
@@ -5967,7 +6021,7 @@ async function loadVideoFromDrive(p){
   if(!driveMediaFolderId()) return false;
   if(!State.drive.token) return false; // Drive facultatif : non connecté, on n'impose RIEN (ni message, ni connexion) — la vidéo se charge depuis le disque local
   let hit;
-  try{ hit = (await getDriveMediaIndex()).get(catalogLooseKey(p.fileName)); }
+  try{ hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName) || await driveFindByName(p.fileName); }
   catch(err){ toast("Dossier Drive illisible : " + ((err && err.message) || err), 6000); return true; }
   if(!hit) return false; // absente du dossier Drive : on propose de resélectionner le fichier local
   try{
@@ -6001,10 +6055,10 @@ function isDriveHydratable(p){
 function hydratePhotoFromDrive(p){
   if(driveHydrating.has(p.id)) return driveHydrating.get(p.id);
   const job = (async ()=>{
-    const hit = (await getDriveMediaIndex()).get(catalogLooseKey(p.fileName));
+    const hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName) || await driveFindByName(p.fileName);
     if(!hit) return false;
-    const blob = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
-    const file = new File([blob], p.fileName, {type: hit.mimeType, lastModified: Date.parse(hit.modifiedTime) || Date.now()});
+    const blob = await driveImageBlob(hit);
+    const file = new File([blob], p.fileName, {type: blob.type || hit.mimeType, lastModified: Date.parse(hit.modifiedTime) || Date.now()});
     const stats = {};
     const dataUrl = await readFileAsDataURLWithHeicSupport(file, stats);
     if(stats.heicFailed) throw new Error("format HEIC non convertible pour l'instant");
@@ -6044,7 +6098,7 @@ function requestDriveImage(p){
   if(driveMissInfo.has(p.id)){ setText("📷 Image non récupérée depuis Drive", driveMissInfo.get(p.id)); return; }
   setText("⏳ Récupération depuis Drive…", "« " + p.fileName + " » est téléchargée à la demande depuis « " + driveMediaFolderLabel() + " ».");
   hydratePhotoFromDrive(p).then(ok=>{
-    if(!ok) driveMissInfo.set(p.id, "« " + p.fileName + " » n'a pas été trouvée dans « " + driveMediaFolderLabel() + " » sur Drive. Vous pouvez l'ajouter avec « Choisir un dossier d'images… » ou « Importer depuis Drive ».");
+    if(!ok) driveMissInfo.set(p.id, "« " + p.fileName + " » n'a été trouvée ni dans « " + driveMediaFolderLabel() + " » (sous-dossiers compris) ni ailleurs sur votre Drive, sous ce nom exact. Vérifiez qu'elle y est bien, ou ajoutez-la avec « Choisir un dossier d'images… » ou « Importer depuis Drive ».");
   }).catch(err=>{
     driveMissInfo.set(p.id, "Téléchargement impossible : " + ((err && err.message) || err) + ". Rouvrez la photo pour réessayer.");
     setTimeout(()=> driveMissInfo.delete(p.id), 15000); // nouvel essai possible plus tard (réseau, jeton expiré…)
@@ -6058,13 +6112,13 @@ async function prefetchDriveImages(max){
   if(drivePrefetchRunning || !State.drive.token || !driveMediaFolderId()) return;
   drivePrefetchRunning = true;
   try{
-    const idx = await getDriveMediaIndex();
+    const idx = await getDriveMediaIndexDeep();
     State.photos.forEach(p=>{
       if(!repairVideoFlags(p) && !p.isVideo) return;
-      const h = idx.get(catalogLooseKey(p.fileName));
+      const h = driveIndexFind(idx, p.fileName);
       if(h && +h.size && !p.videoSizeBytes) p.videoSizeBytes = +h.size;
     });
-    const todo = galleryPhotos().filter(p=> isDriveHydratable(p) && idx.has(catalogLooseKey(p.fileName))).slice(0, max);
+    const todo = galleryPhotos().filter(p=> isDriveHydratable(p) && driveIndexFind(idx, p.fileName)).slice(0, max);
     if(!todo.length) return;
     let ok = 0;
     for(const p of todo){
