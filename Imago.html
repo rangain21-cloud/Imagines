@@ -2208,11 +2208,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
           <input type="checkbox" id="catalogPickCombineEt" style="margin:0; flex-shrink:0;">
           <span id="catalogPickCombineText">Combiner Critère <strong>ET</strong> Personnage (intersection) — décoché : Critère <strong>OU</strong> Personnage (union)</span>
         </label>
+        <label style="display:flex; align-items:flex-start; gap:8px; margin:6px 0 10px; text-transform:none; letter-spacing:0; font-size:12.5px; cursor:pointer;">
+          <input type="checkbox" id="catalogPickKnownOnly" checked style="margin:3px 0 0; flex-shrink:0; width:auto;">
+          <span>Ne retenir comme personnage que les noms <strong>connus d'Imago-Visages.json</strong> (les autres mots — lieux, monuments, titres… — ne sont pas chargés ; le catalogue enregistré ensuite ne les contiendra plus)</span>
+        </label>
         <div class="field-row">
           <label>Personnage <span id="catalogPickPersonnageToggle" style="text-transform:none; letter-spacing:0; cursor:pointer; color:var(--copper); text-decoration:underline;">(tout / aucun)</span></label>
           <div id="catalogPickPersonnageList" style="max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px;">
             <p class="drive-note hidden" id="catalogPickPersonnageEmpty">Aucun personnage renseigné dans ce catalogue.</p>
           </div>
+          <p class="drive-note hidden" id="catalogPickIgnoredNote" style="margin-top:6px;"></p>
         </div>
       </div>
     </div>
@@ -7363,10 +7368,37 @@ function parseCatalogCsvText(text){
   }
   return out;
 }
+/* Option « Ne retenir comme personnage que les noms connus d'Imago-Visages.json » (modale du catalogue ; cochée par défaut). */
+function catalogKnownNamesOnly(){
+  try{ return localStorage.getItem("imago_catalog_known_names_only") !== "0"; }catch(e){ return true; }
+}
+// Un personnage (jeton) est connu si son nom complet l'est, ou si TOUS ses mots le sont (ex. « Jean Pierre » ↔ « Jean-Pierre »)
+function personnageTokenIsKnown(tok, known){
+  const k = faceNameKey(tok); if(!k) return false;
+  return known.has(k) || k.split(" ").every(w=> known.has(w));
+}
 async function readCatalogCsvRows(file){
   const parsed = parseCatalogCsvText(await file.text());
   const rows = parsed.rows;
   rows.columns = parsed.columns; // pour le diagnostic de la modale (colonne « personnage » présente ou non)
+  rows.ignoredNames = new Map(); // jeton écarté → nombre de lignes concernées
+  rows.knownFilter = "off";      // "on" : filtre appliqué ; "nofaces" : voulu mais aucune référence de visage chargée ; "off" : désactivé
+  if(catalogKnownNamesOnly()){
+    const known = knownFaceNameKeys();
+    if(!known) rows.knownFilter = "nofaces";
+    else{
+      rows.knownFilter = "on";
+      for(const row of rows){
+        const toks = personnageTokens(row.personnage); if(!toks.length) continue;
+        const kept = toks.filter(t=>{
+          if(personnageTokenIsKnown(t, known)) return true;
+          rows.ignoredNames.set(t, (rows.ignoredNames.get(t) || 0) + 1);
+          return false;
+        });
+        if(kept.length !== toks.length) row.personnage = kept.join(", ");
+      }
+    }
+  }
   return rows;
 }
 /* Mémorisation, d'un import à l'autre, des personnages décochés par
@@ -7400,6 +7432,16 @@ function populateCatalogPickPersonnages(rows){
   const set = new Set();
   rows.forEach(row=> personnageTokens(row.personnage).forEach(tok=> set.add(tok)));
   const tokens = [...set].sort((a,b)=> a.localeCompare(b, "fr"));
+  const noteEl = document.getElementById("catalogPickIgnoredNote");
+  if(noteEl){
+    const ign = rows && rows.ignoredNames ? [...rows.ignoredNames.entries()].sort((a, b)=> b[1] - a[1]) : [];
+    noteEl.textContent = rows && rows.knownFilter === "nofaces"
+      ? "Aucune référence de visage n'est chargée (Imago-Visages.json) : impossible de distinguer les personnages des autres mots, rien n'est écarté."
+      : ign.length
+        ? `${ign.length} mot(s) inconnu(s) d'Imago-Visages.json écarté(s) de la rubrique personnage, par ex. : ${ign.slice(0, 6).map(([t, n])=> `${t} (${n})`).join(", ")}${ign.length > 6 ? "…" : ""}.`
+        : "";
+    noteEl.classList.toggle("hidden", !noteEl.textContent);
+  }
   const list = document.getElementById("catalogPickPersonnageList");
   // "empty" est un enfant de list : list.innerHTML = "" le DÉTACHE du DOM à
   // chaque appel où la liste n'est pas vide, et getElementById ne le
@@ -7530,6 +7572,9 @@ function pickCatalogFromCandidates(csvFiles, preferredFile){
     triSelect.value = catalogPickDefaultTri();
     critereSelect.value = "";
     document.getElementById("catalogPickCombineEt").checked = false;
+    const knownOnlyChk = document.getElementById("catalogPickKnownOnly");
+    knownOnlyChk.checked = catalogKnownNamesOnly();
+    knownOnlyChk.onchange = ()=>{ try{ localStorage.setItem("imago_catalog_known_names_only", knownOnlyChk.checked ? "1" : "0"); }catch(e){} const act = list.querySelector(".btn.active"); if(act) act.click(); }; // relit le catalogue avec/sans filtre
     let selected = null;
     let readToken = 0; // annule un peuplement de la liste Personnage devenu obsolète si l'utilisateur reclique vite sur un autre fichier
     async function selectFile(file, btn){
