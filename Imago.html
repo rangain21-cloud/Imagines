@@ -7242,6 +7242,17 @@ document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
     const q = encodeURIComponent("mimeType='application/vnd.google-apps.folder' and trashed=false");
     const r = await (await driveApiFetch(api + `q=${q}&pageSize=200&orderBy=name&fields=files(id,name)`)).json();
     body.innerHTML = "";
+    // Versions réduites : Drive fabrique lui-même des images de ≈ IMPORT_MAX_DIM px (la taille qu'Imago garde de toute façon pour l'affichage) :
+    // on évite de télécharger les originaux, qui restent intacts sur Drive/PC. Par défaut : activé sur Android.
+    const redLabel = document.createElement("label");
+    redLabel.style.cssText = "display:flex; gap:8px; align-items:flex-start; margin:0 0 12px; font-size:13px; cursor:pointer;";
+    const redChk = document.createElement("input"); redChk.type = "checkbox"; redChk.style.cssText = "margin:3px 0 0; flex-shrink:0; width:auto;";
+    let redPref = null; try{ redPref = localStorage.getItem("imago_drive_reduced"); }catch(e){}
+    redChk.checked = redPref === null ? /Android/i.test(navigator.userAgent) : redPref === "1";
+    redChk.onchange = ()=>{ try{ localStorage.setItem("imago_drive_reduced", redChk.checked ? "1" : "0"); }catch(e){} };
+    const redTxt = document.createElement("span");
+    redTxt.innerHTML = `⚡ <b>Charger des versions réduites</b> (≈ ${IMPORT_MAX_DIM} px, la taille d'affichage d'Imago) — beaucoup plus rapide, recommandé sur téléphone. Vos originaux ne sont pas touchés. Nécessite un catalogue (.csv) dans le dossier ; les vidéos sont chargées en entier.`;
+    redLabel.appendChild(redChk); redLabel.appendChild(redTxt); body.appendChild(redLabel);
     (r.files||[]).forEach(f=>{
       const b = document.createElement("button"); b.className = "btn"; b.style.cssText = "width:100%; margin-bottom:6px; text-align:left;"; b.textContent = "📁 " + f.name;
       b.onclick = async ()=>{
@@ -7253,7 +7264,7 @@ document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
           let all = [], tok = "";
           do{
             const mq = encodeURIComponent(`'${f.id}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`);
-            const j = await (await driveApiFetch(api + `q=${mq}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
+            const j = await (await driveApiFetch(api + `q=${mq}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime,thumbnailLink)` + (tok ? "&pageToken=" + tok : ""))).json();
             all = all.concat(j.files||[]); tok = j.nextPageToken || "";
           }while(tok);
           const list = all.filter(x=> /^(image|video)\//.test(x.mimeType || ""));
@@ -7290,10 +7301,29 @@ document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
           // (chaque photo attendait l'aller-retour réseau de la précédente — très lent sur mobile).
           const files = new Array(toGet.length); let nextIdx = 0, doneCount = 0, doneBytes = 0;
           const t0 = Date.now();
+          let useThumbs = redChk.checked && !!(pick && pick.file), thumbOk = 0, thumbFail = 0; // versions réduites : seulement si un catalogue fournit dates, lieux, personnages…
+          const dim = IMPORT_MAX_DIM;
+          const dl = async x=>{
+            if(useThumbs && x.thumbnailLink && /^image\//.test(x.mimeType || "")){
+              try{
+                const url = /=s\d+/.test(x.thumbnailLink) ? x.thumbnailLink.replace(/=s\d+[^=]*$/, "=s" + dim) : x.thumbnailLink + "=s" + dim;
+                const res = await fetch(url, {mode: "cors"});
+                if(!res.ok) throw new Error("HTTP " + res.status);
+                const b = await res.blob();
+                if(!b.size || !/^image\//.test(b.type)) throw new Error("réponse inattendue");
+                thumbOk++;
+                return new File([b], x.name, {type: b.type, lastModified: Date.parse(x.modifiedTime) || Date.now()});
+              }catch(e){
+                thumbFail++;
+                if(!thumbOk && thumbFail >= 3){ useThumbs = false; toast("Versions réduites indisponibles (Drive les refuse) : chargement des originaux, plus lent."); console.warn("[Imago] Miniatures Drive inaccessibles :", e); }
+              }
+            }
+            return download(x); // vidéo, miniature absente ou refusée : fichier complet
+          };
           const worker = async ()=>{
             while(true){
               const i = nextIdx++; if(i >= toGet.length) return;
-              files[i] = await download(toGet[i]);
+              files[i] = await dl(toGet[i]);
               doneCount++; doneBytes += files[i].size;
               const sec = (Date.now() - t0) / 1000, left = doneCount ? Math.round(sec / doneCount * (toGet.length - doneCount)) : 0;
               body.textContent = `Téléchargement ${doneCount} / ${toGet.length} — ${(doneBytes / 1048576).toFixed(0)} Mo` + (doneCount >= 5 && left > 5 ? ` — encore ≈ ${left >= 90 ? Math.round(left / 60) + " min" : left + " s"}` : "") + "…";
