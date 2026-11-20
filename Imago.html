@@ -2241,6 +2241,14 @@ svg.leaflet-image-layer.leaflet-interactive path {
       <p class="drive-note" id="favSrcStatus" style="margin:4px 0 12px;">Pas encore choisi. Il doit contenir l'album complet (Album-Favori.csv) et vos photos (sous-dossiers compris).</p>
       <button class="btn" id="btnFavPickDest" type="button">📂 3. Dossier de destination (ex. Favoris Rangain)…</button>
       <p class="drive-note" id="favDestStatus" style="margin:4px 0 12px;">Pas encore choisi. Il doit être différent des deux autres.</p>
+      <div class="search-field" style="margin-bottom:12px;"><label for="favMaxDim">Taille des photos déposées</label>
+        <select id="favMaxDim">
+          <option value="0">Originales (pleine taille)</option>
+          <option value="2400">Réduites : 2400 px (grand écran)</option>
+          <option value="1600">Réduites : 1600 px (téléphone — bien plus léger)</option>
+          <option value="1280">Réduites : 1280 px (très léger)</option>
+        </select>
+        <div class="drive-note" style="margin-top:4px;">Pour un usage sur téléphone via Drive, choisissez 1600 px : EXIF du catalogue conservés, photos ≈ 5 à 10 fois plus légères. Les vidéos restent inchangées.</div></div>
       <label style="display:flex; align-items:flex-start; gap:6px; margin-bottom:12px;"><input type="checkbox" id="favDryRun" style="width:auto; margin-top:3px;"> <span>Simulation : analyser et lister ce qui serait fait, sans rien écrire</span></label>
       <p class="drive-note" id="favProgress" style="margin-bottom:8px; font-weight:600;"></p>
       <div id="favLog" style="max-height:220px; overflow-y:auto; font-size:12.5px; line-height:1.55; background:var(--bg-panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:none; white-space:pre-wrap;"></div>
@@ -7278,11 +7286,20 @@ document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
           }
 
           // 4) Téléchargement des seuls médias retenus.
-          const files = [];
-          for(let i=0;i<toGet.length;i++){
-            body.textContent = `Téléchargement ${i+1} / ${toGet.length}…`;
-            files.push(await download(toGet[i]));
-          }
+          // Plusieurs téléchargements EN PARALLÈLE (6 à la fois) : un fichier à la fois laissait la connexion presque inactive
+          // (chaque photo attendait l'aller-retour réseau de la précédente — très lent sur mobile).
+          const files = new Array(toGet.length); let nextIdx = 0, doneCount = 0, doneBytes = 0;
+          const t0 = Date.now();
+          const worker = async ()=>{
+            while(true){
+              const i = nextIdx++; if(i >= toGet.length) return;
+              files[i] = await download(toGet[i]);
+              doneCount++; doneBytes += files[i].size;
+              const sec = (Date.now() - t0) / 1000, left = doneCount ? Math.round(sec / doneCount * (toGet.length - doneCount)) : 0;
+              body.textContent = `Téléchargement ${doneCount} / ${toGet.length} — ${(doneBytes / 1048576).toFixed(0)} Mo` + (doneCount >= 5 && left > 5 ? ` — encore ≈ ${left >= 90 ? Math.round(left / 60) + " min" : left + " s"}` : "") + "…";
+            }
+          };
+          await Promise.all(Array.from({length: Math.min(6, toGet.length)}, worker));
           close();
           if(!files.length) return toast(notKept.length ? "Aucune photo/vidéo du dossier ne correspond aux filtres choisis — rien à charger." : "Aucune image ni vidéo dans ce dossier.");
           // Les médias NON téléchargés restent présents sur Drive : on les déclare par de simples « coquilles »
@@ -8250,6 +8267,21 @@ async function hofReadCsvTable(file){
   return {cols, rows, hasId: cols.includes("id"), hasSd: cols.includes("sousDossier"), hasFn: cols.includes("fileName")};
 }
 const FAV = {keep: null, src: null, dest: null, running: false, stop: false, report: []};
+// Réduit une photo à maxDim px (plus grand côté), redressée selon son EXIF d'origine, en JPEG, puis y écrit les EXIF du catalogue.
+// Renvoie null si aucune réduction n'est nécessaire pour un JPEG (la photo est alors copiée sans ré-encodage).
+async function favResizeJpegWithMeta(orig, maxDim, p){
+  const bmp = await createImageBitmap(orig); // l'orientation EXIF est appliquée à la décompression : la photo résultante est droite
+  const sc = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+  if(sc >= 1 && /\.jpe?g$/i.test(orig.name || "")){ if(bmp.close) bmp.close(); return null; }
+  const w = Math.max(1, Math.round(bmp.width * sc)), h = Math.max(1, Math.round(bmp.height * sc));
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  cv.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  if(bmp.close) bmp.close();
+  const jpg = await new Promise(r=> cv.toBlob(r, "image/jpeg", 0.82));
+  cv.width = cv.height = 0; // libère la mémoire du canvas
+  if(!jpg) throw new Error("réduction impossible");
+  return dataURLtoBlob(await writeMetadataIntoJpegDataUrl(await fileToDataUrl(jpg), exportMetaFields(p)));
+}
 const favEl = id => document.getElementById(id);
 function favLog(t){ const el = favEl("favLog"); el.style.display = "block"; el.textContent += t + "\n"; el.scrollTop = el.scrollHeight; }
 function favRefreshRun(){ favEl("btnFavRun").disabled = FAV.running || !(FAV.keep && FAV.src && FAV.dest); }
@@ -8289,7 +8321,7 @@ async function favRun(){
   if(!dry && (await FAV.dest.requestPermission({mode: "readwrite"})) !== "granted"){ toast("Écriture refusée dans le dossier de destination."); return; }
   FAV.running = true; FAV.stop = false; RO.stop = false; FAV.report = [];
   favEl("favLog").textContent = ""; favEl("favLog").style.display = "none";
-  ["btnFavPickKeep","btnFavPickSrc","btnFavPickDest","favDryRun","btnFavRun","btnFavClose"].forEach(id=> favEl(id).disabled = true);
+  ["btnFavPickKeep","btnFavPickSrc","btnFavPickDest","favDryRun","favMaxDim","btnFavRun","btnFavClose"].forEach(id=> favEl(id).disabled = true);
   favEl("btnFavStop").classList.remove("hidden"); favEl("btnFavReport").classList.add("hidden");
   const st = {done: 0, already: 0, notFound: 0, failed: 0, fromFull: 0, fromKeep: 0, renamed: 0};
   const note = (p, result, detail, info)=>{ FAV.report.push([p.sousDossier || "", p.fileName, result, detail || ""].concat(roReportCells(info))); };
@@ -8347,9 +8379,17 @@ async function favRun(){
         const cand = roPickCandidate(r.list, p.sousDossier);
         const orig = await cand.handle.getFile();
         const isVideo = !!p.isVideo || VIDEO_NAME_RE.test(name);
-        const toJpg = !isVideo && /\.(bmp|png)$/i.test(cand.handle.name || name);
-        let blob = orig;
-        if(toJpg){
+        const maxDim = parseInt(favEl("favMaxDim").value, 10) || 0;
+        const wantResize = !isVideo && maxDim > 0;
+        const toJpg = !isVideo && (/\.(bmp|png)$/i.test(cand.handle.name || name) || (wantResize && !/\.jpe?g$/i.test(name)));
+        let blob = orig, resized = null;
+        if(wantResize){
+          try{ resized = await favResizeJpegWithMeta(orig, maxDim, p); }
+          catch(e){ favLog(`⚠️ ${name} : réduction impossible (${(e && e.message) || e}) — photo copiée en pleine taille`); }
+          if(resized && !lastExifWriteStatus.ok) favLog(`⚠️ ${name} : EXIF non écrit (${lastExifWriteStatus.reason})`);
+        }
+        if(resized){ blob = resized; }
+        else if(toJpg){
           blob = dataURLtoBlob(await roToJpegDataUrl(orig));
           blob = dataURLtoBlob(await writeMetadataIntoJpegDataUrl(await fileToDataUrl(blob), exportMetaFields(p)));
           if(!lastExifWriteStatus.ok) favLog(`⚠️ ${name} : EXIF non écrit (${lastExifWriteStatus.reason})`);
@@ -8390,7 +8430,7 @@ async function favRun(){
     console.warn("[Imago] Dossier de favoris interrompu :", e);
   }finally{
     FAV.running = false;
-    ["btnFavPickKeep","btnFavPickSrc","btnFavPickDest","favDryRun","btnFavClose"].forEach(id=> favEl(id).disabled = false);
+    ["btnFavPickKeep","btnFavPickSrc","btnFavPickDest","favDryRun","favMaxDim","btnFavClose"].forEach(id=> favEl(id).disabled = false);
     favRefreshRun();
     favEl("btnFavStop").classList.add("hidden"); favEl("btnFavReport").classList.remove("hidden");
   }
