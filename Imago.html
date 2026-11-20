@@ -1201,6 +1201,31 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   #modalInfo .modal-body{ flex:1; overflow-y:auto; padding:12px 14px; }
   html.info-docked .app-body{ right:var(--dock-w); }
 }
+
+/* ===== Tactile : « ascenseur » de la planche-contact large et facile à saisir (l'ascenseur natif d'Android est trop fin) ===== */
+.fast-scroll{ display:none; position:fixed; z-index:701; width:44px; pointer-events:none; touch-action:none; user-select:none; -webkit-user-select:none; }
+.fast-scroll.on{ display:block; }
+.fast-scroll .fs-thumb{
+  position:absolute; right:4px; width:12px; border-radius:7px; background:var(--copper); opacity:.6;
+  box-shadow:0 0 0 1px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.4); pointer-events:auto; touch-action:none;
+  transition:opacity .2s ease, width .15s ease;
+}
+.fast-scroll .fs-thumb::before{ content:""; position:absolute; top:-14px; bottom:-14px; left:-30px; right:-10px; } /* zone de prise élargie (≈ 52 px de large) */
+.fast-scroll .fs-thumb::after{ /* repère de prise : trois traits */
+  content:""; position:absolute; left:50%; top:50%; width:6px; height:14px; transform:translate(-50%,-50%);
+  background:linear-gradient(to bottom, rgba(0,0,0,.45) 2px, transparent 2px, transparent 6px, rgba(0,0,0,.45) 6px, rgba(0,0,0,.45) 8px, transparent 8px, transparent 12px, rgba(0,0,0,.45) 12px);
+  opacity:0; transition:opacity .15s ease;
+}
+.fast-scroll.drag .fs-thumb{ opacity:1; width:22px; right:2px; }
+.fast-scroll.drag .fs-thumb::after{ opacity:1; }
+.fast-scroll .fs-bubble{
+  position:absolute; right:40px; display:none; transform:translateY(-50%); pointer-events:none;
+  padding:9px 14px; background:rgba(20,32,26,.96); border:1px solid var(--copper); color:var(--copper-hi);
+  border-radius:12px; font-size:16px; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,.5);
+}
+.fast-scroll.drag .fs-bubble{ display:block; }
+@media (pointer: fine){ .fast-scroll{ display:none !important; } }
+@media (pointer: coarse){ .gallery-grid{ margin-right:16px; } }
 </style>
 <style id="leafletCss">/* Leaflet 1.9.4 (BSD-2-Clause) © Vladimir Agafonkin — embarqué pour fonctionner hors connexion */
 /* required styles */
@@ -21830,6 +21855,73 @@ async function driveTileFetch(tile){
   // repli : version réduite complète (la photo est alors aussi prête pour le visualiseur)
   if(await hydratePhotoFromDrive(p) && p.thumbDataUrl) driveSetTileImage(tile, p.thumbDataUrl);
 }
+
+/* Ascenseur tactile de la planche-contact : poignée large, saisissable n'importe où sur sa hauteur (zone de prise ≈ 52 px),
+   avec une bulle « AAAA-MM · n / N » pendant le glissement (même repère de date que l'infobulle de la souris). */
+(function initGalleryFastScroll(){
+  if(!window.matchMedia("(pointer: coarse)").matches) return;
+  const scroller = document.getElementById("galleryScroll"), grid = document.getElementById("galleryGrid"), screen = document.getElementById("galleryScreen");
+  if(!scroller || !grid || !screen) return;
+  const el = document.createElement("div"); el.className = "fast-scroll";
+  el.innerHTML = '<div class="fs-thumb"></div><div class="fs-bubble"></div>';
+  document.body.appendChild(el);
+  const thumb = el.firstChild, bubble = el.lastChild;
+  let dragging = false, grabDy = 0, raf = 0;
+  const maxScroll = ()=> Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  const blockedByOverlay = ()=> !!document.querySelector(".modal-overlay.show:not(#modalInfo), .slideshow.show");
+  function layout(){
+    raf = 0;
+    const useful = !screen.classList.contains("hidden") && maxScroll() > scroller.clientHeight * 0.6 && !blockedByOverlay();
+    el.classList.toggle("on", useful);
+    if(!useful) return;
+    const r = scroller.getBoundingClientRect();
+    el.style.top = r.top + "px"; el.style.height = r.height + "px"; el.style.left = (r.right - 44) + "px";
+    const th = Math.max(64, Math.round(r.height * scroller.clientHeight / scroller.scrollHeight));
+    thumb.style.height = th + "px";
+    thumb.style.top = (maxScroll() ? scroller.scrollTop / maxScroll() * (r.height - th) : 0) + "px";
+  }
+  const schedule = ()=>{ if(!raf) raf = requestAnimationFrame(layout); };
+  // Vignette située à la position de défilement donnée (recherche dichotomique, jusqu'à ~30 000 vignettes)
+  function tileIndexAt(y){
+    const tiles = grid.children, n = tiles.length; if(!n) return -1;
+    const sTop = scroller.getBoundingClientRect().top;
+    const posOf = t=> t.getBoundingClientRect().top - sTop + scroller.scrollTop; // position de la vignette dans le contenu défilant
+    let lo = 0, hi = n - 1;
+    while(lo < hi){ const mid = (lo + hi) >> 1; if(posOf(tiles[mid]) < y) lo = mid + 1; else hi = mid; }
+    return lo;
+  }
+  function showBubble(yCenter){
+    const idx = tileIndexAt(scroller.scrollTop + scroller.clientHeight * 0.25), tiles = grid.children;
+    if(idx < 0){ bubble.textContent = ""; return; }
+    const p = State.photos.find(ph=> ph.id === tiles[idx].dataset.id), d = p && String(p.dateAchat || "");
+    const month = /^\d{4}-\d{2}/.test(d || "") ? d.slice(0, 7) : "—";
+    bubble.textContent = `${month}  ·  ${idx + 1} / ${tiles.length}`;
+    bubble.style.top = Math.max(20, Math.min(el.offsetHeight - 20, yCenter)) + "px";
+  }
+  thumb.addEventListener("pointerdown", e=>{
+    dragging = true; grabDy = e.clientY - thumb.getBoundingClientRect().top;
+    try{ thumb.setPointerCapture(e.pointerId); }catch(_){}
+    el.classList.add("drag"); e.preventDefault();
+    showBubble(thumb.offsetTop + thumb.offsetHeight / 2);
+  });
+  thumb.addEventListener("pointermove", e=>{
+    if(!dragging) return;
+    const r = el.getBoundingClientRect(), room = r.height - thumb.offsetHeight;
+    const y = Math.min(room, Math.max(0, e.clientY - r.top - grabDy));
+    scroller.scrollTop = room > 0 ? y / room * maxScroll() : 0;
+    thumb.style.top = y + "px";
+    showBubble(y + thumb.offsetHeight / 2);
+    e.preventDefault();
+  });
+  const end = ()=>{ if(!dragging) return; dragging = false; el.classList.remove("drag"); schedule(); };
+  thumb.addEventListener("pointerup", end); thumb.addEventListener("pointercancel", end); thumb.addEventListener("lostpointercapture", end);
+  scroller.addEventListener("scroll", schedule, {passive: true});
+  window.addEventListener("resize", schedule);
+  new MutationObserver(schedule).observe(grid, {childList: true});   // vignettes ajoutées : la poignée rétrécit
+  new MutationObserver(schedule).observe(screen, {attributes: true, attributeFilter: ["class"]}); // planche-contact ouverte / fermée
+  setInterval(schedule, 700); // filet de sécurité : fenêtres ouvertes/fermées, rotation, changement de taille des miniatures
+  schedule();
+})();
 
 /* topbarSync : recopie la hauteur réelle de la barre du haut dans --topbar-h (elle peut occuper plusieurs lignes : smartphone, fenêtre étroite).
    Mesure ÉTALONNÉE : avec la propriété CSS « zoom » (échelles de l'Agencement), Chrome rapporte selon sa version des tailles zoomées ou non ;
