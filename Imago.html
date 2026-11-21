@@ -1201,31 +1201,6 @@ details.pave .btn{width:100%; margin-bottom:8px;}
   #modalInfo .modal-body{ flex:1; overflow-y:auto; padding:12px 14px; }
   html.info-docked .app-body{ right:var(--dock-w); }
 }
-
-/* ===== Tactile : « ascenseur » de la planche-contact large et facile à saisir (l'ascenseur natif d'Android est trop fin) ===== */
-.fast-scroll{ display:none; position:fixed; z-index:701; width:44px; pointer-events:none; touch-action:none; user-select:none; -webkit-user-select:none; }
-.fast-scroll.on{ display:block; }
-.fast-scroll .fs-thumb{
-  position:absolute; right:4px; width:12px; border-radius:7px; background:var(--copper); opacity:.6;
-  box-shadow:0 0 0 1px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.4); pointer-events:auto; touch-action:none;
-  transition:opacity .2s ease, width .15s ease;
-}
-.fast-scroll .fs-thumb::before{ content:""; position:absolute; top:-14px; bottom:-14px; left:-30px; right:-10px; } /* zone de prise élargie (≈ 52 px de large) */
-.fast-scroll .fs-thumb::after{ /* repère de prise : trois traits */
-  content:""; position:absolute; left:50%; top:50%; width:6px; height:14px; transform:translate(-50%,-50%);
-  background:linear-gradient(to bottom, rgba(0,0,0,.45) 2px, transparent 2px, transparent 6px, rgba(0,0,0,.45) 6px, rgba(0,0,0,.45) 8px, transparent 8px, transparent 12px, rgba(0,0,0,.45) 12px);
-  opacity:0; transition:opacity .15s ease;
-}
-.fast-scroll.drag .fs-thumb{ opacity:1; width:22px; right:2px; }
-.fast-scroll.drag .fs-thumb::after{ opacity:1; }
-.fast-scroll .fs-bubble{
-  position:absolute; right:40px; display:none; transform:translateY(-50%); pointer-events:none;
-  padding:9px 14px; background:rgba(20,32,26,.96); border:1px solid var(--copper); color:var(--copper-hi);
-  border-radius:12px; font-size:16px; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,.5);
-}
-.fast-scroll.drag .fs-bubble{ display:block; }
-@media (pointer: fine){ .fast-scroll{ display:none !important; } }
-@media (pointer: coarse){ .gallery-grid{ margin-right:16px; } }
 </style>
 <style id="leafletCss">/* Leaflet 1.9.4 (BSD-2-Clause) © Vladimir Agafonkin — embarqué pour fonctionner hors connexion */
 /* required styles */
@@ -1976,6 +1951,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <button class="drive-btn" id="btnDriveConnect"><span id="lblDriveConnect">Connecter à Drive</span><span class="status">●</span></button>
     <button class="drive-btn" id="btnDriveLoad"><span id="lblDriveLoad">Charger depuis Drive</span><span class="status">●</span></button>
     <button class="drive-btn" id="btnDriveSave"><span id="lblDriveSave">Sauver sur Drive</span><span class="status">●</span></button>
+    <button class="btn" id="btnDriveMissing" style="margin-top:8px;" title="Compare le catalogue chargé au contenu réel du dossier Drive et liste les fichiers à téléverser">📋 Fichiers manquants sur Drive…</button>
     <button class="btn" id="btnPartnerAccess" style="margin-top:8px;">🤝 Donner accès à un partenaire de confiance…</button>
     <p class="drive-note"><button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
       <span class="ib" title="La connexion Google Drive nécessite un identifiant client OAuth (Google Cloud Console, API Drive activée). Le dossier Drive IMAGINES héberge vos partages.">ⓘ</span></p>
@@ -21038,6 +21014,155 @@ async function shareDriveFileWithEmail(fileId, email){
   });
 }
 
+/* ---- Liste des fichiers du catalogue absents de Drive (ordre de téléversement non abouti) ---- */
+let driveLoadedCatalog = null; // {name, path, rows:[{fileName, sousDossier, corbeille}]} du dernier catalogue chargé depuis Drive
+function csvCatalogRows(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+  if(lines.length < 2) return [];
+  const d = detectCsvDelimiter(lines[0]), header = parseCsvLine(lines[0], d), rows = [];
+  for(let i=1;i<lines.length;i++){
+    const c = parseCsvLine(lines[i], d), r = {}; header.forEach((h,k)=> r[h] = c[k]);
+    if(r.fileName) rows.push({fileName: r.fileName, sousDossier: r.sousDossier || "", corbeille: r.corbeille === "true"});
+  }
+  return rows;
+}
+async function showDriveMissingFiles(){
+  if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
+  if(!driveMediaFolderId()){ toast("Chargez d'abord un catalogue avec « Charger depuis Drive »."); return; }
+  const ov = document.createElement("div"); ov.className = "modal-overlay show";
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Fichiers à téléverser dans Drive</h2><button class="modal-close">×</button></div><div class="modal-body">Lecture du dossier Drive…</div></div>';
+  document.body.appendChild(ov);
+  const body = ov.querySelector(".modal-body"); ov.querySelector(".modal-close").onclick = ()=> ov.remove();
+  try{
+    // listing FRAIS (sous-dossiers compris) : après un téléversement, on relance pour vérifier
+    driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
+    const idx = await getDriveMediaIndexDeep();
+    const cat = driveLoadedCatalog;
+    const srcRows = cat ? cat.rows : State.photos.filter(p=> p.fromCatalog).map(p=>({fileName: p.fileName, sousDossier: p.sousDossier || "", corbeille: !!p.corbeille}));
+    const seen = new Set(), rows = [];
+    srcRows.forEach(r=>{ const k = catalogLooseKey(r.fileName); if(!seen.has(k)){ seen.add(k); rows.push(r); } });
+    let cand = rows.filter(r=> !driveIndexFind(idx, r.fileName));
+    // dernier recours, comme à l'ouverture d'une photo : le fichier est-il ailleurs sur le Drive ?
+    let done = 0, q = cand.slice(), keep = [];
+    await Promise.all(Array.from({length: 6}, async ()=>{
+      while(q.length){
+        const r = q.shift();
+        body.textContent = "Vérification de " + cand.length + " fichier(s) absent(s) du dossier… (" + (++done) + "/" + cand.length + ")";
+        if(!(await driveFindByName(r.fileName))) keep.push(r);
+      }
+    }));
+    const order = new Map(rows.map((r,i)=>[catalogLooseKey(r.fileName), i]));
+    keep.sort((x,y)=> order.get(catalogLooseKey(x.fileName)) - order.get(catalogLooseKey(y.fileName)));
+    const local = r=>{ const p = State.photos.find(x=> x.fileName === r.fileName); return !!(p && (p.hasFullImage || p.dataUrl || p.thumbDataUrl || p.posterDataUrl)); };
+    /* Téléversement : l'utilisateur désigne le dossier local qui contient les originaux (sous-dossiers compris) ;
+       chaque fichier absent de Drive y est cherché par nom, puis envoyé dans le dossier Drive du catalogue sous le nom
+       EXACT du catalogue. Rien n'est supprimé ni écrasé sur Drive ; les fichiers introuvables localement sont listés. */
+    const startUpload = async (list)=>{
+      if(typeof window.showDirectoryPicker !== "function"){ toast("Le choix d'un dossier n'est possible que sur Chrome ou Edge, sur ordinateur.", 7000); return; }
+      let dir;
+      try{ dir = await window.showDirectoryPicker({id: "imago-originals", mode: "read"}); }
+      catch(e){ if(!(e && e.name === "AbortError")) toast("⚠️ Dossier inaccessible (" + ((e && e.message) || e) + ").", 7000); return; }
+      const folderId = driveMediaFolderId();
+      body.innerHTML = "";
+      const mk = (tag, css, txt)=>{ const e = document.createElement(tag); if(css) e.style.cssText = css; if(txt!=null) e.textContent = txt; body.appendChild(e); return e; };
+      const st = mk("p", "margin:0 0 8px; font-weight:600;", "Lecture du dossier « " + dir.name + " »…");
+      const bar = mk("div", "height:8px; background:var(--bg-panel-2); border:1px solid var(--line); border-radius:4px; overflow:hidden; margin-bottom:8px;");
+      const fill = document.createElement("div"); fill.style.cssText = "height:100%; width:0%; background:var(--copper); transition:width .15s ease;"; bar.appendChild(fill);
+      const log = mk("textarea", "width:100%; height:200px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;");
+      log.readOnly = true;
+      const addLog = t=>{ log.value += t + "\n"; log.scrollTop = log.scrollHeight; };
+      const btnStop = document.createElement("button"); btnStop.className = "btn"; btnStop.style.cssText = "width:100%; margin-top:8px;"; btnStop.textContent = "⏹ Arrêter";
+      body.appendChild(btnStop);
+      RO.stop = false; btnStop.onclick = ()=>{ RO.stop = true; st.textContent = "Arrêt en cours…"; };
+      let okN = 0; const failed = [], notFound = [], fuzzy = [];
+      try{
+        const oidx = await roIndexOrigin(dir, n=>{ st.textContent = "Lecture du dossier « " + dir.name + " »… " + n + " fichier(s)"; });
+        addLog("Dossier local lu. " + list.length + " fichier(s) à chercher.");
+        let consecutiveFail = 0;
+        for(let i=0; i<list.length && !RO.stop; i++){
+          const r = list[i], name = r.fileName;
+          st.textContent = "Envoi " + (i+1) + "/" + list.length + " : " + name;
+          fill.style.width = Math.round(i / list.length * 100) + "%";
+          const lk = roLookupName(oidx, name);
+          let ents = lk.list || [];
+          if(!ents.length){ notFound.push((r.sousDossier ? r.sousDossier + "/" : "") + name); addLog("— introuvable localement : " + name); continue; }
+          const sk = roAggrKey(r.sousDossier || "");
+          const ent = (sk && ents.find(e=> roAggrKey(e.parts.join("/")).includes(sk))) || ents[0];
+          try{
+            const file = await ent.handle.getFile();
+            const isVideo = VIDEO_NAME_RE.test(name);
+            await driveResumableUpload(file, {name, parentId: folderId, mimeType: roMime(file, name, isVideo)}, (a,b)=>{
+              st.textContent = "Envoi " + (i+1) + "/" + list.length + " : " + name + " (" + Math.round(a/b*100) + " %)";
+            });
+            okN++; consecutiveFail = 0;
+            if(lk.fuzzy){ fuzzy.push(name + " ← " + ent.name); addLog("✓ " + name + " (envoyé depuis « " + ent.name + " », " + lk.fuzzy + ")"); }
+            else addLog("✓ " + name);
+          }catch(e){
+            const msg = (e && e.message) || String(e);
+            failed.push(name + " : " + msg); addLog("❌ " + name + " : " + msg);
+            if(++consecutiveFail >= 5){ addLog("⏹ 5 échecs consécutifs : arrêt (connexion, quota Drive ou session expirée ?)."); break; }
+          }
+          await delay(10);
+        }
+      }catch(e){ addLog("❌ " + ((e && e.message) || e)); }
+      fill.style.width = "100%"; btnStop.remove();
+      driveMediaIndexPromise = null; driveMediaIndexFolder = ""; driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
+      st.textContent = (RO.stop ? "⏹ Arrêté. " : "✅ Terminé. ") + okN + " fichier(s) envoyé(s) sur Drive, " + notFound.length + " introuvable(s) dans « " + dir.name + " », " + failed.length + " échec(s).";
+      const row = mk("div", "display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;");
+      const bAgain = document.createElement("button"); bAgain.className = "btn"; bAgain.style.flex = "1"; bAgain.textContent = "🔄 Revérifier Drive";
+      bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles(); };
+      row.appendChild(bAgain);
+      if(notFound.length || failed.length){
+        const bCp = document.createElement("button"); bCp.className = "btn"; bCp.style.flex = "1"; bCp.textContent = "📋 Copier introuvables / échecs";
+        bCp.onclick = async ()=>{
+          const t = (notFound.length ? "INTROUVABLES LOCALEMENT :\n" + notFound.join("\n") + "\n\n" : "") + (failed.length ? "ÉCHECS :\n" + failed.join("\n") : "");
+          try{ await navigator.clipboard.writeText(t); toast("Liste copiée dans le presse-papiers."); }catch(e){ log.value = t; log.focus(); log.select(); toast("Presse-papiers indisponible : texte sélectionné, copiez avec Ctrl/Cmd+C."); }
+        };
+        row.appendChild(bCp);
+      }
+      toast(st.textContent, 10000);
+      if(okN) prefetchDriveImages(GALLERY_INITIAL_BATCH);
+    };
+    const render = ()=>{
+      const withTrash = body.querySelector("#dmTrash") ? body.querySelector("#dmTrash").checked : false;
+      const list = keep.filter(r=> withTrash || !r.corbeille);
+      const nTrash = keep.filter(r=> r.corbeille).length;
+      const lines = list.map(r=> (r.sousDossier ? r.sousDossier.replace(/[\\/]+$/,"") + "/" : "") + r.fileName);
+      body.innerHTML = "";
+      const mk = (tag, css, txt)=>{ const e = document.createElement(tag); if(css) e.style.cssText = css; if(txt!=null) e.textContent = txt; body.appendChild(e); return e; };
+      mk("p", "margin:0 0 8px; font-size:.9em;",
+        (cat ? "Catalogue « " + cat.name + " »" : "Catalogue en cours") + " : " + rows.length + " fichier(s) référencé(s), " + (rows.length - keep.length) + " présent(s) sur Drive (« " + driveMediaFolderLabel() + " », sous-dossiers compris, " + idx.listed + " fichier(s) image/vidéo lus), "
+        + keep.length + " absent(s).");
+      if(!keep.length){ mk("p", "font-weight:600;", "✅ Tout le catalogue est présent sur Drive."); return; }
+      const lab = mk("label", "display:flex; gap:6px; align-items:center; margin:0 0 8px; font-size:.9em;");
+      lab.innerHTML = '<input type="checkbox" id="dmTrash" style="width:auto;"' + (withTrash ? " checked" : "") + '> Inclure les ' + nTrash + ' fichier(s) à la corbeille';
+      lab.querySelector("input").onchange = render;
+      if(!nTrash) lab.style.display = "none";
+      mk("p", "margin:0 0 6px; font-weight:600;", list.length + " fichier(s) à téléverser (" + list.filter(local).length + " disponible(s) sur cet appareil) :");
+      const ta = mk("textarea", "width:100%; height:200px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;");
+      ta.readOnly = true; ta.value = lines.join("\n");
+      const bar = mk("div", "display:flex; gap:8px; margin-top:8px;");
+      const bCopy = document.createElement("button"); bCopy.className = "btn"; bCopy.style.flex = "1"; bCopy.textContent = "📋 Copier la liste";
+      bCopy.onclick = async ()=>{ try{ await navigator.clipboard.writeText(ta.value); toast("Liste copiée dans le presse-papiers."); }catch(e){ ta.focus(); ta.select(); toast("Presse-papiers indisponible : texte sélectionné, copiez avec Ctrl/Cmd+C."); } };
+      const bCsv = document.createElement("button"); bCsv.className = "btn"; bCsv.style.flex = "1"; bCsv.textContent = "⬇ Télécharger (.csv)";
+      bCsv.onclick = ()=>{
+        const out = ["fileName;sousDossier;disponibleSurCetAppareil;corbeille"].concat(list.map(r=> [r.fileName, r.sousDossier, local(r) ? "oui" : "non", r.corbeille ? "oui" : "non"].map(csvEscape).join(";")));
+        downloadCsvFile(out.join("\n"), "A-televerser-" + (cat ? cat.name.replace(/\.csv$/i,"") : "catalogue") + ".csv");
+      };
+      const bAgain = document.createElement("button"); bAgain.className = "btn"; bAgain.style.flex = "1"; bAgain.textContent = "🔄 Revérifier";
+      bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles(); };
+      const bUp = document.createElement("button"); bUp.className = "btn copper"; bUp.style.cssText = "flex:1 1 100%; order:-1;"; bUp.textContent = "⬆ Téléverser ces " + list.length + " fichier(s) sur Drive…";
+      bUp.title = "Vous désignez le dossier local contenant les originaux (sous-dossiers compris) ; les fichiers sont envoyés dans le dossier Drive du catalogue. Rien n'est supprimé ni écrasé.";
+      bUp.disabled = !list.length; bUp.onclick = ()=> startUpload(list);
+      bar.style.flexWrap = "wrap";
+      bar.append(bUp, bCopy, bCsv, bAgain);
+      mk("p", "margin:8px 0 0; font-size:.8em; opacity:.8;", "Les noms sont comparés sans tenir compte de la casse, des accents ni de .jpg/.jpeg. « Téléverser » vous demande le dossier local des originaux (sous-dossiers compris) puis envoie chaque fichier trouvé dans le dossier Drive du catalogue, sous le nom du catalogue. Rien n'est supprimé ni écrasé sur Drive. Vous pouvez aussi les déposer à la main puis « Revérifier ».");
+    };
+    render();
+  }catch(err){ ov.remove(); toast(err.message || String(err)); }
+}
+document.getElementById("btnDriveMissing").addEventListener("click", showDriveMissingFiles);
+
 document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
   /* Avant : recherche limitée à la RACINE d'IMAGINES, avec un nom imposé « Catalogue-<chiffres>.csv » et choix
@@ -21089,6 +21214,7 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
         try{
           const text = await (await driveApiFetch(api.replace("?","/") + x.id + "?alt=media")).text();
           if(text.split(/\r?\n/).filter(l=>l.trim().length).length < 2){ close(); toast("« " + x.name + " » est vide : rien n'a été chargé."); return; }
+          driveLoadedCatalog = {name: x.name, path: x.path, rows: csvCatalogRows(text)};
           await mergeCsvIntoCatalog(text);
           State.drive.fileId = x.id;
           State.catalogFileName = x.name;
@@ -21855,73 +21981,6 @@ async function driveTileFetch(tile){
   // repli : version réduite complète (la photo est alors aussi prête pour le visualiseur)
   if(await hydratePhotoFromDrive(p) && p.thumbDataUrl) driveSetTileImage(tile, p.thumbDataUrl);
 }
-
-/* Ascenseur tactile de la planche-contact : poignée large, saisissable n'importe où sur sa hauteur (zone de prise ≈ 52 px),
-   avec une bulle « AAAA-MM · n / N » pendant le glissement (même repère de date que l'infobulle de la souris). */
-(function initGalleryFastScroll(){
-  if(!window.matchMedia("(pointer: coarse)").matches) return;
-  const scroller = document.getElementById("galleryScroll"), grid = document.getElementById("galleryGrid"), screen = document.getElementById("galleryScreen");
-  if(!scroller || !grid || !screen) return;
-  const el = document.createElement("div"); el.className = "fast-scroll";
-  el.innerHTML = '<div class="fs-thumb"></div><div class="fs-bubble"></div>';
-  document.body.appendChild(el);
-  const thumb = el.firstChild, bubble = el.lastChild;
-  let dragging = false, grabDy = 0, raf = 0;
-  const maxScroll = ()=> Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  const blockedByOverlay = ()=> !!document.querySelector(".modal-overlay.show:not(#modalInfo), .slideshow.show");
-  function layout(){
-    raf = 0;
-    const useful = !screen.classList.contains("hidden") && maxScroll() > scroller.clientHeight * 0.6 && !blockedByOverlay();
-    el.classList.toggle("on", useful);
-    if(!useful) return;
-    const r = scroller.getBoundingClientRect();
-    el.style.top = r.top + "px"; el.style.height = r.height + "px"; el.style.left = (r.right - 44) + "px";
-    const th = Math.max(64, Math.round(r.height * scroller.clientHeight / scroller.scrollHeight));
-    thumb.style.height = th + "px";
-    thumb.style.top = (maxScroll() ? scroller.scrollTop / maxScroll() * (r.height - th) : 0) + "px";
-  }
-  const schedule = ()=>{ if(!raf) raf = requestAnimationFrame(layout); };
-  // Vignette située à la position de défilement donnée (recherche dichotomique, jusqu'à ~30 000 vignettes)
-  function tileIndexAt(y){
-    const tiles = grid.children, n = tiles.length; if(!n) return -1;
-    const sTop = scroller.getBoundingClientRect().top;
-    const posOf = t=> t.getBoundingClientRect().top - sTop + scroller.scrollTop; // position de la vignette dans le contenu défilant
-    let lo = 0, hi = n - 1;
-    while(lo < hi){ const mid = (lo + hi) >> 1; if(posOf(tiles[mid]) < y) lo = mid + 1; else hi = mid; }
-    return lo;
-  }
-  function showBubble(yCenter){
-    const idx = tileIndexAt(scroller.scrollTop + scroller.clientHeight * 0.25), tiles = grid.children;
-    if(idx < 0){ bubble.textContent = ""; return; }
-    const p = State.photos.find(ph=> ph.id === tiles[idx].dataset.id), d = p && String(p.dateAchat || "");
-    const month = /^\d{4}-\d{2}/.test(d || "") ? d.slice(0, 7) : "—";
-    bubble.textContent = `${month}  ·  ${idx + 1} / ${tiles.length}`;
-    bubble.style.top = Math.max(20, Math.min(el.offsetHeight - 20, yCenter)) + "px";
-  }
-  thumb.addEventListener("pointerdown", e=>{
-    dragging = true; grabDy = e.clientY - thumb.getBoundingClientRect().top;
-    try{ thumb.setPointerCapture(e.pointerId); }catch(_){}
-    el.classList.add("drag"); e.preventDefault();
-    showBubble(thumb.offsetTop + thumb.offsetHeight / 2);
-  });
-  thumb.addEventListener("pointermove", e=>{
-    if(!dragging) return;
-    const r = el.getBoundingClientRect(), room = r.height - thumb.offsetHeight;
-    const y = Math.min(room, Math.max(0, e.clientY - r.top - grabDy));
-    scroller.scrollTop = room > 0 ? y / room * maxScroll() : 0;
-    thumb.style.top = y + "px";
-    showBubble(y + thumb.offsetHeight / 2);
-    e.preventDefault();
-  });
-  const end = ()=>{ if(!dragging) return; dragging = false; el.classList.remove("drag"); schedule(); };
-  thumb.addEventListener("pointerup", end); thumb.addEventListener("pointercancel", end); thumb.addEventListener("lostpointercapture", end);
-  scroller.addEventListener("scroll", schedule, {passive: true});
-  window.addEventListener("resize", schedule);
-  new MutationObserver(schedule).observe(grid, {childList: true});   // vignettes ajoutées : la poignée rétrécit
-  new MutationObserver(schedule).observe(screen, {attributes: true, attributeFilter: ["class"]}); // planche-contact ouverte / fermée
-  setInterval(schedule, 700); // filet de sécurité : fenêtres ouvertes/fermées, rotation, changement de taille des miniatures
-  schedule();
-})();
 
 /* topbarSync : recopie la hauteur réelle de la barre du haut dans --topbar-h (elle peut occuper plusieurs lignes : smartphone, fenêtre étroite).
    Mesure ÉTALONNÉE : avec la propriété CSS « zoom » (échelles de l'Agencement), Chrome rapporte selon sa version des tailles zoomées ou non ;
