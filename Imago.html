@@ -485,6 +485,36 @@ details.pave .btn{width:100%; margin-bottom:8px;}
    standard et ignore les ::-webkit-scrollbar ci-dessus dès que scrollbar-color est défini : ils sont donc gardés pour les
    navigateurs plus anciens mais, pour rester cohérents, la glissière y est éclaircie de la même façon. */
 .gallery-scroll{scrollbar-width:thin; scrollbar-color:var(--copper) #2a3f33;}
+/* ===== Smartphone UNIQUEMENT : ascenseur de la galerie bien visible et manipulable au doigt =====
+   Les navigateurs mobiles (Android, iPhone) n'affichent qu'un filet très fin qui disparaît dès qu'on lâche l'écran, et ignorent
+   la largeur demandée en CSS. On le remplace donc par un ascenseur dessiné par l'app : piste de 24 px toujours affichée,
+   curseur cuivré à poignée (on le fait glisser, ou on touche la piste pour y sauter), avec le mois indiqué pendant le glissement.
+   PC et tablettes : inchangés (ascenseur natif ci-dessus). Même condition que « smartphone » ailleurs dans l'app. */
+.gallery-touchbar{ display:none; }
+@media (max-width: 760px), (orientation: landscape) and (pointer: coarse) and (max-height: 560px){
+  .gallery-scroll{ scrollbar-width:none; padding-right:34px; }
+  .gallery-scroll::-webkit-scrollbar{ display:none; width:0; height:0; }
+  .gallery-touchbar{
+    display:block; position:absolute; right:0; top:0; height:0; width:24px; z-index:40;
+    background:rgba(42,63,51,.92); border-left:1px solid var(--line); touch-action:none; user-select:none; -webkit-user-select:none;
+  }
+  .gallery-touchbar.idle{ visibility:hidden; }
+  .gtb-thumb{
+    position:absolute; left:3px; right:3px; top:0; min-height:60px; border-radius:9px;
+    background:var(--copper-hi); border:2px solid #1a1208; box-shadow:0 0 0 1px var(--copper), 0 2px 8px rgba(0,0,0,.55);
+    touch-action:none;
+  }
+  .gtb-thumb::after{ /* poignée : trois traits */
+    content:""; position:absolute; left:3px; right:3px; top:50%; height:12px; margin-top:-6px;
+    background:repeating-linear-gradient(to bottom, #1a1208 0 2px, transparent 2px 5px); opacity:.75;
+  }
+  .gallery-touchbar.drag .gtb-thumb{ background:#fff3d6; }
+  .gtb-label{
+    position:absolute; right:32px; display:none; pointer-events:none; background:var(--copper); color:#1a1208; font-weight:700; font-size:14px;
+    padding:5px 11px; border-radius:7px; box-shadow:0 2px 10px rgba(0,0,0,.5); white-space:nowrap;
+  }
+  .gallery-touchbar.drag .gtb-label, .gallery-touchbar.show-label .gtb-label{ display:block; }
+}
 .gallery-grid{
   display:grid;
   grid-template-columns:repeat(auto-fill, minmax(calc(var(--thumb-min) * var(--thumb-factor, 1)), 1fr)); /* --thumb-factor : combo « Miniatures » de l'accueil */
@@ -1929,6 +1959,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
       <button class="btn" id="btnGallerySelectToggle" title="Sélectionner plusieurs images">☑ Sélectionner</button>
     </div>
   </div>
+  <div class="gallery-touchbar idle" id="galleryTouchBar" aria-hidden="true"><div class="gtb-thumb" id="galleryTouchThumb"></div><div class="gtb-label" id="galleryTouchLabel"></div></div>
   <div class="gallery-scroll" id="galleryScroll">
     <div class="gallery-grid" id="galleryGrid"></div>
     <div class="gallery-empty hidden" id="galleryNoMatch">
@@ -6844,6 +6875,69 @@ function scrollGalleryToTile(id){
   }, {passive:true});
   scroller.addEventListener("mouseleave", hide);
   document.addEventListener("mouseup", ()=>{ if(onBar) setTimeout(hide, 600); });
+})();
+/* Ascenseur tactile de la galerie (smartphone uniquement — voir le CSS « .gallery-touchbar »). */
+(function(){
+  const scroller = document.getElementById("galleryScroll"), grid = document.getElementById("galleryGrid");
+  const bar = document.getElementById("galleryTouchBar"), thumb = document.getElementById("galleryTouchThumb"), label = document.getElementById("galleryTouchLabel");
+  if(!scroller || !bar || !thumb) return;
+  const mq = window.matchMedia("(max-width: 760px), (orientation: landscape) and (pointer: coarse) and (max-height: 560px)");
+  let drag = false, offset = 0, raf = 0, labelTimer = 0, byId = null, byIdSize = -1;
+  const maxScroll = ()=> Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  const photoById = id=>{ if(!byId || byIdSize !== State.photos.length){ byId = new Map(State.photos.map(p=>[p.id,p])); byIdSize = State.photos.length; } return byId.get(id); };
+  const tileAt = y=>{
+    const tiles = grid.children, n = tiles.length; if(!n) return null;
+    const base = grid.getBoundingClientRect().top; let lo = 0, hi = n - 1;
+    while(lo < hi){ const mid = (lo + hi) >> 1; if(tiles[mid].getBoundingClientRect().top - base < y) lo = mid + 1; else hi = mid; }
+    return tiles[lo];
+  };
+  const monthLabel = ()=>{
+    const t = tileAt(scroller.scrollTop), p = t && photoById(t.dataset.id), d = p && String(p.dateAchat || "");
+    return /^\d{4}-\d{2}/.test(d || "") ? d.slice(0, 7) : "";
+  };
+  function layout(){
+    raf = 0;
+    if(!mq.matches || !scroller.offsetHeight){ bar.classList.add("idle"); return; }
+    const mx = maxScroll();
+    if(mx <= 4){ bar.classList.add("idle"); return; }
+    bar.classList.remove("idle");
+    bar.style.top = scroller.offsetTop + "px"; bar.style.height = scroller.offsetHeight + "px";
+    const H = bar.clientHeight, th = Math.max(60, Math.min(H, Math.round(H * scroller.clientHeight / scroller.scrollHeight)));
+    thumb.style.height = th + "px";
+    thumb.style.top = Math.round((H - th) * Math.min(1, Math.max(0, scroller.scrollTop / mx))) + "px";
+    if(drag || bar.classList.contains("show-label")){
+      const m = monthLabel(); label.textContent = m || Math.round(100 * scroller.scrollTop / mx) + " %";
+      label.style.top = Math.max(0, Math.min(H - label.offsetHeight, thumb.offsetTop + th / 2 - label.offsetHeight / 2)) + "px";
+    }
+  }
+  const sched = ()=>{ if(!raf) raf = requestAnimationFrame(layout); };
+  const moveTo = clientY=>{
+    const r = bar.getBoundingClientRect(), H = r.height, th = thumb.offsetHeight, room = Math.max(1, H - th);
+    const f = Math.min(1, Math.max(0, (clientY - r.top - offset) / room));
+    scroller.scrollTop = f * maxScroll();
+  };
+  bar.addEventListener("pointerdown", e=>{
+    if(bar.classList.contains("idle")) return;
+    e.preventDefault(); drag = true; bar.classList.add("drag"); clearTimeout(labelTimer);
+    try{ bar.setPointerCapture(e.pointerId); }catch(_){}
+    const tr = thumb.getBoundingClientRect();
+    offset = (e.clientY >= tr.top && e.clientY <= tr.bottom) ? e.clientY - tr.top : tr.height / 2; // sur le curseur : on le saisit ; ailleurs : on y saute
+    scroller.style.scrollBehavior = "auto"; moveTo(e.clientY); sched();
+  });
+  bar.addEventListener("pointermove", e=>{ if(drag){ e.preventDefault(); moveTo(e.clientY); } });
+  const end = e=>{
+    if(!drag) return; drag = false; bar.classList.remove("drag"); bar.classList.add("show-label");
+    try{ bar.releasePointerCapture(e.pointerId); }catch(_){}
+    clearTimeout(labelTimer); labelTimer = setTimeout(()=>{ bar.classList.remove("show-label"); }, 900); sched();
+  };
+  bar.addEventListener("pointerup", end); bar.addEventListener("pointercancel", end);
+  scroller.addEventListener("scroll", sched, {passive:true});
+  window.addEventListener("resize", sched); window.addEventListener("orientationchange", sched);
+  if(mq.addEventListener) mq.addEventListener("change", sched);
+  if(window.ResizeObserver){ const ro = new ResizeObserver(sched); ro.observe(scroller); ro.observe(grid); }
+  new MutationObserver(sched).observe(grid, {childList:true});
+  setInterval(()=>{ if(mq.matches && !drag) sched(); }, 1500); // filet de sécurité : écran galerie masqué puis réaffiché, chargement progressif…
+  sched();
 })();
 document.getElementById("galleryGrid").addEventListener("click", (e)=>{
   if(e.target.closest(".tile-quickbar")) return;
