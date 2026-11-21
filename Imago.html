@@ -1998,6 +1998,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <button class="drive-btn" id="btnDriveLoad"><span id="lblDriveLoad">Charger depuis Drive</span><span class="status">●</span></button>
     <button class="drive-btn" id="btnDriveSave"><span id="lblDriveSave">Sauver sur Drive</span><span class="status">●</span></button>
     <button class="btn" id="btnDriveMissing" style="margin-top:8px;" title="Compare le catalogue chargé au contenu réel du dossier Drive et liste les fichiers à téléverser">📋 Fichiers manquants sur Drive…</button>
+    <button class="btn" id="btnLagLog" style="margin-top:8px;" title="Journal des gros ralentissements de l'appli (écran figé plus d'1,5 s) : action en cours, import, mémoire…">🐢 Journal des ralentissements</button>
     <button class="btn" id="btnPartnerAccess" style="margin-top:8px;">🤝 Donner accès à un partenaire de confiance…</button>
     <p class="drive-note"><button class="small-link" id="btnDriveConfig">Configurer l'identifiant client…</button>
       <span class="ib" title="La connexion Google Drive nécessite un identifiant client OAuth (Google Cloud Console, API Drive activée). Le dossier Drive IMAGINES héberge vos partages.">ⓘ</span></p>
@@ -22210,6 +22211,113 @@ async function driveTileFetch(tile){
   sync();
   if(typeof ResizeObserver === "function") new ResizeObserver(sync).observe(tb);
   window.addEventListener("resize", sync); window.addEventListener("orientationchange", sync);
+})();
+
+/* ---------------------------------------------------------------
+   Journal des GROS ralentissements (écran figé au-delà d'un seuil, 1,5 s par défaut) — consultable sur le téléphone, sans PC.
+   Principe : un « battement » toutes les 250 ms ; si le navigateur le retarde de plus que le seuil, c'est que le fil principal était
+   occupé (écran figé). On note alors : l'action qui précédait (bouton, défilement…), l'avancement de l'import, le nombre de photos et
+   de vignettes, la mémoire JavaScript, les téléchargements Drive en cours. Un état « vivant » est aussi mémorisé toutes les 2 s : si
+   Android tue l'appli pendant un gel (aucun battement ne peut alors être écrit), le démarrage suivant le signale.
+   Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
+   --------------------------------------------------------------- */
+(function(){
+  const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
+  const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
+  const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
+  const wr = (k, v)=>{ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} };
+  const fmtTs = ts=>{ const d = new Date(ts); return d.toLocaleDateString("fr-FR", {day:"2-digit", month:"2-digit"}) + " " + d.toLocaleTimeString("fr-FR"); };
+  const sec = ms=> (ms / 1000).toFixed(1).replace(".", ",") + " s";
+
+  /* --- dernières actions de l'utilisateur --- */
+  const actions = []; // {t (performance.now), label}
+  const describe = el=>{
+    if(!el || !el.closest) return "écran";
+    const e = el.closest("button, a, label, select, input, textarea, .gallery-tile, [id]") || el;
+    const id = e.id ? "#" + e.id : "", cls = (!id && e.className && typeof e.className === "string") ? "." + e.className.trim().split(/\s+/)[0] : "";
+    const txt = String((e.getAttribute && e.getAttribute("title")) || e.textContent || "").trim().replace(/\s+/g, " ").slice(0, 40);
+    return (e.tagName || "").toLowerCase() + (id || cls) + (txt ? " « " + txt + " »" : "");
+  };
+  const note = label=>{ actions.push({t: performance.now(), label}); if(actions.length > 8) actions.shift(); };
+  ["pointerdown", "click", "keydown"].forEach(ev=> document.addEventListener(ev, e=> note((ev === "keydown" ? "touche " + e.key : "toucher") + " : " + describe(e.target)), {capture: true, passive: true}));
+  let lastScrollNote = 0;
+  const gs = document.getElementById("galleryScroll");
+  if(gs) gs.addEventListener("scroll", ()=>{ const n = performance.now(); if(n - lastScrollNote > 500){ lastScrollNote = n; note("défilement de la galerie"); } }, {passive: true});
+
+  /* --- état de l'appli au moment d'un gel --- */
+  const snapshot = ()=>{
+    const o = {};
+    try{ o.import = importTotalCount > 0 ? importDoneCount + "/" + importTotalCount : "aucun"; }catch(e){}
+    try{ o.photos = State.photos.length; }catch(e){}
+    try{ o.tuiles = document.getElementById("galleryGrid").children.length; }catch(e){}
+    try{ o.drive = driveHydrating.size; }catch(e){}
+    try{ o.barre = document.querySelector(".gallery-head").classList.contains("collapsed") ? "masquée" : "affichée"; }catch(e){}
+    try{ if(performance.memory) o.memJs = Math.round(performance.memory.usedJSHeapSize / 1048576) + " Mo"; }catch(e){}
+    return o;
+  };
+  const snapText = o=> ["import " + (o.import || "?"), (o.photos != null ? o.photos + " photo(s)" : ""), (o.tuiles != null ? o.tuiles + " vignette(s)" : ""),
+    (o.drive ? o.drive + " téléchargement(s) Drive en cours" : ""), (o.barre ? "barre " + o.barre : ""), (o.memJs ? "mémoire JS " + o.memJs : "")].filter(Boolean).join(" · ");
+
+  /* --- journal --- */
+  const getLog = ()=> rd(LOG_KEY) || [];
+  const addEntry = en=>{ const l = getLog(); l.unshift(en); if(l.length > MAX_ENTRIES) l.length = MAX_ENTRIES; wr(LOG_KEY, l); refreshBtn(); };
+  const lineOf = en=> "[" + fmtTs(en.ts) + "] " + en.kind + (en.dur ? " de " + sec(en.dur) : "") + (en.action ? "\n    action : " + en.action : "") + (en.state ? "\n    état : " + en.state : "");
+  const refreshBtn = ()=>{ const b = document.getElementById("btnLagLog"); if(b){ const n = getLog().length; b.textContent = "🐢 Journal des ralentissements" + (n ? " (" + n + ")" : ""); } };
+
+  /* --- démarrage : la session précédente s'est-elle arrêtée brutalement ? --- */
+  const prev = rd(ALIVE_KEY);
+  if(prev && prev.ts && !prev.clean){
+    addEntry({ts: prev.ts, kind: prev.hidden ? "Mise en arrière-plan puis fermeture de l'appli (probablement par Android, ou fermée volontairement)" : "ARRÊT BRUTAL de l'appli (gel puis fermeture, plantage ou mémoire saturée) — dernière activité enregistrée ici",
+      action: prev.action || "", state: prev.state || ""});
+  }
+  const alive = {ts: Date.now(), clean: false, hidden: false, action: "", state: ""};
+  const saveAlive = ()=>{ const a = actions[actions.length - 1]; alive.ts = Date.now(); alive.action = a ? a.label + " (il y a " + sec(performance.now() - a.t) + ")" : ""; alive.state = snapText(snapshot()); wr(ALIVE_KEY, alive); };
+  document.addEventListener("visibilitychange", ()=>{ alive.hidden = document.hidden; lastHidden = performance.now(); saveAlive(); });
+  window.addEventListener("pagehide", ()=>{ alive.clean = true; alive.ts = Date.now(); wr(ALIVE_KEY, alive); }); // fermeture normale (onglet fermé, rechargement)
+  setInterval(saveAlive, 2000); saveAlive();
+
+  /* --- détection --- */
+  let last = performance.now(), lastHidden = 0;
+  setInterval(()=>{
+    const now = performance.now(), drift = now - last - TICK; last = now;
+    const th = thresh();
+    if(!th || document.hidden || now - lastHidden < TICK + drift + 50 || drift < th) return; // onglet masqué ou revenu à l'écran : minuteurs ralentis par le navigateur, pas un gel de l'appli
+    const start = now - drift, a = [...actions].reverse().find(x=> x.t <= now && x.t >= start - 2500);
+    addEntry({ts: Date.now(), kind: "Écran figé", dur: Math.round(drift),
+      action: a ? a.label + (a.t < start ? " (" + sec(start - a.t) + " avant le gel)" : " (pendant le gel)") : "aucune action récente : travail de fond (import, vignettes, Drive…)",
+      state: snapText(snapshot())});
+  }, TICK);
+
+  /* --- fenêtre du journal --- */
+  const show = ()=>{
+    const ov = document.createElement("div"); ov.className = "modal-overlay show";
+    ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Journal des ralentissements</h2><button class="modal-close">×</button></div><div class="modal-body"></div></div>';
+    document.body.appendChild(ov);
+    const body = ov.querySelector(".modal-body"); ov.querySelector(".modal-close").onclick = ()=> ov.remove();
+    const mk = (tag, css, txt)=>{ const e = document.createElement(tag); if(css) e.style.cssText = css; if(txt != null) e.textContent = txt; body.appendChild(e); return e; };
+    const render = ()=>{
+      body.innerHTML = "";
+      const l = getLog();
+      mk("p", "margin:0 0 8px; font-size:.9em;", "Seuls les gros ralentissements sont notés (écran figé plus longtemps que le seuil). Rien n'est envoyé hors de cet appareil.");
+      const row = mk("label", "display:flex; gap:8px; align-items:center; margin:0 0 8px; font-size:.9em;");
+      row.append("Seuil :");
+      const sel = document.createElement("select"); sel.style.cssText = "width:auto;";
+      [["1000", "1 s"], ["1500", "1,5 s (par défaut)"], ["3000", "3 s"], ["0", "Désactivé"]].forEach(([v, t])=>{ const o = document.createElement("option"); o.value = v; o.textContent = t; if(String(thresh()) === v) o.selected = true; sel.appendChild(o); });
+      sel.onchange = ()=>{ localStorage.setItem(THRESH_KEY, sel.value); };
+      row.appendChild(sel);
+      mk("p", "margin:0 0 6px; font-weight:600;", l.length ? l.length + " événement(s), du plus récent au plus ancien :" : "✅ Aucun gros ralentissement noté.");
+      const ta = mk("textarea", "width:100%; height:240px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;");
+      ta.readOnly = true; ta.value = l.map(lineOf).join("\n\n");
+      const bar = mk("div", "display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;");
+      const bt = (txt, fn)=>{ const b = document.createElement("button"); b.className = "btn"; b.style.flex = "1 1 30%"; b.textContent = txt; b.onclick = fn; bar.appendChild(b); return b; };
+      bt("📋 Copier", async ()=>{ try{ await navigator.clipboard.writeText(ta.value); toast("Journal copié dans le presse-papiers."); }catch(e){ ta.focus(); ta.select(); toast("Presse-papiers indisponible : texte sélectionné, copiez-le (appui long)."); } });
+      bt("🗑 Vider", ()=>{ wr(LOG_KEY, []); refreshBtn(); render(); });
+      bt("🧪 Tester", ()=>{ toast("Test : l'écran va se figer ~" + sec(Math.max(thresh(), 1000) + 700) + "…", 2500); setTimeout(()=>{ const t0 = performance.now(); while(performance.now() - t0 < Math.max(thresh(), 1000) + 700){} setTimeout(render, 700); }, 300); });
+    };
+    render();
+  };
+  const btn = document.getElementById("btnLagLog"); if(btn) btn.addEventListener("click", show);
+  refreshBtn();
 })();
 </script>
 </body>
