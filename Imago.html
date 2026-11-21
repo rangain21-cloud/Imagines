@@ -6178,6 +6178,45 @@ function isDriveHydratable(p){
   return !!p && !p.isVideo && !p.hasFullImage && !p.thumbDataUrl && !p.dataUrl && !/\.(mp4|mov|avi|mpe?g)$/i.test(p.fileName || "");
 }
 /* Télécharge l'image de p depuis Drive et l'ajoute à la photo (mémoire + IndexedDB). true = ok, false = absente du dossier. */
+/* Dimensions (largeur/hauteur) lues dans l'en-tête d'un JPEG (marqueur SOFn) : aucun décodage de l'image. */
+function jpegDimsFromBytes(u8){
+  if(u8.length < 4 || u8[0] !== 0xFF || u8[1] !== 0xD8) return null;
+  let i = 2;
+  while(i + 9 < u8.length){
+    if(u8[i] !== 0xFF){ i++; continue; }
+    const m = u8[i + 1];
+    if(m === 0xFF){ i++; continue; }                                      // octets de bourrage
+    if(m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)){ i += 2; continue; } // marqueurs sans longueur
+    if(m === 0xD9 || m === 0xDA) return null;                              // fin / données d'image : pas de SOF trouvé
+    const len = (u8[i + 2] << 8) | u8[i + 3];
+    if(m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) return {h: (u8[i + 5] << 8) | u8[i + 6], w: (u8[i + 7] << 8) | u8[i + 8]};
+    i += 2 + len;
+  }
+  return null;
+}
+/* Voie RAPIDE pour une image Drive déjà petite (≤ IMPORT_MAX_DIM), vrai JPEG, orientation normale : le résultat était déjà « on garde les octets
+   originaux » ; seule la vignette est à fabriquer. Le parcours classique (loadAndMaybeDownscaleImage) décode l'image 1600 px dans un <img> puis la
+   redessine entièrement dans un canvas, simplement pour en tirer 320 px : journal, 2 à 13 s par image sur A51 alors que le fil principal est libre
+   (la file d'attente est ailleurs : décodage, GPU). Ici : dimensions lues dans l'en-tête, vignette décodée directement à petite taille hors du fil
+   principal (createImageBitmap avec redimensionnement). Renvoie null au moindre doute : le parcours classique prend alors le relais, inchangé. */
+async function fastJpegIngest(file, dataUrl){
+  try{
+    if(typeof createImageBitmap !== "function") return null;
+    if(!/^data:image\/jpe?g/i.test(dataUrl) || !looksLikeGenuineJpeg(dataUrl) || !jpegOrientationIsNormal(dataUrl)) return null;
+    const dims = jpegDimsFromBytes(new Uint8Array(await file.slice(0, 524288).arrayBuffer()));
+    if(!dims || !dims.w || !dims.h || Math.max(dims.w, dims.h) > IMPORT_MAX_DIM) return null; // à réduire : parcours classique
+    const ts = Math.min(1, THUMB_MAX_DIM / Math.max(dims.w, dims.h)), tw = Math.max(1, Math.round(dims.w * ts)), th = Math.max(1, Math.round(dims.h * ts));
+    const bmp = await createImageBitmap(file, {resizeWidth: tw, resizeHeight: th, resizeQuality: "high"});
+    try{
+      const c = document.createElement("canvas"); c.width = tw; c.height = th;
+      c.getContext("2d").drawImage(bmp, 0, 0, tw, th);
+      const thumbDataUrl = await canvasToJpegDataUrl(c, THUMB_JPEG_QUALITY);
+      c.width = 0; c.height = 0;
+      if(!thumbDataUrl || thumbDataUrl.length < 200) return null;
+      return {dataUrl, width: dims.w, height: dims.h, thumbDataUrl, lossless: true, fast: true};
+    }finally{ if(bmp.close) bmp.close(); }
+  }catch(e){ return null; }
+}
 /* Au plus HYDRATE_MAX traitements d'image Drive en parallèle (journal : jusqu'à 8 à la fois, décodage + réduction de 4 à 20 s chacun sur A51). */
 const HYDRATE_MAX = /Android/i.test(navigator.userAgent) ? 2 : 4;
 let hydrateActive = 0; const hydrateQueue = [];
@@ -6201,7 +6240,9 @@ function hydratePhotoFromDrive(p, urgent){
     lap(stats.heicConverted || /heic|heif/i.test(blob.type || p.fileName) ? "conversion HEIC" : "lecture"); await yieldUi(); tt = performance.now();
     if(stats.heicFailed) throw new Error("format HEIC non convertible pour l'instant");
     const exif = await readBasicExif(file); lap("EXIF"); await yieldUi(); tt = performance.now();
-    const resized = await loadAndMaybeDownscaleImage(dataUrl); lap("décodage + réduction"); await yieldUi(); tt = performance.now();
+    let resized = await fastJpegIngest(file, dataUrl);
+    if(!resized) resized = await loadAndMaybeDownscaleImage(dataUrl);
+    lap(resized.fast ? "vignette (voie rapide)" : "décodage + réduction"); await yieldUi(); tt = performance.now();
     if(!resized.width || !resized.height) throw new Error("image illisible");
     const finalDataUrl = resized.dataUrl;
     const thumbDataUrl = resized.thumbDataUrl || await makeThumbnail(finalDataUrl); lap("vignette"); await yieldUi(); tt = performance.now();
@@ -22276,6 +22317,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
+  const BUILD = "2026-11-21-h"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
@@ -22315,8 +22357,8 @@ async function driveTileFetch(tile){
 
   /* --- journal --- */
   const getLog = ()=> rd(LOG_KEY) || [];
-  const addEntry = en=>{ const l = getLog(); l.unshift(en); if(l.length > MAX_ENTRIES) l.length = MAX_ENTRIES; wr(LOG_KEY, l); refreshBtn(); };
-  const lineOf = en=> "[" + fmtTs(en.ts) + "] " + en.kind + (en.dur ? " de " + sec(en.dur) : "") + (en.action ? "\n    action : " + en.action : "") + (en.during ? "\n    touchers faits PENDANT le gel (traités après) : " + en.during : "") + (en.state ? "\n    état : " + en.state : "");
+  const addEntry = en=>{ en.v = BUILD; const l = getLog(); l.unshift(en); if(l.length > MAX_ENTRIES) l.length = MAX_ENTRIES; wr(LOG_KEY, l); refreshBtn(); };
+  const lineOf = en=> "[" + fmtTs(en.ts) + (en.v ? " · v" + en.v : "") + "] " + en.kind + (en.dur ? " de " + sec(en.dur) : "") + (en.action ? "\n    action : " + en.action : "") + (en.during ? "\n    touchers faits PENDANT le gel (traités après) : " + en.during : "") + (en.state ? "\n    état : " + en.state : "");
   window.imagoLagNote = (kind, action, state)=>{ if(thresh()) addEntry({ts: Date.now(), kind, action: action || "", state: state || snapText(snapshot())}); }; // pour le code de l'appli qui sait ce qu'il fait (ex. image Drive lente)
   const refreshBtn = ()=>{ const b = document.getElementById("btnLagLog"); if(b){ const n = getLog().length; b.textContent = "🐢 Journal des ralentissements" + (n ? " (" + n + ")" : ""); } };
 
@@ -22355,7 +22397,7 @@ async function driveTileFetch(tile){
     const render = ()=>{
       body.innerHTML = "";
       const l = getLog();
-      mk("p", "margin:0 0 8px; font-size:.9em;", "Seuls les gros ralentissements sont notés (écran figé plus longtemps que le seuil). Rien n'est envoyé hors de cet appareil.");
+      mk("p", "margin:0 0 8px; font-size:.9em;", "Seuls les gros ralentissements sont notés (écran figé plus longtemps que le seuil). Rien n'est envoyé hors de cet appareil. Version de l'appli en cours : " + BUILD + ".");
       const row = mk("label", "display:flex; gap:8px; align-items:center; margin:0 0 8px; font-size:.9em;");
       row.append("Seuil :");
       const sel = document.createElement("select"); sel.style.cssText = "width:auto;";
@@ -22364,7 +22406,7 @@ async function driveTileFetch(tile){
       row.appendChild(sel);
       mk("p", "margin:0 0 6px; font-weight:600;", l.length ? l.length + " événement(s), du plus récent au plus ancien :" : "✅ Aucun gros ralentissement noté.");
       const ta = mk("textarea", "width:100%; height:240px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;");
-      ta.readOnly = true; ta.value = l.map(lineOf).join("\n\n");
+      ta.readOnly = true; ta.value = "Version de l'appli : " + BUILD + "\n\n" + l.map(lineOf).join("\n\n");
       const bar = mk("div", "display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;");
       const bt = (txt, fn)=>{ const b = document.createElement("button"); b.className = "btn"; b.style.flex = "1 1 30%"; b.textContent = txt; b.onclick = fn; bar.appendChild(b); return b; };
       bt("📋 Copier", async ()=>{ try{ await navigator.clipboard.writeText(ta.value); toast("Journal copié dans le presse-papiers."); }catch(e){ ta.focus(); ta.select(); toast("Presse-papiers indisponible : texte sélectionné, copiez-le (appui long)."); } });
