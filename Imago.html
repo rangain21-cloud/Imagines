@@ -490,6 +490,19 @@ details.pave .btn{width:100%; margin-bottom:8px;}
    la largeur demandée en CSS. On le remplace donc par un ascenseur dessiné par l'app : piste de 24 px toujours affichée,
    curseur cuivré à poignée (on le fait glisser, ou on touche la piste pour y sauter), avec le mois indiqué pendant le glissement.
    PC et tablettes : inchangés (ascenseur natif ci-dessus). Même condition que « smartphone » ailleurs dans l'app. */
+/* Smartphone : la barre de la galerie (titre, Miniatures, Cadrage, Tri, Sélectionner…) se masque par balayage vers le haut (ou bouton ▴),
+   pour laisser la place aux photos et vidéos ; la languette « ▾ N images » (ou un balayage vers le bas) la ramène. */
+.gallery-head-hide, .gallery-peek{ display:none; }
+@media (max-width: 760px), (orientation: landscape) and (pointer: coarse) and (max-height: 560px){
+  .gallery-head-hide{ display:inline-flex; align-items:center; justify-content:center; width:auto; padding:0 12px; margin-left:auto; }
+  .gallery-head.collapsed{ display:none !important; }
+  .gallery-head.collapsed + .gallery-peek{ display:block; }
+  .gallery-peek{
+    align-self:center; flex:0 0 auto; margin:0 0 2px; padding:7px 22px; max-width:92%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    background:rgba(20,32,26,.94); border:1px solid var(--line); border-top:0; border-radius:0 0 14px 14px;
+    color:var(--copper-hi); font-size:13px; cursor:pointer; touch-action:manipulation;
+  }
+}
 .gallery-touchbar{ display:none; }
 @media (max-width: 760px), (orientation: landscape) and (pointer: coarse) and (max-height: 560px){
   .gallery-scroll{ scrollbar-width:none; padding-right:34px; }
@@ -1958,7 +1971,9 @@ svg.leaflet-image-layer.leaflet-interactive path {
       <button class="btn" id="btnGalleryQuickMode" title="Marquer Favori / Art / Concert / Culture / Partition directement sur les miniatures, sans ouvrir les photos (au survol à la souris ; ce bouton sert surtout sur écran tactile)">⚡ Marquage rapide</button>
       <button class="btn" id="btnGallerySelectToggle" title="Sélectionner plusieurs images">☑ Sélectionner</button>
     </div>
+    <button class="btn gallery-head-hide" id="galleryHeadHide" type="button" title="Masquer cette barre pour agrandir la place des photos (ou balayez-la vers le haut)">▴ Masquer</button>
   </div>
+  <button class="gallery-peek" id="galleryHeadPeek" type="button" title="Afficher la barre (Miniatures, Cadrage, Tri, Sélectionner…)">▾ Afficher la barre</button>
   <div class="gallery-touchbar idle" id="galleryTouchBar" aria-hidden="true"><div class="gtb-thumb" id="galleryTouchThumb"></div><div class="gtb-label" id="galleryTouchLabel"></div></div>
   <div class="gallery-scroll" id="galleryScroll">
     <div class="gallery-grid" id="galleryGrid"></div>
@@ -21990,6 +22005,39 @@ function isLandscapePhone(){ return window.matchMedia(LANDSCAPE_PHONE_MQ).matche
       if(!seen) toast("Barre masquée. Touchez « ▾ » en haut (ou balayez vers le bas) pour la réafficher.", 4500);
     }
   }, {passive: true});
+  peek.addEventListener("touchstart", e=>{ const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; }, {passive: true});
+  peek.addEventListener("touchend", e=>{ const t = e.changedTouches[0]; if(t.clientY - y0 > 24){ set(false); e.preventDefault(); } });
+  peek.addEventListener("click", ()=> set(false));
+})();
+
+/* (1 bis) Même principe dans la GALERIE : balayage vers le haut sur la barre (ou bouton « ▴ Masquer ») = la masquer ; languette « ▾ N images » = la ramener.
+   Effet limité au smartphone par le CSS (.gallery-head.collapsed n'a aucun effet ailleurs). Le choix est mémorisé. */
+(function initGalleryHeadSwipe(){
+  const head = document.querySelector(".gallery-head"), peek = document.getElementById("galleryHeadPeek"),
+        hideBtn = document.getElementById("galleryHeadHide"), count = document.getElementById("galleryCount");
+  if(!head || !peek) return;
+  const KEY = "imago_gallery_head_collapsed";
+  const refreshPeek = ()=>{ peek.textContent = "▾ " + ((count && count.textContent.trim()) || "Afficher la barre"); };
+  const set = on=>{
+    head.classList.toggle("collapsed", on);
+    try{ localStorage.setItem(KEY, on ? "1" : "0"); }catch(e){}
+    refreshPeek();
+    window.dispatchEvent(new Event("resize")); // la planche-contact (et l'ascenseur) reprennent la place libérée
+  };
+  try{ if(localStorage.getItem(KEY) === "1") set(true); }catch(e){}
+  if(count) new MutationObserver(refreshPeek).observe(count, {childList: true, characterData: true, subtree: true});
+  refreshPeek();
+  const hint = ()=>{
+    let seen = null; try{ seen = localStorage.getItem("imago_gallery_head_hint"); localStorage.setItem("imago_gallery_head_hint", "1"); }catch(e){}
+    if(!seen) toast("Barre masquée. Touchez « ▾ » en haut (ou balayez vers le bas) pour la réafficher.", 4500);
+  };
+  let x0 = 0, y0 = 0;
+  head.addEventListener("touchstart", e=>{ const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; }, {passive: true});
+  head.addEventListener("touchend", e=>{ // le balayage compte même s'il démarre sur un bouton ou une liste : un simple toucher, lui, ne bouge pas
+    const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+    if(dy < -30 && Math.abs(dx) < Math.abs(dy) * 0.9){ set(true); hint(); }
+  }, {passive: true});
+  if(hideBtn) hideBtn.addEventListener("click", ()=>{ set(true); hint(); });
   peek.addEventListener("touchstart", e=>{ const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; }, {passive: true});
   peek.addEventListener("touchend", e=>{ const t = e.changedTouches[0]; if(t.clientY - y0 > 24){ set(false); e.preventDefault(); } });
   peek.addEventListener("click", ()=> set(false));
