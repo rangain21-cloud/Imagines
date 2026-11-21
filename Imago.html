@@ -5869,21 +5869,30 @@ async function loadAll(){
   // choisit explicitement de repartir de zéro). idbCount() : ne charge PAS
   // les dataUrl en mémoire juste pour ce test (voir son commentaire).
   const leftoverCount = await idbCount("photos").catch(()=>0);
-  let resumed = false;
+  let resumed = false, resumeFromDrive = false;
   if(leftoverCount > 0){
     const lastFolder = await idbGetMeta("lastFolderName", "un dossier");
+    // La session interrompue venait-elle d'un chargement depuis Drive ? (dernière source mémorisée ; à défaut, ancien usage : catalogue Drive
+    // connu sur cet appareil et aucun dossier local jamais importé)
+    let lastSource = null, driveCatName = "";
+    try{ lastSource = localStorage.getItem("imago_last_source"); driveCatName = localStorage.getItem("imago_drive_catalog_name") || ""; }catch(e){}
+    const fromDrive = lastSource === "drive" || (!lastSource && lastFolder === "un dossier" && !!localStorage.getItem("imago_drive_file_id") && !!driveMediaFolderId());
+    driveCatName = driveCatName || "dernier catalogue Drive";
     const choice = await confirmChoice(
       "Session précédente interrompue",
-      `${leftoverCount} photo(s) de l'import de "${lastFolder}" sont encore présentes : la session précédente ne s'est probablement pas terminée normalement (plantage, fermeture accidentelle…).\n\nReprendre pour les retrouver telles quelles, puis relancer l'import du même dossier pour continuer là où ça s'est arrêté (les fichiers déjà présents seront automatiquement ignorés) — ou repartir de zéro pour tout effacer et recommencer.`,
+      `${leftoverCount} photo(s) de l'import de "${lastFolder}" sont encore présentes : la session précédente ne s'est probablement pas terminée normalement (plantage, fermeture accidentelle…).\n\nReprendre pour les retrouver telles quelles, puis relancer l'import du même dossier pour continuer là où ça s'est arrêté (les fichiers déjà présents seront automatiquement ignorés) — ou repartir de zéro pour tout effacer et recommencer.` +
+      (fromDrive ? `\n\n☁ « Reprendre à partir de Drive » : conserve ces photos puis recharge le catalogue « ${driveCatName} » depuis Drive (une connexion Google vous sera demandée si besoin).` : ""),
       [
+        ...(fromDrive ? [{label:"☁ Reprendre à partir de Drive", value:"drive", className:"copper"}] : []),
         {label:`↩ Reprendre (${leftoverCount} photo(s))`, value:"resume", className:"copper"},
         {label:"🗑 Repartir de zéro", value:"fresh", className:"reset", isCancel:true}
       ]
     );
-    if(choice === "resume"){
+    if(choice === "resume" || choice === "drive"){
       State.photos = (await idbAllPhotosLight()).map(stripLegacyAutoTitre);
       State.folderName = lastFolder;
       resumed = true;
+      resumeFromDrive = (choice === "drive");
     }
   }
   if(!resumed){
@@ -5896,6 +5905,8 @@ async function loadAll(){
   document.getElementById("folderStatus").textContent = resumed
     ? `Session reprise : "${State.folderName}" — ${State.photos.length} photo(s) déjà chargée(s). Relancez l'import du même dossier pour continuer (les fichiers déjà présents seront ignorés).`
     : "Aucun dossier chargé pour l'instant.";
+  // « Reprendre à partir de Drive » : lancé SANS attendre (la connexion Google peut prendre du temps) ; l'appli reste utilisable entre-temps
+  if(resumeFromDrive) resumeFromDriveSession().catch(err=>{ console.warn("Reprise depuis Drive :", err); toast("Reprise depuis Drive impossible : " + ((err && err.message) || err) + " Vous pouvez utiliser « Charger depuis Drive » dans le menu ☰ → Connexion.", 9000); });
 }
 async function clearPhotosStore(){
   const db = await openDB();
@@ -11063,6 +11074,7 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   if(!addingToExisting){
   State.folderName = folderName;
   await idbSetMeta("lastFolderName", folderName);
+  try{ localStorage.setItem("imago_last_source", "folder"); }catch(err){}
   } // mémorisé pour le message de reprise après plantage (voir loadAll)
   document.getElementById("folderStatus").textContent = `Import en cours : "${folderName}" (${files.length} fichier(s))…`;
   importTotalCount = files.length;
@@ -21334,6 +21346,7 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
           // Les images référencées sont cherchées dans le dossier de ce CSV : récupérées à la demande, et les
           // GALLERY_INITIAL_BATCH premières présentes sur Drive sont téléchargées en arrière-plan.
           setDriveMediaFolder(x.parentId, x.path);
+          try{ localStorage.setItem("imago_last_source", "drive"); localStorage.setItem("imago_drive_catalog_name", x.name); }catch(e){} // pour « Reprendre à partir de Drive » au prochain démarrage
           toast("« " + x.name + " » (" + x.path + ") chargé depuis Drive. Le fichier sur Drive n'a pas été modifié. Les images se téléchargent à la demande.");
           prefetchDriveImages(GALLERY_INITIAL_BATCH);
         }catch(err){ close(); toast(err.message); }
@@ -21342,6 +21355,42 @@ document.getElementById("btnDriveLoad").addEventListener("click", async ()=>{
     });
   }catch(err){ close(); toast(err.message); }
 });
+
+/* Reprise après une session interrompue qui venait de Drive (bouton « ☁ Reprendre à partir de Drive » de la modale de démarrage) :
+   (re)connecte Drive si besoin, relit le dernier catalogue chargé (identifiant mémorisé sur l'appareil), le fusionne avec les photos
+   déjà reprises depuis IndexedDB, et rebranche le dossier Drive des images. LECTURE SEULE côté Drive : rien n'est modifié ni supprimé. */
+async function resumeFromDriveSession(){
+  const fileId = localStorage.getItem("imago_drive_file_id") || State.drive.fileId;
+  if(!fileId) throw new Error("Aucun catalogue Drive mémorisé sur cet appareil.");
+  if(!State.drive.token){
+    toast("Connexion à Google Drive…", 4000);
+    document.getElementById("btnDriveConnect").click(); // même procédure que le menu ☰ → Connecter à Drive
+    const t0 = Date.now();
+    while(!State.drive.token && Date.now() - t0 < 120000) await new Promise(r=> setTimeout(r, 400));
+    if(!State.drive.token) throw new Error("Connexion à Drive non aboutie.");
+  }
+  const api = "https://www.googleapis.com/drive/v3/files/";
+  let meta;
+  try{ meta = await (await driveApiFetch(api + fileId + "?fields=id,name,parents,trashed")).json(); }
+  catch(err){ throw new Error(/404/.test(err.message) ? "Le catalogue mémorisé n'existe plus sur Drive." : err.message); }
+  if(meta.trashed) throw new Error("Le catalogue mémorisé est dans la corbeille de Drive.");
+  const text = await (await driveApiFetch(api + fileId + "?alt=media")).text();
+  if(text.split(/\r?\n/).filter(l=>l.trim().length).length < 2) throw new Error("« " + meta.name + " » est vide : rien n'a été chargé.");
+  const parentId = (meta.parents && meta.parents[0]) || driveMediaFolderId();
+  const label = localStorage.getItem("imago_drive_media_folder_name") || "dossier Drive";
+  driveLoadedCatalog = {name: meta.name, path: label, rows: csvCatalogRows(text)};
+  await mergeCsvIntoCatalog(text); // met à jour les photos déjà reprises, crée les autres (sans image : récupérées à la demande)
+  State.drive.fileId = fileId;
+  State.catalogFileName = meta.name;
+  setDriveBtnState("btnDriveLoad", "lblDriveLoad", true, "Chargé");
+  markCsvClean();
+  if(parentId) setDriveMediaFolder(parentId, label);
+  try{ localStorage.setItem("imago_last_source", "drive"); localStorage.setItem("imago_drive_catalog_name", meta.name); }catch(e){}
+  const fs = document.getElementById("folderStatus");
+  if(fs) fs.textContent = "Session reprise depuis Drive : « " + meta.name + " » — " + State.photos.length + " photo(s). Les images se téléchargent à la demande.";
+  toast("Session reprise depuis Drive : « " + meta.name + " » rechargé. Le fichier sur Drive n'a pas été modifié.", 7000);
+  prefetchDriveImages(GALLERY_INITIAL_BATCH);
+}
 
 /* Sauvegarde le catalogue CSV courant dans IMAGINES (création ou mise à jour
    du fichier), avec auto-réparation si l'identifiant mémorisé est obsolète —
