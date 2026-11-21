@@ -6178,9 +6178,18 @@ function isDriveHydratable(p){
   return !!p && !p.isVideo && !p.hasFullImage && !p.thumbDataUrl && !p.dataUrl && !/\.(mp4|mov|avi|mpe?g)$/i.test(p.fileName || "");
 }
 /* Télécharge l'image de p depuis Drive et l'ajoute à la photo (mémoire + IndexedDB). true = ok, false = absente du dossier. */
-function hydratePhotoFromDrive(p){
+/* Au plus HYDRATE_MAX traitements d'image Drive en parallèle (journal : jusqu'à 8 à la fois, décodage + réduction de 4 à 20 s chacun sur A51). */
+const HYDRATE_MAX = /Android/i.test(navigator.userAgent) ? 2 : 4;
+let hydrateActive = 0; const hydrateQueue = [];
+function hydrateLimited(fn, urgent){
+  return new Promise((resolve, reject)=>{
+    const run = ()=>{ hydrateActive++; fn().then(resolve, reject).finally(()=>{ hydrateActive--; const nx = hydrateQueue.shift(); if(nx) nx(); }); };
+    if(urgent || hydrateActive < HYDRATE_MAX) run(); else hydrateQueue.push(run);
+  });
+}
+function hydratePhotoFromDrive(p, urgent){
   if(driveHydrating.has(p.id)) return driveHydrating.get(p.id);
-  const job = (async ()=>{
+  const job = hydrateLimited(async ()=>{
     const hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName) || await driveFindByName(p.fileName);
     if(!hit) return false;
     const tStart = performance.now(), T = [], yieldUi = ()=> new Promise(r=> setTimeout(r, 0)); // chronomètre par étape + respiration entre deux étapes (l'écran reste utilisable)
@@ -6223,7 +6232,7 @@ function hydratePhotoFromDrive(p){
       }
     }catch(e){}
     return true;
-  })().finally(()=> driveHydrating.delete(p.id));
+  }, urgent).finally(()=> driveHydrating.delete(p.id));
   driveHydrating.set(p.id, job);
   return job;
 }
@@ -6237,7 +6246,7 @@ function requestDriveImage(p){
   if(!State.drive.token){ setText("📷 Image à récupérer depuis Drive", "Connectez-vous à Drive (menu ☰ › Connexion) : « " + p.fileName + " » sera alors téléchargée automatiquement depuis « " + driveMediaFolderLabel() + " »."); return; }
   if(driveMissInfo.has(p.id)){ setText("📷 Image non récupérée depuis Drive", driveMissInfo.get(p.id)); return; }
   setText("⏳ Récupération depuis Drive…", "« " + p.fileName + " » est téléchargée à la demande depuis « " + driveMediaFolderLabel() + " ».");
-  hydratePhotoFromDrive(p).then(async ok=>{
+  hydratePhotoFromDrive(p, true).then(async ok=>{
     if(ok) return;
     let diag = "";
     try{
@@ -6276,7 +6285,7 @@ async function prefetchDriveImages(max){
     if(ok){
       toast(`${ok} image(s) récupérée(s) depuis Drive. Les autres s'ouvrent à la demande.`);
       const g = document.getElementById("galleryGrid");
-      if(g && g.offsetParent !== null) renderGallery();
+      if(g && g.offsetParent !== null && !galleryReuse()) renderGallery();
     }
   }catch(e){ console.warn("Récupération en arrière-plan depuis Drive interrompue.", e); }
   finally{ drivePrefetchRunning = false; }
@@ -6447,6 +6456,7 @@ function galleryPhotos(){
    par petits paquets en arrière-plan — voir renderGallery() plus bas. */
 const GALLERY_INITIAL_BATCH = 50; // aligné sur IMPORT_PRIORITY_COUNT (voir handleFilesSelected) : les 50 photos décodées en priorité sont exactement celles affichées d'emblée
 const GALLERY_BACKGROUND_BATCH = 40;
+let galleryFillDone = true; // false tant que le remplissage en arrière-plan de la planche-contact n'est pas terminé
 let galleryRenderToken = 0; // incrémenté à chaque renderGallery() pour invalider un remplissage en arrière-plan devenu obsolète
 /* Ratio largeur/hauteur "d'affichage" d'une photo pour sa vignette dans la
    planche-contact : reflète son orientation réelle (portrait/paysage) au
@@ -6718,7 +6728,34 @@ function buildGalleryTile(p){
   dateEl.className = "gallery-date";
   dateEl.textContent = thumbDateLabel(p);
   tile.appendChild(dateEl);
+  tile.dataset.sig = gallerySig(p); // empreinte légère de ce que la vignette affiche : permet de la réutiliser telle quelle (voir galleryReuse)
   return tile;
+}
+/* Empreinte (bon marché) de ce qu'affiche une vignette. Si elle change, la vignette est refaite ; sinon elle est conservée. */
+function gallerySig(p){
+  return (p.thumbDataUrl ? "T" : p.dataUrl ? "D" : p.posterDataUrl ? "P" : "-") + (p.isVideo ? "v" : "i")
+    + (p.favori ? 1 : 0) + (p.art ? 1 : 0) + (p.concert ? 1 : 0) + (p.histoire ? 1 : 0) + (p.partition ? 1 : 0)
+    + "|" + (p.width || 0) + "x" + (p.height || 0) + "r" + (p.rotation || 0) + "|" + (p.dateAchat || "") + "|" + (p.fileName || "") + "|" + (p.durationSec || 0);
+}
+/* Réouverture de la galerie SANS la reconstruire. Avant, chaque « Retour galerie » vidait puis refaisait les 3726 vignettes (1,1 à 1,9 s sur
+   A51) ; trois touchers pendant ce gel = trois reconstructions de suite (gel de 9 s relevé au journal). Ici on vérifie que les vignettes déjà
+   présentes sont bien, dans l'ordre, celles qu'il faut afficher, on ne refait que celles dont l'empreinte a changé, puis on recentre. */
+function galleryReuse(focusId){
+  try{
+    const grid = document.getElementById("galleryGrid"), list = galleryVisiblePhotos(), tiles = grid.children, n = tiles.length;
+    if(!list.length || !n || n > list.length) return false;
+    if(n < list.length && galleryFillDone) return false; // il en manque et aucun remplissage n'est en cours : reconstruction normale
+    const redo = [];
+    for(let i = 0; i < n; i++){
+      const t = tiles[i], ph = list[i];
+      if(t.dataset.id !== ph.id) return false; // ordre, tri, filtre ou contenu différents : reconstruction normale
+      if(t.dataset.sig !== gallerySig(ph)){ redo.push(i); if(redo.length > 200) return false; }
+    }
+    redo.forEach(i=> grid.replaceChild(buildGalleryTile(list[i]), tiles[i]));
+    updateGalleryCounter();
+    if(typeof focusId === "string") scrollGalleryToTile(focusId);
+    return true;
+  }catch(e){ return false; }
 }
 function appendGalleryTiles(grid, photos){
   // Construction via noeuds DOM (et non via une concaténation de chaînes
@@ -6767,18 +6804,19 @@ function fixGalleryOrderIfNeeded(){
   }
 }
 function scheduleGalleryBackgroundFill(grid, rest, offset, token){
+  /* Remplissage À BUDGET DE TEMPS : des paquets fixes de 300 vignettes bloquaient ~0,45 s chacun sur A51 (journal : appendGalleryTiles 7 s en 17 appels).
+     On construit maintenant des tranches de ~40 ms (≈ 3 images d'écran), on rend la main, et on s'interrompt dès qu'un toucher est en attente. */
   const step = ()=>{
     if(token !== galleryRenderToken) return; // la galerie a été redessinée entre-temps : on abandonne ce remplissage périmé
-    // Tactile : paquets plus gros (l'ascenseur doit pouvoir descendre jusqu'au bout tout de suite, sans attendre le remplissage)
-    const bs = window.matchMedia("(pointer: coarse)").matches ? 300 : GALLERY_BACKGROUND_BATCH;
-    const chunk = rest.slice(offset, offset + bs);
-    if(chunk.length===0) return;
-    appendGalleryTiles(grid, chunk);
-    const next = offset + bs;
-    if(next < rest.length) scheduleGalleryBackgroundFill(grid, rest, next, token);
+    const coarse = window.matchMedia("(pointer: coarse)").matches, budget = coarse ? 40 : 60;
+    const inputPending = (navigator.scheduling && navigator.scheduling.isInputPending) ? ()=> navigator.scheduling.isInputPending() : ()=> false;
+    const t0 = performance.now(), frag = document.createDocumentFragment();
+    let i = offset;
+    while(i < rest.length && (i - offset < 4 || (performance.now() - t0 < budget && !inputPending()))){ frag.appendChild(buildGalleryTile(rest[i])); i++; }
+    if(i > offset) grid.appendChild(frag);
+    if(i < rest.length) scheduleGalleryBackgroundFill(grid, rest, i, token); else galleryFillDone = true;
   };
-  if("requestIdleCallback" in window) requestIdleCallback(step, {timeout:500});
-  else setTimeout(step, 0);
+  setTimeout(step, offset === 0 ? 0 : 16);
 }
 /* Compteur affiché à la suite de l'intitulé "l'heuristique — où l'Art de
    trouver, de découvrir" (span #galleryCount). Pendant un import
@@ -6815,6 +6853,7 @@ function renderGallery(focusId){
   grid.innerHTML = "";
   galleryRenderToken++;
   const myToken = galleryRenderToken;
+  galleryFillDone = true;
   if(list.length===0){
     const filteredOut = filtersActive() && galleryPhotos().length > 0; // catalogue non vide mais aucune image ne correspond
     empty.classList.toggle("hidden", filteredOut);
@@ -6836,6 +6875,7 @@ function renderGallery(focusId){
   //    bloquer l'interface ; il s'arrête net si la galerie est redessinée
   //    avant la fin (nouveau dossier chargé, etc.).
   const rest = list.slice(initialCount);
+  galleryFillDone = rest.length === 0;
   if(rest.length) scheduleGalleryBackgroundFill(grid, rest, 0, myToken);
   if(focusIndex>=0) scrollGalleryToTile(focusId);
 }
@@ -7060,7 +7100,7 @@ document.getElementById("btnGalleryShareSelection").addEventListener("click", ()
   openShareModal(photos);
 });
 function openGallery(focusId){
-  renderGallery(focusId);
+  if(!galleryReuse(focusId)) renderGallery(focusId);
   document.getElementById("galleryScreen").classList.remove("hidden");
 }
 function closeGallery(){
