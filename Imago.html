@@ -7141,8 +7141,11 @@ document.getElementById("btnGalleryShareSelection").addEventListener("click", ()
   openShareModal(photos);
 });
 function openGallery(focusId){
-  if(!galleryReuse(focusId)) renderGallery(focusId);
+  const reused = galleryReuse(focusId);
+  if(!reused) renderGallery(focusId);
+  const t0 = performance.now();
   document.getElementById("galleryScreen").classList.remove("hidden");
+  if(window.imagoProf){ void document.getElementById("galleryGrid").offsetHeight; window.imagoProf("affichage de la galerie (mise en page, " + (reused ? "réutilisée" : "reconstruite") + ")", performance.now() - t0); } // mesure seulement : la mise en page se ferait de toute façon avant l'affichage
 }
 function closeGallery(){
   document.getElementById("galleryScreen").classList.add("hidden");
@@ -22317,7 +22320,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-21-h"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-21-i"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
@@ -22420,7 +22423,9 @@ async function driveTileFetch(tile){
   const heavy = [], longs = [];
   const prof = (name, ms)=>{ if(ms >= 80){ heavy.push({t: performance.now(), name, ms}); if(heavy.length > 300) heavy.shift(); } };
   try{ new PerformanceObserver(l=>{ l.getEntries().forEach(e=>{ longs.push({t: e.startTime, d: e.duration}); if(longs.length > 400) longs.shift(); }); }).observe({entryTypes: ["longtask"]}); }catch(e){}
-  ["appendGalleryTiles", "renderGrid", "showSlideshowFrame", "updateGalleryCounter", "driveSetTileImage", "applySlideshowImageSizing", "getFullDataUrl", "cacheFullImage"].forEach(name=>{
+  window.imagoProf = prof;
+  ["appendGalleryTiles", "renderGrid", "showSlideshowFrame", "updateGalleryCounter", "driveSetTileImage", "applySlideshowImageSizing", "getFullDataUrl", "cacheFullImage",
+   "openGallery", "galleryReuse", "galleryPhotos", "galleryVisiblePhotos", "scrollGalleryToTile", "resetFilters", "updateToolbarState", "driveTilePump", "prefetchDriveImages"].forEach(name=>{
     const f = window[name]; if(typeof f !== "function") return;
     window[name] = function(){ const t0 = performance.now(), r = f.apply(this, arguments); prof(name, performance.now() - t0); return r; };
   });
