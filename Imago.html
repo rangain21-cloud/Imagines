@@ -6183,16 +6183,19 @@ function hydratePhotoFromDrive(p){
   const job = (async ()=>{
     const hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName) || await driveFindByName(p.fileName);
     if(!hit) return false;
-    const blob = await driveImageBlob(hit);
+    const T = [], yieldUi = ()=> new Promise(r=> setTimeout(r, 0)); // chronomètre par étape + respiration entre deux étapes (l'écran reste utilisable)
+    let tt = performance.now(); const lap = n=>{ const x = performance.now(); T.push([n, x - tt]); tt = x; };
+    const blob = await driveImageBlob(hit); lap("téléchargement"); await yieldUi(); tt = performance.now();
     const file = new File([blob], p.fileName, {type: blob.type || hit.mimeType, lastModified: Date.parse(hit.modifiedTime) || Date.now()});
     const stats = {};
     const dataUrl = await readFileAsDataURLWithHeicSupport(file, stats);
+    lap(stats.heicConverted || /heic|heif/i.test(blob.type || p.fileName) ? "conversion HEIC" : "lecture"); await yieldUi(); tt = performance.now();
     if(stats.heicFailed) throw new Error("format HEIC non convertible pour l'instant");
-    const exif = await readBasicExif(file);
-    const resized = await loadAndMaybeDownscaleImage(dataUrl);
+    const exif = await readBasicExif(file); lap("EXIF"); await yieldUi(); tt = performance.now();
+    const resized = await loadAndMaybeDownscaleImage(dataUrl); lap("décodage + réduction"); await yieldUi(); tt = performance.now();
     if(!resized.width || !resized.height) throw new Error("image illisible");
     const finalDataUrl = resized.dataUrl;
-    const thumbDataUrl = resized.thumbDataUrl || await makeThumbnail(finalDataUrl);
+    const thumbDataUrl = resized.thumbDataUrl || await makeThumbnail(finalDataUrl); lap("vignette"); await yieldUi(); tt = performance.now();
     const encodedSize = Math.round(finalDataUrl.length * 0.75);
     const full = {...p,
       dataUrl: finalDataUrl, thumbDataUrl, hasFullImage: true,
@@ -6206,8 +6209,19 @@ function hydratePhotoFromDrive(p){
     let savedToIdb = false;
     try{ await idbPut("photos", full); savedToIdb = true; }
     catch(e){ console.warn(`Sauvegarde persistante impossible pour "${p.fileName}" (affichée pour cette session uniquement).`, e); }
+    lap("sauvegarde");
     cacheFullImage(p.id, finalDataUrl);
     Object.assign(p, full, {dataUrl: savedToIdb ? null : finalDataUrl}); // version allégée en mémoire, comme après un import normal
+    // Journal des ralentissements : une image dont le TRAITEMENT (hors téléchargement) dépasse 1,5 s est notée, avec le détail des étapes
+    try{
+      const work = T.filter(x=> x[0] !== "téléchargement").reduce((a, x)=> a + x[1], 0);
+      if(work >= 1500 && window.imagoLagNote){
+        const f = ms=> (ms / 1000).toFixed(1).replace(".", ",") + " s";
+        window.imagoLagNote("Image Drive lente à traiter (" + f(work) + " hors téléchargement)",
+          "« " + p.fileName + " » · " + (fmtSize(blob.size) || blob.size + " o") + " · " + (blob.type || "type ?") + " · " + resized.width + "×" + resized.height + " · version réduite Drive : " + (driveReducedPref() ? "oui" : "non"),
+          T.map(x=> x[0] + " " + f(x[1])).join(" · "));
+      }
+    }catch(e){}
     return true;
   })().finally(()=> driveHydrating.delete(p.id));
   driveHydrating.set(p.id, job);
@@ -22238,8 +22252,9 @@ async function driveTileFetch(tile){
     const txt = String((e.getAttribute && e.getAttribute("title")) || e.textContent || "").trim().replace(/\s+/g, " ").slice(0, 40);
     return (e.tagName || "").toLowerCase() + (id || cls) + (txt ? " « " + txt + " »" : "");
   };
-  const note = label=>{ actions.push({t: performance.now(), label}); if(actions.length > 8) actions.shift(); };
-  ["pointerdown", "click", "keydown"].forEach(ev=> document.addEventListener(ev, e=> note((ev === "keydown" ? "touche " + e.key : "toucher") + " : " + describe(e.target)), {capture: true, passive: true}));
+  // Heure RÉELLE du toucher (e.timeStamp) : un toucher fait pendant un gel n'est traité qu'à la fin de celui-ci ; sans cela il serait daté de la fin.
+  const note = (label, t)=>{ actions.push({t: t || performance.now(), label}); actions.sort((x, y)=> x.t - y.t); if(actions.length > 12) actions.shift(); };
+  ["pointerdown", "click", "keydown"].forEach(ev=> document.addEventListener(ev, e=> note((ev === "keydown" ? "touche " + e.key : "toucher") + " : " + describe(e.target), (e.timeStamp > 0 && e.timeStamp < 1e11) ? e.timeStamp : 0), {capture: true, passive: true}));
   let lastScrollNote = 0;
   const gs = document.getElementById("galleryScroll");
   if(gs) gs.addEventListener("scroll", ()=>{ const n = performance.now(); if(n - lastScrollNote > 500){ lastScrollNote = n; note("défilement de la galerie"); } }, {passive: true});
@@ -22261,13 +22276,14 @@ async function driveTileFetch(tile){
   /* --- journal --- */
   const getLog = ()=> rd(LOG_KEY) || [];
   const addEntry = en=>{ const l = getLog(); l.unshift(en); if(l.length > MAX_ENTRIES) l.length = MAX_ENTRIES; wr(LOG_KEY, l); refreshBtn(); };
-  const lineOf = en=> "[" + fmtTs(en.ts) + "] " + en.kind + (en.dur ? " de " + sec(en.dur) : "") + (en.action ? "\n    action : " + en.action : "") + (en.state ? "\n    état : " + en.state : "");
+  const lineOf = en=> "[" + fmtTs(en.ts) + "] " + en.kind + (en.dur ? " de " + sec(en.dur) : "") + (en.action ? "\n    action : " + en.action : "") + (en.during ? "\n    touchers faits PENDANT le gel (traités après) : " + en.during : "") + (en.state ? "\n    état : " + en.state : "");
+  window.imagoLagNote = (kind, action, state)=>{ if(thresh()) addEntry({ts: Date.now(), kind, action: action || "", state: state || snapText(snapshot())}); }; // pour le code de l'appli qui sait ce qu'il fait (ex. image Drive lente)
   const refreshBtn = ()=>{ const b = document.getElementById("btnLagLog"); if(b){ const n = getLog().length; b.textContent = "🐢 Journal des ralentissements" + (n ? " (" + n + ")" : ""); } };
 
   /* --- démarrage : la session précédente s'est-elle arrêtée brutalement ? --- */
   const prev = rd(ALIVE_KEY);
   if(prev && prev.ts && !prev.clean){
-    addEntry({ts: prev.ts, kind: prev.hidden ? "Mise en arrière-plan puis fermeture de l'appli (probablement par Android, ou fermée volontairement)" : "ARRÊT BRUTAL de l'appli (gel puis fermeture, plantage ou mémoire saturée) — dernière activité enregistrée ici",
+    addEntry({ts: prev.ts, kind: prev.hidden ? "Appli mise en arrière-plan puis fermée (par vous ou par Android)" : "Fermeture non signalée de l'appli (fermée ou rechargée depuis le sélecteur d'applications/onglets — cas le plus courant — ou tuée par Android). Elle répondait normalement à sa dernière activité enregistrée : ce n'est PAS un gel en soi",
       action: prev.action || "", state: prev.state || ""});
   }
   const alive = {ts: Date.now(), clean: false, hidden: false, action: "", state: ""};
@@ -22282,9 +22298,10 @@ async function driveTileFetch(tile){
     const now = performance.now(), drift = now - last - TICK; last = now;
     const th = thresh();
     if(!th || document.hidden || now - lastHidden < TICK + drift + 50 || drift < th) return; // onglet masqué ou revenu à l'écran : minuteurs ralentis par le navigateur, pas un gel de l'appli
-    const start = now - drift, a = [...actions].reverse().find(x=> x.t <= now && x.t >= start - 2500);
+    const start = now - drift, cause = [...actions].reverse().find(x=> x.t <= start && x.t >= start - 2500), during = actions.filter(x=> x.t > start && x.t <= now);
     addEntry({ts: Date.now(), kind: "Écran figé", dur: Math.round(drift),
-      action: a ? a.label + (a.t < start ? " (" + sec(start - a.t) + " avant le gel)" : " (pendant le gel)") : "aucune action récente : travail de fond (import, vignettes, Drive…)",
+      action: cause ? cause.label + " (" + sec(start - cause.t) + " avant le gel)" : "aucune action dans les 2,5 s précédentes : travail de fond (import, vignettes, Drive…)",
+      during: during.length ? during.map(x=> x.label.replace(/ «.*$/, "")).slice(0, 3).join(" ; ") : "",
       state: snapText(snapshot())});
   }, TICK);
 
@@ -22316,6 +22333,15 @@ async function driveTileFetch(tile){
     };
     render();
   };
+  // Reconstruction de la galerie (appelée à de nombreux endroits) : notée si elle dépasse 1 s, avec le nombre de vignettes
+  if(typeof renderGallery === "function"){
+    const orig = renderGallery;
+    renderGallery = function(){
+      const t0 = performance.now(), r = orig.apply(this, arguments), d = performance.now() - t0;
+      if(thresh() && d >= Math.min(1000, thresh())) window.imagoLagNote("Reconstruction de la galerie lente (" + sec(d) + ")", "renderGallery() — " + (new Error().stack || "").split("\n").slice(2, 4).map(x=> x.trim().replace(/\(?https?:\/\/[^)]*\//, "(")).join(" ← "));
+      return r;
+    };
+  }
   const btn = document.getElementById("btnLagLog"); if(btn) btn.addEventListener("click", show);
   refreshBtn();
 })();
