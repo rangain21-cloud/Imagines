@@ -6921,26 +6921,45 @@ function scrollGalleryToTile(id){
     const t = tileAt(scroller.scrollTop), p = t && photoById(t.dataset.id), d = p && String(p.dateAchat || "");
     return /^\d{4}-\d{2}/.test(d || "") ? d.slice(0, 7) : "";
   };
+  /* Les MESURES de mise en page (scrollHeight, hauteur de piste) forcent le navigateur à recalculer toute la planche-contact : avec des milliers de
+     vignettes ajoutées par paquets pendant un import, le faire à chaque ajout figeait un smartphone. Elles sont donc mémorisées et rafraîchies
+     au plus ~2 fois par seconde (une fois par 1,2 s pendant un import) ; entre deux, seul le déplacement du curseur est mis à jour. */
+  const busy = ()=>{ try{ return importTotalCount > 0; }catch(e){ return false; } };
+  let M = null, lastMetrics = 0, metricsTimer = 0;
+  function metrics(force){
+    const now = performance.now(), gap = busy() ? 1200 : 450;
+    if(!force && M && now - lastMetrics < gap){
+      if(!metricsTimer) metricsTimer = setTimeout(()=>{ metricsTimer = 0; sched(); }, gap - (now - lastMetrics) + 20); // rattrapage une fois l'accalmie venue
+      return M;
+    }
+    lastMetrics = now;
+    if(!mq.matches || !scroller.offsetHeight){ M = null; return null; }
+    const sh = scroller.scrollHeight, ch = scroller.clientHeight, mx = Math.max(0, sh - ch);
+    if(mx <= 4){ M = null; return null; }
+    const top = scroller.offsetTop, H = scroller.offsetHeight, th = Math.max(60, Math.min(H, Math.round(H * ch / sh)));
+    M = {mx, top, H, th};
+    bar.style.top = top + "px"; bar.style.height = H + "px"; thumb.style.height = th + "px";
+    return M;
+  }
   function layout(){
     raf = 0;
-    if(!mq.matches || !scroller.offsetHeight){ bar.classList.add("idle"); return; }
-    const mx = maxScroll();
-    if(mx <= 4){ bar.classList.add("idle"); return; }
+    const m = metrics(false);
+    if(!m){ bar.classList.add("idle"); return; }
     bar.classList.remove("idle");
-    bar.style.top = scroller.offsetTop + "px"; bar.style.height = scroller.offsetHeight + "px";
-    const H = bar.clientHeight, th = Math.max(60, Math.min(H, Math.round(H * scroller.clientHeight / scroller.scrollHeight)));
-    thumb.style.height = th + "px";
-    thumb.style.top = Math.round((H - th) * Math.min(1, Math.max(0, scroller.scrollTop / mx))) + "px";
+    const y = Math.round((m.H - m.th) * Math.min(1, Math.max(0, scroller.scrollTop / m.mx)));
+    thumb.style.top = y + "px";
     if(drag || bar.classList.contains("show-label")){
-      const m = monthLabel(); label.textContent = m || Math.round(100 * scroller.scrollTop / mx) + " %";
-      label.style.top = Math.max(0, Math.min(H - label.offsetHeight, thumb.offsetTop + th / 2 - label.offsetHeight / 2)) + "px";
+      const mo = monthLabel(); label.textContent = mo || Math.round(100 * scroller.scrollTop / m.mx) + " %";
+      label.style.top = Math.max(0, Math.min(m.H - 30, y + m.th / 2 - 15)) + "px";
     }
   }
   const sched = ()=>{ if(!raf) raf = requestAnimationFrame(layout); };
+  window.imagoGalleryTouchSync = ()=>{ lastMetrics = 0; M = null; sched(); }; // appelé quand la barre du haut est masquée/affichée (hauteur de la zone modifiée)
   const moveTo = clientY=>{
-    const r = bar.getBoundingClientRect(), H = r.height, th = thumb.offsetHeight, room = Math.max(1, H - th);
+    const m = M || metrics(true); if(!m) return;
+    const r = bar.getBoundingClientRect(), room = Math.max(1, m.H - m.th);
     const f = Math.min(1, Math.max(0, (clientY - r.top - offset) / room));
-    scroller.scrollTop = f * maxScroll();
+    scroller.scrollTop = f * m.mx;
   };
   bar.addEventListener("pointerdown", e=>{
     if(bar.classList.contains("idle")) return;
@@ -6948,7 +6967,7 @@ function scrollGalleryToTile(id){
     try{ bar.setPointerCapture(e.pointerId); }catch(_){}
     const tr = thumb.getBoundingClientRect();
     offset = (e.clientY >= tr.top && e.clientY <= tr.bottom) ? e.clientY - tr.top : tr.height / 2; // sur le curseur : on le saisit ; ailleurs : on y saute
-    scroller.style.scrollBehavior = "auto"; moveTo(e.clientY); sched();
+    scroller.style.scrollBehavior = "auto"; metrics(true); moveTo(e.clientY); sched();
   });
   bar.addEventListener("pointermove", e=>{ if(drag){ e.preventDefault(); moveTo(e.clientY); } });
   const end = e=>{
@@ -6958,11 +6977,10 @@ function scrollGalleryToTile(id){
   };
   bar.addEventListener("pointerup", end); bar.addEventListener("pointercancel", end);
   scroller.addEventListener("scroll", sched, {passive:true});
-  window.addEventListener("resize", sched); window.addEventListener("orientationchange", sched);
-  if(mq.addEventListener) mq.addEventListener("change", sched);
-  if(window.ResizeObserver){ const ro = new ResizeObserver(sched); ro.observe(scroller); ro.observe(grid); }
-  new MutationObserver(sched).observe(grid, {childList:true});
-  setInterval(()=>{ if(mq.matches && !drag) sched(); }, 1500); // filet de sécurité : écran galerie masqué puis réaffiché, chargement progressif…
+  window.addEventListener("resize", ()=>{ lastMetrics = 0; sched(); }); window.addEventListener("orientationchange", ()=>{ lastMetrics = 0; sched(); });
+  if(mq.addEventListener) mq.addEventListener("change", ()=>{ lastMetrics = 0; sched(); });
+  if(window.ResizeObserver){ const ro = new ResizeObserver(()=>{ lastMetrics = 0; sched(); }); ro.observe(scroller); } // pas d'observateur sur la grille elle-même (elle grossit à chaque paquet de vignettes)
+  setInterval(()=>{ if(mq.matches && !drag && !document.hidden) sched(); }, 2000); // filet de sécurité : écran galerie masqué puis réaffiché, chargement progressif…
   sched();
 })();
 document.getElementById("galleryGrid").addEventListener("click", (e)=>{
@@ -22071,7 +22089,7 @@ function isLandscapePhone(){ return window.matchMedia(LANDSCAPE_PHONE_MQ).matche
     head.classList.toggle("collapsed", on);
     try{ localStorage.setItem(KEY, on ? "1" : "0"); }catch(e){}
     refreshPeek();
-    window.dispatchEvent(new Event("resize")); // la planche-contact (et l'ascenseur) reprennent la place libérée
+    if(window.imagoGalleryTouchSync) window.imagoGalleryTouchSync(); // seul l'ascenseur est prévenu (un « resize » global réveillait inutilement visionneuse, éditeur, diaporama…)
   };
   try{ if(localStorage.getItem(KEY) === "1") set(true); }catch(e){}
   if(count) new MutationObserver(refreshPeek).observe(count, {childList: true, characterData: true, subtree: true});
