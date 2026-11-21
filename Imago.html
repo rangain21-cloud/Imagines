@@ -6183,7 +6183,7 @@ function hydratePhotoFromDrive(p){
   const job = (async ()=>{
     const hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName) || await driveFindByName(p.fileName);
     if(!hit) return false;
-    const T = [], yieldUi = ()=> new Promise(r=> setTimeout(r, 0)); // chronomètre par étape + respiration entre deux étapes (l'écran reste utilisable)
+    const tStart = performance.now(), T = [], yieldUi = ()=> new Promise(r=> setTimeout(r, 0)); // chronomètre par étape + respiration entre deux étapes (l'écran reste utilisable)
     let tt = performance.now(); const lap = n=>{ const x = performance.now(); T.push([n, x - tt]); tt = x; };
     const blob = await driveImageBlob(hit); lap("téléchargement"); await yieldUi(); tt = performance.now();
     const file = new File([blob], p.fileName, {type: blob.type || hit.mimeType, lastModified: Date.parse(hit.modifiedTime) || Date.now()});
@@ -6219,7 +6219,7 @@ function hydratePhotoFromDrive(p){
         const f = ms=> (ms / 1000).toFixed(1).replace(".", ",") + " s";
         window.imagoLagNote("Image Drive lente à traiter (" + f(work) + " hors téléchargement)",
           "« " + p.fileName + " » · " + (fmtSize(blob.size) || blob.size + " o") + " · " + (blob.type || "type ?") + " · " + resized.width + "×" + resized.height + " · version réduite Drive : " + (driveReducedPref() ? "oui" : "non"),
-          T.map(x=> x[0] + " " + f(x[1])).join(" · "));
+          T.map(x=> x[0] + " " + f(x[1])).join(" · ") + (window.imagoBusyReport ? "\n    pendant ce traitement : " + window.imagoBusyReport(tStart, performance.now()) : ""));
       }
     }catch(e){}
     return true;
@@ -22302,7 +22302,7 @@ async function driveTileFetch(tile){
     addEntry({ts: Date.now(), kind: "Écran figé", dur: Math.round(drift),
       action: cause ? cause.label + " (" + sec(start - cause.t) + " avant le gel)" : "aucune action dans les 2,5 s précédentes : travail de fond (import, vignettes, Drive…)",
       during: during.length ? during.map(x=> x.label.replace(/ «.*$/, "")).slice(0, 3).join(" ; ") : "",
-      state: snapText(snapshot())});
+      state: snapText(snapshot()) + "\n    pendant le gel : " + busyReport(start, now)});
   }, TICK);
 
   /* --- fenêtre du journal --- */
@@ -22333,11 +22333,30 @@ async function driveTileFetch(tile){
     };
     render();
   };
+  /* Profileur léger : durée (partie synchrone) des fonctions lourdes de l'appli, notée seulement au-delà de 80 ms, + tâches longues du navigateur
+     (PerformanceObserver « longtask », ≥ 50 ms). Sert à nommer ce qui occupe l'écran pendant un gel ou un traitement d'image lent. */
+  const heavy = [], longs = [];
+  const prof = (name, ms)=>{ if(ms >= 80){ heavy.push({t: performance.now(), name, ms}); if(heavy.length > 300) heavy.shift(); } };
+  try{ new PerformanceObserver(l=>{ l.getEntries().forEach(e=>{ longs.push({t: e.startTime, d: e.duration}); if(longs.length > 400) longs.shift(); }); }).observe({entryTypes: ["longtask"]}); }catch(e){}
+  ["appendGalleryTiles", "renderGrid", "showSlideshowFrame", "updateGalleryCounter", "driveSetTileImage", "applySlideshowImageSizing", "getFullDataUrl", "cacheFullImage"].forEach(name=>{
+    const f = window[name]; if(typeof f !== "function") return;
+    window[name] = function(){ const t0 = performance.now(), r = f.apply(this, arguments); prof(name, performance.now() - t0); return r; };
+  });
+  const busyReport = (t0, t1)=>{
+    const L = longs.filter(x=> x.t + x.d > t0 && x.t < t1);
+    const tot = L.reduce((a, x)=> a + Math.max(0, Math.min(x.t + x.d, t1) - Math.max(x.t, t0)), 0);
+    const by = new Map(); heavy.filter(h=> h.t > t0 && h.t - h.ms < t1).forEach(h=>{ const o = by.get(h.name) || {ms: 0, n: 0}; o.ms += h.ms; o.n++; by.set(h.name, o); });
+    const names = [...by].sort((a, b)=> b[1].ms - a[1].ms).slice(0, 4).map(([n, o])=> n + " " + sec(o.ms) + " (×" + o.n + ")").join(" ; ");
+    return (L.length ? L.length + " tâche(s) longue(s) = " + sec(tot) + " sur " + sec(t1 - t0) : "aucune tâche longue détectée")
+      + (names ? " · dont : " + names : " · aucune fonction suivie ne dépasse 80 ms" + (L.length ? " (autre travail : décodage d'images, mise en page, code non suivi)" : ""));
+  };
+  window.imagoBusyReport = busyReport;
   // Reconstruction de la galerie (appelée à de nombreux endroits) : notée si elle dépasse 1 s, avec le nombre de vignettes
   if(typeof renderGallery === "function"){
     const orig = renderGallery;
     renderGallery = function(){
       const t0 = performance.now(), r = orig.apply(this, arguments), d = performance.now() - t0;
+      prof("renderGallery", d);
       if(thresh() && d >= Math.min(1000, thresh())) window.imagoLagNote("Reconstruction de la galerie lente (" + sec(d) + ")", "renderGallery() — " + (new Error().stack || "").split("\n").slice(2, 4).map(x=> x.trim().replace(/\(?https?:\/\/[^)]*\//, "(")).join(" ← "));
       return r;
     };
