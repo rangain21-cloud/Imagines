@@ -503,6 +503,9 @@ details.pave .btn{width:100%; margin-bottom:8px;}
     color:var(--copper-hi); font-size:13px; cursor:pointer; touch-action:manipulation;
   }
 }
+.gallery-progress{ display:none; flex:0 0 4px; height:4px; background:rgba(255,255,255,.10); overflow:hidden; }
+.gallery-progress.on{ display:block; }
+.gallery-progress i{ display:block; height:100%; width:0; background:var(--copper-hi); transition:width .35s ease; }
 .gallery-touchbar{ display:none; }
 @media (max-width: 760px), (orientation: landscape) and (pointer: coarse) and (max-height: 560px){
   .gallery-scroll{ scrollbar-width:none; padding-right:34px; }
@@ -1974,6 +1977,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <button class="btn gallery-head-hide" id="galleryHeadHide" type="button" title="Masquer cette barre pour agrandir la place des photos (ou balayez-la vers le haut)">▴ Masquer</button>
   </div>
   <button class="gallery-peek" id="galleryHeadPeek" type="button" title="Afficher la barre (Miniatures, Cadrage, Tri, Sélectionner…)">▾ Afficher la barre</button>
+  <div class="gallery-progress" id="galleryProgress" aria-hidden="true"><i></i></div>
   <div class="gallery-touchbar idle" id="galleryTouchBar" aria-hidden="true"><div class="gtb-thumb" id="galleryTouchThumb"></div><div class="gtb-label" id="galleryTouchLabel"></div></div>
   <div class="gallery-scroll" id="galleryScroll">
     <div class="gallery-grid" id="galleryGrid"></div>
@@ -6025,6 +6029,7 @@ function activePhotos(){
 // États « smartphone » déclarés tôt (utilisés par renderGrid / buildGalleryTile, parfois avant la fin du script)
 const LANDSCAPE_PHONE_MQ = "(orientation: landscape) and (pointer: coarse) and (max-height: 560px)";
 const driveTileThumbs = new Map();   // id photo -> blob: URL de miniature Drive (les plus anciennes sont libérées au-delà de 600)
+const driveThumbSeen = new Set();    // id des photos dont la miniature Drive a déjà été reçue (jamais purgé : sert au compteur « chargées / total »)
 let driveTileObserver = null, driveTileTimer = 0, driveTileBusy = 0, driveTileOk = 0, driveTileFail = 0, driveTileMode = "thumb";
 const driveTileVisible = new Set();
 const driveHydrating = new Map();   // id photo -> Promise (évite les téléchargements en double)
@@ -6119,14 +6124,21 @@ function driveReducedPref(){
 }
 // Contenu d'une image Drive : version réduite fabriquée par Drive (≈ IMPORT_MAX_DIM px) si l'option est active, sinon (ou en cas de refus) l'original
 async function driveImageBlob(hit){
-  if(driveReducedPref() && hit.thumbnailLink && /^image\//.test(hit.mimeType || "")){
+  let why = "";
+  if(!driveReducedPref()) why = "option « version réduite » désactivée";
+  else if(!hit.thumbnailLink) why = "Drive n'a pas (encore) de miniature pour ce fichier";
+  else if(!/^image\//.test(hit.mimeType || "")) why = "type " + hit.mimeType;
+  else{
     try{
       const url = /=s\d+/.test(hit.thumbnailLink) ? hit.thumbnailLink.replace(/=s\d+[^=]*$/, "=s" + IMPORT_MAX_DIM) : hit.thumbnailLink + "=s" + IMPORT_MAX_DIM;
       const res = await fetch(url, {mode: "cors"});
-      if(res.ok){ const b = await res.blob(); if(b.size && /^image\//.test(b.type)) return b; }
-    }catch(e){ /* refusé : on retombe sur l'original */ }
+      if(res.ok){ const b = await res.blob(); if(b.size && /^image\//.test(b.type)){ b.imagoSrc = "réduite par Drive"; return b; } why = "réponse vide ou non image"; }
+      else why = "miniature refusée : HTTP " + res.status;
+    }catch(e){ why = "miniature inaccessible : " + ((e && e.message) || e); /* refusé : on retombe sur l'original */ }
   }
-  return (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
+  const full = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
+  full.imagoSrc = "ORIGINAL (" + why + ")";
+  return full;
 }
 const VIDEO_NAME_RE = /\.(mp4|m4v|mov|avi|mpe?g)$/i;
 /* Un enregistrement créé depuis un CSV (« Charger depuis Drive », anciennes sessions comprises) n'a ni isVideo ni
@@ -6200,22 +6212,45 @@ function jpegDimsFromBytes(u8){
    (la file d'attente est ailleurs : décodage, GPU). Ici : dimensions lues dans l'en-tête, vignette décodée directement à petite taille hors du fil
    principal (createImageBitmap avec redimensionnement). Renvoie null au moindre doute : le parcours classique prend alors le relais, inchangé. */
 async function fastJpegIngest(file, dataUrl){
+  fastJpegIngest.why = "";
   try{
-    if(typeof createImageBitmap !== "function") return null;
-    if(!/^data:image\/jpe?g/i.test(dataUrl) || !looksLikeGenuineJpeg(dataUrl) || !jpegOrientationIsNormal(dataUrl)) return null;
+    if(typeof createImageBitmap !== "function"){ fastJpegIngest.why = "createImageBitmap absent"; return null; }
+    if(!/^data:image\/jpe?g/i.test(dataUrl)){ fastJpegIngest.why = "pas un JPEG (" + String(dataUrl).slice(0, 22) + ")"; return null; }
+    if(!looksLikeGenuineJpeg(dataUrl)){ fastJpegIngest.why = "octets non JPEG"; return null; }
+    if(!jpegOrientationIsNormal(dataUrl)){ fastJpegIngest.why = "orientation EXIF à corriger (ou en-tête illisible)"; return null; }
     const dims = jpegDimsFromBytes(new Uint8Array(await file.slice(0, 524288).arrayBuffer()));
-    if(!dims || !dims.w || !dims.h || Math.max(dims.w, dims.h) > IMPORT_MAX_DIM) return null; // à réduire : parcours classique
-    const ts = Math.min(1, THUMB_MAX_DIM / Math.max(dims.w, dims.h)), tw = Math.max(1, Math.round(dims.w * ts)), th = Math.max(1, Math.round(dims.h * ts));
-    const bmp = await createImageBitmap(file, {resizeWidth: tw, resizeHeight: th, resizeQuality: "high"});
+    if(!dims || !dims.w || !dims.h){ fastJpegIngest.why = "dimensions introuvables dans l'en-tête"; return null; }
+    const mx = Math.max(dims.w, dims.h);
+    if(mx <= IMPORT_MAX_DIM){
+      // Déjà assez petite : octets d'origine conservés, seule la vignette est fabriquée (décodée directement à petite taille)
+      const ts = Math.min(1, THUMB_MAX_DIM / mx), tw = Math.max(1, Math.round(dims.w * ts)), th = Math.max(1, Math.round(dims.h * ts));
+      const bmp = await createImageBitmap(file, {resizeWidth: tw, resizeHeight: th, resizeQuality: "high"});
+      try{
+        const c = document.createElement("canvas"); c.width = tw; c.height = th;
+        c.getContext("2d").drawImage(bmp, 0, 0, tw, th);
+        const thumbDataUrl = await canvasToJpegDataUrl(c, THUMB_JPEG_QUALITY);
+        c.width = 0; c.height = 0;
+        if(!thumbDataUrl || thumbDataUrl.length < 200){ fastJpegIngest.why = "vignette vide"; return null; }
+        return {dataUrl, width: dims.w, height: dims.h, thumbDataUrl, lossless: true, fast: true};
+      }finally{ if(bmp.close) bmp.close(); }
+    }
+    // GRANDE image (original de plusieurs Mo, souvent 12 Mpx) : le parcours classique la décode ENTIÈRE sur le fil principal (journal : 44 à 51 tâches
+    // longues, 8 à 10 s, gels d'écran, et probable fermeture par Android faute de mémoire). Ici le navigateur la décode directement à la taille
+    // voulue (réduction à la volée, hors fil principal, mémoire minimale), puis un seul encodage JPEG asynchrone.
+    const sc = IMPORT_MAX_DIM / mx, nw = Math.max(1, Math.round(dims.w * sc)), nh = Math.max(1, Math.round(dims.h * sc));
+    const bmp = await createImageBitmap(file, {resizeWidth: nw, resizeHeight: nh, resizeQuality: "high"});
+    let canvas = null;
     try{
-      const c = document.createElement("canvas"); c.width = tw; c.height = th;
-      c.getContext("2d").drawImage(bmp, 0, 0, tw, th);
-      const thumbDataUrl = await canvasToJpegDataUrl(c, THUMB_JPEG_QUALITY);
-      c.width = 0; c.height = 0;
-      if(!thumbDataUrl || thumbDataUrl.length < 200) return null;
-      return {dataUrl, width: dims.w, height: dims.h, thumbDataUrl, lossless: true, fast: true};
-    }finally{ if(bmp.close) bmp.close(); }
-  }catch(e){ return null; }
+      canvas = document.createElement("canvas"); canvas.width = nw; canvas.height = nh;
+      canvas.getContext("2d").drawImage(bmp, 0, 0, nw, nh);
+      const out = await canvasToJpegDataUrl(canvas, IMPORT_JPEG_QUALITY);
+      const ts = Math.min(1, THUMB_MAX_DIM / Math.max(nw, nh)), tw = Math.max(1, Math.round(nw * ts)), th = Math.max(1, Math.round(nh * ts));
+      const tc = downscaleToCanvas(canvas, nw, nh, tw, th);
+      const thumbDataUrl = tc.toDataURL("image/jpeg", THUMB_JPEG_QUALITY); tc.width = 0; tc.height = 0;
+      if(!out || out.length < 200 || !thumbDataUrl || thumbDataUrl.length < 200){ fastJpegIngest.why = "encodage vide"; return null; }
+      return {dataUrl: out, width: nw, height: nh, thumbDataUrl, lossless: false, fast: true};
+    }finally{ if(bmp.close) bmp.close(); if(canvas){ canvas.width = 0; canvas.height = 0; } }
+  }catch(e){ fastJpegIngest.why = "erreur : " + ((e && e.message) || e); return null; }
 }
 /* Au plus HYDRATE_MAX traitements d'image Drive en parallèle (journal : jusqu'à 8 à la fois, décodage + réduction de 4 à 20 s chacun sur A51). */
 const HYDRATE_MAX = /Android/i.test(navigator.userAgent) ? 2 : 4;
@@ -6242,7 +6277,7 @@ function hydratePhotoFromDrive(p, urgent){
     const exif = await readBasicExif(file); lap("EXIF"); await yieldUi(); tt = performance.now();
     let resized = await fastJpegIngest(file, dataUrl);
     if(!resized) resized = await loadAndMaybeDownscaleImage(dataUrl);
-    lap(resized.fast ? "vignette (voie rapide)" : "décodage + réduction"); await yieldUi(); tt = performance.now();
+    lap(resized.fast ? "voie rapide" : "décodage + réduction (voie rapide refusée : " + (fastJpegIngest.why || "?") + ")"); await yieldUi(); tt = performance.now();
     if(!resized.width || !resized.height) throw new Error("image illisible");
     const finalDataUrl = resized.dataUrl;
     const thumbDataUrl = resized.thumbDataUrl || await makeThumbnail(finalDataUrl); lap("vignette"); await yieldUi(); tt = performance.now();
@@ -6262,13 +6297,14 @@ function hydratePhotoFromDrive(p, urgent){
     lap("sauvegarde");
     cacheFullImage(p.id, finalDataUrl);
     Object.assign(p, full, {dataUrl: savedToIdb ? null : finalDataUrl}); // version allégée en mémoire, comme après un import normal
+    galleryProgressSoon();
     // Journal des ralentissements : une image dont le TRAITEMENT (hors téléchargement) dépasse 1,5 s est notée, avec le détail des étapes
     try{
       const work = T.filter(x=> x[0] !== "téléchargement").reduce((a, x)=> a + x[1], 0);
       if(work >= 1500 && window.imagoLagNote){
         const f = ms=> (ms / 1000).toFixed(1).replace(".", ",") + " s";
         window.imagoLagNote("Image Drive lente à traiter (" + f(work) + " hors téléchargement)",
-          "« " + p.fileName + " » · " + (fmtSize(blob.size) || blob.size + " o") + " · " + (blob.type || "type ?") + " · " + resized.width + "×" + resized.height + " · version réduite Drive : " + (driveReducedPref() ? "oui" : "non"),
+          "« " + p.fileName + " » · " + (fmtSize(blob.size) || blob.size + " o") + " · " + (blob.type || "type ?") + " · source : " + (blob.imagoSrc || "?") + " · " + resized.width + "×" + resized.height + " · version réduite Drive : " + (driveReducedPref() ? "oui" : "non"),
           T.map(x=> x[0] + " " + f(x[1])).join(" · ") + (window.imagoBusyReport ? "\n    pendant ce traitement : " + window.imagoBusyReport(tStart, performance.now()) : ""));
       }
     }catch(e){}
@@ -6793,7 +6829,7 @@ function galleryReuse(focusId){
       if(t.dataset.sig !== gallerySig(ph)){ redo.push(i); if(redo.length > 200) return false; }
     }
     redo.forEach(i=> grid.replaceChild(buildGalleryTile(list[i]), tiles[i]));
-    updateGalleryCounter();
+    galleryProgressSoon(); // compteur rafraîchi juste après l'affichage (et non ici : il re-trierait toute la liste pendant le « Retour galerie »)
     if(typeof focusId === "string") scrollGalleryToTile(focusId);
     return true;
   }catch(e){ return false; }
@@ -6856,6 +6892,7 @@ function scheduleGalleryBackgroundFill(grid, rest, offset, token){
     while(i < rest.length && (i - offset < 4 || (performance.now() - t0 < budget && !inputPending()))){ frag.appendChild(buildGalleryTile(rest[i])); i++; }
     if(i > offset) grid.appendChild(frag);
     if(i < rest.length) scheduleGalleryBackgroundFill(grid, rest, i, token); else galleryFillDone = true;
+    galleryProgressSoon();
   };
   setTimeout(step, offset === 0 ? 0 : 16);
 }
@@ -6870,21 +6907,57 @@ function scheduleGalleryBackgroundFill(grid, rest, offset, token){
 function galleryVisiblePhotos(){
   return filtersActive() ? galleryPhotos().filter(photoMatchesFilters) : galleryPhotos();
 }
+/* Progression du chargement de la galerie. Deux phases visibles : (1) mise en place des vignettes (la planche-contact se remplit par tranches),
+   (2) images chargées (en catalogue Drive, la miniature n'est demandée que pour les vignettes qu'on regarde : le compteur monte au fil du défilement
+   et du téléchargement en arrière-plan). Texte dans le compteur du haut (repris par la languette quand la barre est masquée) + fine barre de progression. */
+function galleryHasImage(p){ return !!(p.thumbDataUrl || p.dataUrl || p.posterDataUrl || p.hasFullImage || driveThumbSeen.has(p.id)); }
+function galleryProgressBar(ratio){
+  const b = document.getElementById("galleryProgress"); if(!b) return;
+  if(!(ratio >= 0) || ratio >= 1){ b.classList.remove("on"); return; }
+  b.classList.add("on"); b.firstElementChild.style.width = Math.max(1, Math.round(ratio * 100)) + "%";
+}
+function galleryLoadProgress(list){
+  if(!list.length){ galleryProgressBar(1); return ""; }
+  const grid = document.getElementById("galleryGrid"), parts = [];
+  let ratio = 1;
+  if(!galleryFillDone && grid && grid.children.length < list.length){
+    parts.push("⏳ affichage " + grid.children.length + "/" + list.length);
+    ratio = grid.children.length / list.length;
+  } else {
+    let loaded = 0; for(let i = 0; i < list.length; i++) if(galleryHasImage(list[i])) loaded++;
+    if(loaded < list.length){ parts.push("🖼 " + loaded + "/" + list.length + " chargées"); ratio = loaded / list.length; }
+  }
+  galleryProgressBar(ratio);
+  return parts.join(" · ");
+}
+let galleryProgressTimer = 0;
+function galleryProgressSoon(){ // mise à jour espacée (≤ 2 fois par seconde), seulement si la galerie est affichée
+  if(galleryProgressTimer) return;
+  galleryProgressTimer = setTimeout(()=>{
+    galleryProgressTimer = 0;
+    const scr = document.getElementById("galleryScreen");
+    if(scr && !scr.classList.contains("hidden")) updateGalleryCounter();
+  }, 500);
+}
 function updateGalleryCounter(){
   const el = document.getElementById("galleryCount");
   document.getElementById("galleryClearFilters").classList.toggle("hidden", !filtersActive());
   if(importTotalCount > 0){
     const remaining = Math.max(0, importTotalCount - importDoneCount);
     el.textContent = `${importDoneCount} image${importDoneCount>1?"s":""} chargée(s) / ${remaining} restante(s)`;
+    galleryProgressBar(importDoneCount / importTotalCount);
     return;
   }
   const list = galleryVisiblePhotos();
+  let txt;
   if(filtersActive()){
     const total = galleryPhotos().length;
-    el.textContent = `${list.length} image${list.length>1?"s":""} sur ${total} — recherche active`;
-    return;
+    txt = `${list.length} image${list.length>1?"s":""} sur ${total} — recherche active`;
+  } else {
+    txt = list.length ? `${list.length} image${list.length>1?"s":""}` : "";
   }
-  el.textContent = list.length ? `${list.length} image${list.length>1?"s":""}` : "";
+  const prog = galleryLoadProgress(list);
+  el.textContent = txt + (prog ? " · " + prog : "");
 }
 function renderGallery(focusId){
   const list = galleryVisiblePhotos();
@@ -21199,6 +21272,7 @@ async function ensurePhotoUploadedToDrive(p, parentFolderId){
       throw new Error(`Conversion HEIC → JPEG impossible avant l'envoi sur Drive de "${p.fileName}" (${(err&&err.message)||String(err)}) — vérifiez votre connexion internet puis réessayez.`);
     }
   }
+  if(driveCompressActive && driveCompressActive.img) fullDataUrl = await compressDataUrlForDrive(fullDataUrl); // compression choisie dans « Sauver sur Drive » (nulle partout ailleurs)
   const match = fullDataUrl.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!match) throw new Error("Image introuvable en mémoire.");
   const mime = match[1] || "image/jpeg";
@@ -21313,6 +21387,7 @@ async function showDriveMissingFiles(){
       body.appendChild(btnStop);
       RO.stop = false; btnStop.onclick = ()=>{ RO.stop = true; st.textContent = "Arrêt en cours…"; };
       let okN = 0; const failed = [], notFound = [], fuzzy = [];
+      const cmpM = driveCmpPrefs(), cmpTot = {ib: 0, ia: 0, vb: 0, va: 0};
       try{
         const oidx = await roIndexOrigin(dir, n=>{ st.textContent = "Lecture du dossier « " + dir.name + " »… " + n + " fichier(s)"; });
         addLog("Dossier local lu. " + list.length + " fichier(s) à chercher.");
@@ -21329,12 +21404,24 @@ async function showDriveMissingFiles(){
           try{
             const file = await ent.handle.getFile();
             const isVideo = VIDEO_NAME_RE.test(name);
-            await driveResumableUpload(file, {name, parentId: folderId, mimeType: roMime(file, name, isVideo)}, (a,b)=>{
+            let sendFile = file, sendMime = roMime(file, name, isVideo), note = "";
+            if(!isVideo && cmpM.img){ // compression depuis l'ORIGINAL du PC (meilleure qualité qu'à partir d'une copie déjà réduite)
+              st.textContent = "Compression " + (i+1) + "/" + list.length + " : " + name;
+              const c = await compressImageBlob(file, DRIVE_CMP_IMG[cmpM.img]);
+              if(c){ sendFile = new File([c], name, {type: "image/jpeg"}); sendMime = "image/jpeg"; }
+              cmpTot.ib += file.size; cmpTot.ia += sendFile.size; note = " [" + fmtSize(file.size) + " → " + fmtSize(sendFile.size) + "]";
+            } else if(isVideo && cmpM.vid){
+              try{
+                const c = await compressVideoBlob(file, DRIVE_CMP_VID[cmpM.vid], r=>{ st.textContent = "Compression vidéo " + (i+1) + "/" + list.length + " : " + name + " (" + Math.round(r * 100) + " %)"; }, ()=> RO.stop);
+                if(c){ sendFile = c; sendMime = "video/mp4"; cmpTot.vb += file.size; cmpTot.va += c.size; note = " [" + fmtSize(file.size) + " → " + fmtSize(c.size) + "]"; }
+              }catch(e){ if(RO.stop) break; addLog("⚠ compression impossible pour " + name + " (" + ((e && e.message) || e) + ") : original envoyé"); }
+            }
+            await driveResumableUpload(sendFile, {name, parentId: folderId, mimeType: sendMime}, (a,b)=>{
               st.textContent = "Envoi " + (i+1) + "/" + list.length + " : " + name + " (" + Math.round(a/b*100) + " %)";
             });
             okN++; consecutiveFail = 0;
-            if(lk.fuzzy){ fuzzy.push(name + " ← " + ent.name); addLog("✓ " + name + " (envoyé depuis « " + ent.name + " », " + lk.fuzzy + ")"); }
-            else addLog("✓ " + name);
+            if(lk.fuzzy){ fuzzy.push(name + " ← " + ent.name); addLog("✓ " + name + note + " (envoyé depuis « " + ent.name + " », " + lk.fuzzy + ")"); }
+            else addLog("✓ " + name + note);
           }catch(e){
             const msg = (e && e.message) || String(e);
             failed.push(name + " : " + msg); addLog("❌ " + name + " : " + msg);
@@ -21345,7 +21432,8 @@ async function showDriveMissingFiles(){
       }catch(e){ addLog("❌ " + ((e && e.message) || e)); }
       fill.style.width = "100%"; btnStop.remove();
       driveMediaIndexPromise = null; driveMediaIndexFolder = ""; driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
-      st.textContent = (RO.stop ? "⏹ Arrêté. " : "✅ Terminé. ") + okN + " fichier(s) envoyé(s) sur Drive, " + notFound.length + " introuvable(s) dans « " + dir.name + " », " + failed.length + " échec(s).";
+      st.textContent = (RO.stop ? "⏹ Arrêté. " : "✅ Terminé. ") + okN + " fichier(s) envoyé(s) sur Drive, " + notFound.length + " introuvable(s) dans « " + dir.name + " », " + failed.length + " échec(s)."
+        + (cmpTot.ib ? " Images : " + fmtCmpSaving(cmpTot.ib, cmpTot.ia) + "." : "") + (cmpTot.vb ? " Vidéos : " + fmtCmpSaving(cmpTot.vb, cmpTot.va) + "." : "");
       const row = mk("div", "display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;");
       const bAgain = document.createElement("button"); bAgain.className = "btn"; bAgain.style.flex = "1"; bAgain.textContent = "🔄 Revérifier Drive";
       bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles(); };
@@ -21379,6 +21467,7 @@ async function showDriveMissingFiles(){
       mk("p", "margin:0 0 6px; font-weight:600;", list.length + " fichier(s) à téléverser (" + list.filter(local).length + " disponible(s) sur cet appareil) :");
       const ta = mk("textarea", "width:100%; height:200px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;");
       ta.readOnly = true; ta.value = lines.join("\n");
+      driveCmpControls(body, driveCmpPrefs(), {images: true, videos: true});
       const bar = mk("div", "display:flex; gap:8px; margin-top:8px;");
       const bCopy = document.createElement("button"); bCopy.className = "btn"; bCopy.style.flex = "1"; bCopy.textContent = "📋 Copier la liste";
       bCopy.onclick = async ()=>{ try{ await navigator.clipboard.writeText(ta.value); toast("Liste copiée dans le presse-papiers."); }catch(e){ ta.focus(); ta.select(); toast("Presse-papiers indisponible : texte sélectionné, copiez avec Ctrl/Cmd+C."); } };
@@ -21855,9 +21944,172 @@ function driveNameCandidates(p){
   return c;
 }
 /* Remplace le CONTENU du fichier Drive existant de p (même fichier, même identifiant). */
+/* ===================================================================================================================================
+   Compression À L'ENVOI vers Drive. Vos fichiers d'origine (PC) ne sont JAMAIS modifiés : seule la copie envoyée sur Drive est réduite.
+   - Images (JPEG) : réduction à la taille choisie + ré-encodage JPEG ; les métadonnées EXIF (date, GPS, appareil…) sont reportées, l'orientation
+     est remise à « normale » puisque les pixels sont redressés. Si le résultat n'est pas au moins 5 % plus léger, l'ORIGINAL est envoyé.
+     PNG / WebP / HEIC / GIF : envoyés tels quels.
+   - Vidéos (MP4/M4V) : ré-encodage par le navigateur (MediaRecorder), EN TEMPS RÉEL (une vidéo de 10 min demande ~10 min), écran allumé et
+     page au premier plan. EXPÉRIMENTAL : proposé seulement si le navigateur sait produire du MP4 ; au moindre échec, l'original est envoyé.
+   =================================================================================================================================== */
+const DRIVE_CMP_IMG = {
+  "2400": {max: 2400, q: 0.85, label: "Grande — 2400 px, qualité 85 %"},
+  "1600": {max: 1600, q: 0.80, label: "Moyenne — 1600 px, qualité 80 %"},
+  "1200": {max: 1200, q: 0.70, label: "Légère — 1200 px, qualité 70 %"}
+};
+const DRIVE_CMP_VID = {
+  "720": {h: 720, vbps: 2500000, abps: 96000, label: "720p — environ 2,5 Mbit/s"},
+  "480": {h: 480, vbps: 1000000, abps: 80000, label: "480p — environ 1 Mbit/s"}
+};
+let driveCompressActive = null; // {img, vid} pendant un envoi « Sauver sur Drive » (nul ailleurs : les autres envois ne sont pas touchés)
+let driveCmpStats = {nImg: 0, imgBefore: 0, imgAfter: 0, nVid: 0, vidBefore: 0, vidAfter: 0};
+function videoCompressMime(){
+  try{
+    if(typeof MediaRecorder === "undefined" || !HTMLCanvasElement.prototype.captureStream) return "";
+    return ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4"].find(t=> MediaRecorder.isTypeSupported(t)) || "";
+  }catch(e){ return ""; }
+}
+function driveCmpPrefs(){
+  let img = "", vid = "";
+  try{ img = localStorage.getItem("imago_drive_cmp_img") || ""; vid = localStorage.getItem("imago_drive_cmp_vid") || ""; }catch(e){}
+  return {img: DRIVE_CMP_IMG[img] ? img : "", vid: (DRIVE_CMP_VID[vid] && videoCompressMime()) ? vid : ""};
+}
+function driveCmpSave(prefs){ try{ localStorage.setItem("imago_drive_cmp_img", prefs.img || ""); localStorage.setItem("imago_drive_cmp_vid", prefs.vid || ""); }catch(e){} }
+function bytesToBinaryString(u8){ let s = ""; const CH = 0x8000; for(let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return s; }
+function blobToBinaryString(blob){ return new Promise((res, rej)=>{ const r = new FileReader(); r.onload = ()=> res(r.result); r.onerror = ()=> rej(r.error); r.readAsBinaryString(blob); }); }
+function binaryStringToBlob(str, type){ const u = new Uint8Array(str.length); for(let i = 0; i < str.length; i++) u[i] = str.charCodeAt(i) & 255; return new Blob([u], {type}); }
+
+/* Renvoie le Blob compressé, ou null (= garder l'original : pas un JPEG, pas de gain, ou erreur). */
+async function compressImageBlob(blob, preset){
+  try{
+    if(typeof createImageBitmap !== "function") return null;
+    const head = new Uint8Array(await blob.slice(0, 524288).arrayBuffer());
+    if(head.length < 4 || head[0] !== 0xFF || head[1] !== 0xD8) return null;
+    const dims = jpegDimsFromBytes(head); if(!dims || !dims.w || !dims.h) return null;
+    const pe = window.piexif; let exifObj = null, ori = 1;
+    if(pe){ try{ exifObj = pe.load(bytesToBinaryString(head.subarray(0, Math.min(head.length, 262144)))); ori = (exifObj["0th"] || {})[pe.ImageIFD.Orientation] || 1; }catch(e){ exifObj = null; } }
+    const rotated = ori >= 5 && ori <= 8, W = rotated ? dims.h : dims.w, H = rotated ? dims.w : dims.h; // dimensions TELLES QU'AFFICHÉES
+    const sc = Math.min(1, preset.max / Math.max(W, H)), nw = Math.max(1, Math.round(W * sc)), nh = Math.max(1, Math.round(H * sc));
+    const bmp = ori === 1 ? await createImageBitmap(blob, {resizeWidth: nw, resizeHeight: nh, resizeQuality: "high"})   // décodage direct à la taille voulue
+                          : await createImageBitmap(blob, {imageOrientation: "from-image"});                          // pixels redressés, réduits au dessin
+    let canvas = null, out = null;
+    try{
+      canvas = document.createElement("canvas"); canvas.width = nw; canvas.height = nh;
+      canvas.getContext("2d").drawImage(bmp, 0, 0, nw, nh);
+      out = await new Promise(res=> canvas.toBlob(res, "image/jpeg", preset.q));
+    }finally{ if(bmp.close) bmp.close(); if(canvas){ canvas.width = 0; canvas.height = 0; } }
+    if(!out || out.size < 200) return null;
+    if(exifObj && pe){ // métadonnées reportées (date, GPS, appareil…) ; miniature interne retirée ; orientation normale ; dimensions mises à jour
+      try{
+        exifObj["thumbnail"] = null; exifObj["1st"] = {};
+        exifObj["0th"][pe.ImageIFD.Orientation] = 1;
+        exifObj["Exif"][pe.ExifIFD.PixelXDimension] = nw; exifObj["Exif"][pe.ExifIFD.PixelYDimension] = nh;
+        out = binaryStringToBlob(pe.insert(pe.dump(exifObj), await blobToBinaryString(out)), "image/jpeg");
+      }catch(e){ /* EXIF non reporté : l'image reste valide */ }
+    }
+    return out.size >= blob.size * 0.95 ? null : out;
+  }catch(e){ console.warn("Compression d'image impossible, original conservé :", e); return null; }
+}
+/* Même chose pour une image déjà en mémoire (dataUrl) pendant « Sauver sur Drive ». */
+async function compressDataUrlForDrive(dataUrl){
+  const c = driveCompressActive; if(!c || !c.img || !isJpegDataUrl(dataUrl)) return dataUrl;
+  const blob = dataURLtoBlob(dataUrl), out = await compressImageBlob(blob, DRIVE_CMP_IMG[c.img]);
+  driveCmpStats.nImg++; driveCmpStats.imgBefore += blob.size; driveCmpStats.imgAfter += out ? out.size : blob.size;
+  return out ? await fileToDataUrl(out) : dataUrl;
+}
+/* Vidéo MP4/M4V → MP4 réduit (File de même nom), ou null (= garder l'original). Lève une erreur si l'encodage échoue : l'appelant envoie l'original. */
+async function compressVideoBlob(file, preset, onProgress, shouldStop){
+  const mime = videoCompressMime();
+  if(!mime) throw new Error("ce navigateur ne sait pas produire du MP4");
+  if(!/\.(mp4|m4v)$/i.test(file.name || "")) return null; // .mov, .avi… : autre conteneur, envoyés tels quels
+  const url = URL.createObjectURL(file), v = document.createElement("video"), tracks = [];
+  let ac = null, mr = null;
+  const w8 = ms=> new Promise(r=> setTimeout(r, ms));
+  v.src = url; v.playsInline = true; v.preload = "auto";
+  try{
+    await new Promise((res, rej)=>{ v.onloadedmetadata = res; v.onerror = ()=> rej(new Error("vidéo illisible par ce navigateur")); });
+    const vw = v.videoWidth, vh = v.videoHeight, dur = v.duration;
+    if(!vw || !vh || !isFinite(dur) || dur <= 0) throw new Error("dimensions ou durée inconnues");
+    const sc = Math.min(1, preset.h / Math.min(vw, vh)), w = Math.max(2, Math.round(vw * sc / 2) * 2), h = Math.max(2, Math.round(vh * sc / 2) * 2);
+    const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d", {alpha: false});
+    const stream = canvas.captureStream(30); stream.getTracks().forEach(t=> tracks.push(t));
+    // Son : capté sans être rejoué dans les haut-parleurs. S'il ne peut pas l'être, on ABANDONNE (jamais de vidéo muette envoyée à la place de l'original).
+    try{
+      ac = new (window.AudioContext || window.webkitAudioContext)();
+      await ac.resume(); if(ac.state !== "running") throw new Error("contexte audio bloqué");
+      const node = ac.createMediaElementSource(v), dest = ac.createMediaStreamDestination(); node.connect(dest);
+      dest.stream.getAudioTracks().forEach(t=>{ stream.addTrack(t); tracks.push(t); });
+    }catch(e){ throw new Error("son non capturable (" + ((e && e.message) || e) + ")"); }
+    mr = new MediaRecorder(stream, {mimeType: mime, videoBitsPerSecond: preset.vbps, audioBitsPerSecond: preset.abps});
+    const chunks = []; mr.ondataavailable = e=>{ if(e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((res, rej)=>{ mr.onstop = res; mr.onerror = e=> rej((e && e.error) || new Error("erreur d'encodage")); });
+    let ended = false, failure = null;
+    v.onended = ()=>{ ended = true; }; v.onerror = ()=>{ failure = new Error("lecture interrompue"); };
+    const pump = ()=>{ if(ended || failure) return; try{ ctx.drawImage(v, 0, 0, w, h); }catch(e){} if(v.requestVideoFrameCallback) v.requestVideoFrameCallback(pump); else requestAnimationFrame(pump); };
+    mr.start(1000);
+    await v.play(); pump();
+    let lastT = -1, lastMove = performance.now();
+    while(!ended){
+      await w8(400);
+      if(failure) throw failure;
+      if(shouldStop && shouldStop()) throw new Error("arrêtée");
+      if(document.hidden) throw new Error("page passée en arrière-plan (l'encodage s'y arrête)");
+      if(v.currentTime !== lastT){ lastT = v.currentTime; lastMove = performance.now(); }
+      else if(performance.now() - lastMove > 30000) throw new Error("lecture bloquée");
+      if(onProgress) onProgress(Math.min(1, v.currentTime / dur));
+    }
+    try{ ctx.drawImage(v, 0, 0, w, h); }catch(e){}
+    await w8(400);
+    mr.stop(); await stopped;
+    const blob = new Blob(chunks, {type: "video/mp4"});
+    driveCmpStats.nVid++; driveCmpStats.vidBefore += file.size;
+    if(blob.size < 2000 || blob.size >= file.size * 0.9){ driveCmpStats.vidAfter += file.size; return null; } // vide ou pas de gain : original conservé
+    driveCmpStats.vidAfter += blob.size;
+    return new File([blob], file.name, {type: "video/mp4"});
+  }finally{
+    try{ if(mr && mr.state !== "inactive") mr.stop(); }catch(e){}
+    try{ v.pause(); v.removeAttribute("src"); v.load(); }catch(e){}
+    URL.revokeObjectURL(url);
+    tracks.forEach(t=>{ try{ t.stop(); }catch(e){} });
+    if(ac){ try{ ac.close(); }catch(e){} }
+  }
+}
+/* Bloc de choix, partagé par « Sauver sur Drive » et « Téléverser les manquants ». prefs est mis à jour et mémorisé à chaque changement. */
+function driveCmpControls(parent, prefs, opt){
+  const box = document.createElement("div");
+  box.style.cssText = "margin:0 0 12px; padding:10px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg-panel-2);";
+  const t = document.createElement("div"); t.style.cssText = "font-weight:600; margin:0 0 6px;"; t.textContent = "🗜 Compression à l'envoi sur Drive"; box.appendChild(t);
+  const n = document.createElement("div"); n.style.cssText = "font-size:.85em; opacity:.85; margin:0 0 8px; line-height:1.4;";
+  n.textContent = "Vos fichiers d'origine ne sont jamais modifiés : seule la copie envoyée sur Drive est réduite."; box.appendChild(n);
+  const mkSel = (label, options, cur, onChange)=>{
+    const row = document.createElement("label"); row.style.cssText = "display:flex; gap:8px; align-items:center; margin:0 0 8px; flex-wrap:wrap;";
+    const sp = document.createElement("span"); sp.style.cssText = "min-width:64px;"; sp.textContent = label; row.appendChild(sp);
+    const sel = document.createElement("select"); sel.style.cssText = "flex:1; min-width:180px;";
+    options.forEach(([v, txt])=>{ const o = document.createElement("option"); o.value = v; o.textContent = txt; if(v === cur) o.selected = true; sel.appendChild(o); });
+    sel.onchange = ()=>{ onChange(sel.value); driveCmpSave(prefs); };
+    row.appendChild(sel); box.appendChild(row);
+  };
+  if(opt.images) mkSel("Images", [["", "Telles quelles (aucune compression)"]].concat(Object.keys(DRIVE_CMP_IMG).map(k=> [k, DRIVE_CMP_IMG[k].label])), prefs.img, v=>{ prefs.img = v; });
+  if(opt.videos){
+    if(videoCompressMime()){
+      mkSel("Vidéos", [["", "Telles quelles (aucune compression)"]].concat(Object.keys(DRIVE_CMP_VID).map(k=> [k, DRIVE_CMP_VID[k].label])), prefs.vid, v=>{ prefs.vid = v; });
+      const w = document.createElement("div"); w.style.cssText = "font-size:.8em; opacity:.8; line-height:1.4;";
+      w.textContent = "Vidéos (MP4/M4V) : expérimental et EN TEMPS RÉEL — une vidéo de 10 min demande environ 10 min ; gardez l'écran allumé et cette page au premier plan. Au moindre échec, l'original est envoyé. Préférez un PC.";
+      box.appendChild(w);
+    } else {
+      const w = document.createElement("div"); w.style.cssText = "font-size:.8em; opacity:.8;"; w.textContent = "Vidéos : ce navigateur ne sait pas produire de MP4, elles seront envoyées telles quelles.";
+      box.appendChild(w); prefs.vid = "";
+    }
+  }
+  parent.appendChild(box);
+}
+function fmtCmpSaving(before, after){ return before ? fmtSize(before) + " → " + fmtSize(after) + " (−" + Math.max(0, Math.round(100 * (1 - after / before))) + " %)" : ""; }
+
 async function updateDriveImageContent(p){
-  const full = await getPhotoDataUrlForExport(p);
+  let full = await getPhotoDataUrlForExport(p);
   finalizeExportBake();
+  if(full && driveCompressActive && driveCompressActive.img) full = await compressDataUrlForDrive(full);
   const m = full && full.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!m) throw new Error("Image introuvable (ni en mémoire, ni dans IndexedDB).");
   const bin = atob(m[2]), bytes = new Uint8Array(bin.length);
@@ -21926,6 +22178,7 @@ async function saveEverythingToDrive(){
     // 2) Choix de l'utilisateur (cases à cocher)
     const sel = {img: true, vidNew: true, vidFix: false};
     let sendMode = "csv";
+    const cmp = driveCmpPrefs();
     if(plan.imgCreate.length || plan.imgUpdate.length || plan.vidCreate.length || plan.vidFix.length || plan.vidNoSource.length){
       sendMode = await new Promise(resolve=>{
         const mo = n => n < 1048576 ? "moins de 1 Mo" : "≈ " + Math.round(n / 1048576) + " Mo";
@@ -21965,6 +22218,7 @@ async function saveEverythingToDrive(){
             const bPick = driveSaveButton("Choisir les fichiers vidéo…"); bPick.onclick = ()=> pick.click();
             win.body.appendChild(bPick);
           }
+          driveCmpControls(win.body, cmp, {images: !!(plan.imgCreate.length || plan.imgUpdate.length), videos: !!plan.vidCreate.length});
           const bAll = driveSaveButton("Envoyer la sélection + catalogue", true), bCsv = driveSaveButton("Catalogue seulement"), bNo = driveSaveButton("Annuler");
           bAll.onclick = ()=> resolve("all"); bCsv.onclick = ()=> resolve("csv"); bNo.onclick = ()=> resolve(null);
           [bAll, bCsv, bNo].forEach(b=> win.body.appendChild(b));
@@ -21976,8 +22230,10 @@ async function saveEverythingToDrive(){
     // 3) Envoi (séquentiel ; un échec n'arrête pas les autres ; Arrêter = on passe au catalogue après le fichier en cours)
     const done = {imgNew:0, imgUpd:0, vidNew:0, vidFix:0};
     let stopped = false, sessionLost = false;
-    const failed = [], metaSkipped = [];
+    const failed = [], metaSkipped = [], cmpNotes = [];
     if(sendMode === "all"){
+      driveCmpStats = {nImg: 0, imgBefore: 0, imgAfter: 0, nVid: 0, vidBefore: 0, vidAfter: 0};
+      driveCompressActive = (cmp.img || cmp.vid) ? {img: cmp.img, vid: cmp.vid} : null; // appliquée aux envois de CETTE fenêtre seulement
       const work = [];
       if(sel.img){ plan.imgCreate.forEach(p=> work.push({k:"imgNew", p})); plan.imgUpdate.forEach(p=> work.push({k:"imgUpd", p})); }
       if(sel.vidNew) plan.vidCreate.forEach(x=> work.push({k:"vidNew", p:x.p}));
@@ -22000,7 +22256,12 @@ async function saveEverythingToDrive(){
             done.imgNew++;
           } else if(k === "imgUpd"){ await updateDriveImageContent(p); done.imgUpd++; }
           else if(k === "vidNew"){
-            const file = await getVideoSourceFile(p);
+            let file = await getVideoSourceFile(p);
+            if(driveCompressActive && driveCompressActive.vid){
+              status.textContent = head + " — compression de la vidéo (en temps réel)…";
+              try{ const c = await compressVideoBlob(file, DRIVE_CMP_VID[driveCompressActive.vid], r=>{ status.textContent = `${head} — compression ${Math.round(r * 100)} %`; }, ()=> stopped); if(c) file = c; }
+              catch(err){ if(stopped) break; cmpNotes.push(`${p.fileName} (${(err && err.message) || err})`); } // original envoyé à la place
+            }
             let toSend = file, wrote = false;
             const entries = videoMetaEntries(p);
             if(MP4_META_EXT_RE.test(p.fileName || "") && entries.length){
@@ -22050,6 +22311,9 @@ async function saveEverythingToDrive(){
       parts.push(bits.length ? `${bits.join(" et ")} envoyée(s)` : "aucun nouveau fichier envoyé");
       if(done.imgUpd || done.vidFix) parts.push(`${done.imgUpd} image(s) et ${done.vidFix} vidéo(s) mises à jour`);
     }
+    if(driveCmpStats.nImg) parts.push("images compressées : " + fmtCmpSaving(driveCmpStats.imgBefore, driveCmpStats.imgAfter));
+    if(driveCmpStats.nVid) parts.push("vidéos compressées : " + fmtCmpSaving(driveCmpStats.vidBefore, driveCmpStats.vidAfter));
+    if(cmpNotes.length){ console.warn("Vidéos envoyées SANS compression :", cmpNotes); parts.push(`${cmpNotes.length} vidéo(s) envoyée(s) sans compression (voir la console)`); }
     if(metaSkipped.length){ console.warn("Vidéos envoyées sans métadonnées :", metaSkipped); parts.push(`${metaSkipped.length} vidéo(s) envoyée(s) sans métadonnées (voir la console)`); }
     const noSrc = plan.vidNoSource.length;
     if(noSrc) parts.push(`${noSrc} vidéo(s) non envoyée(s) : fichier absent de cet appareil`);
@@ -22057,6 +22321,7 @@ async function saveEverythingToDrive(){
     if(failed.length) parts.push(`${failed.length} échec(s) (voir la console)`);
     return {message: `« ${State.catalogFileName} » sauvegardé dans « ${folderLabel} »` + (parts.length ? " — " + parts.join(" ; ") : "") + ".", ok: !failed.length && !stopped};
   }catch(err){ win.close(); throw err; }
+  finally{ driveCompressActive = null; }
 }
 document.getElementById("btnDriveSave").addEventListener("click", async ()=>{
   try{
@@ -22246,7 +22511,7 @@ function driveSetTileImage(tile, url){
 function driveObserveTile(tile, p){
   if(!driveTileWanted(p)) return;
   const cached = driveTileThumbs.get(p.id) || (p.thumbDataUrl || null);
-  if(cached){ setTimeout(()=> driveSetTileImage(tile, cached), 0); return; }
+  if(cached){ driveThumbSeen.add(p.id); setTimeout(()=> driveSetTileImage(tile, cached), 0); return; }
   if(!driveTileObserver){
     driveTileObserver = new IntersectionObserver(entries=>{
       for(const e of entries){ if(e.isIntersecting) driveTileVisible.add(e.target); else driveTileVisible.delete(e.target); }
@@ -22278,7 +22543,7 @@ async function driveTileFetch(tile){
       }catch(e){}
     }
     if(blob && blob.size && /^image\//.test(blob.type)){
-      driveTileOk++;
+      driveTileOk++; driveThumbSeen.add(p.id); galleryProgressSoon();
       const u = URL.createObjectURL(blob); driveTileThumbs.set(p.id, u);
       if(driveTileThumbs.size > 600){ const k = driveTileThumbs.keys().next().value; URL.revokeObjectURL(driveTileThumbs.get(k)); driveTileThumbs.delete(k); }
       driveSetTileImage(tile, u); return;
@@ -22287,7 +22552,7 @@ async function driveTileFetch(tile){
     else return;
   }
   // repli : version réduite complète (la photo est alors aussi prête pour le visualiseur)
-  if(await hydratePhotoFromDrive(p) && p.thumbDataUrl) driveSetTileImage(tile, p.thumbDataUrl);
+  if(await hydratePhotoFromDrive(p) && p.thumbDataUrl){ driveSetTileImage(tile, p.thumbDataUrl); galleryProgressSoon(); }
 }
 
 /* topbarSync : recopie la hauteur réelle de la barre du haut dans --topbar-h (elle peut occuper plusieurs lignes : smartphone, fenêtre étroite).
@@ -22320,7 +22585,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-21-i"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-21-m"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
