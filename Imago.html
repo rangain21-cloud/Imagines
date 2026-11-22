@@ -6120,7 +6120,7 @@ async function driveFindByName(name){
 }
 function driveReducedPref(){
   let v = null; try{ v = localStorage.getItem("imago_drive_reduced"); }catch(e){}
-  return v === null ? /Android/i.test(navigator.userAgent) : v === "1";
+  return v === null ? true : v === "1"; // par défaut : activé (beaucoup plus rapide) ; décochable dans « Charger depuis Drive »
 }
 // Contenu d'une image Drive : version réduite fabriquée par Drive (≈ IMPORT_MAX_DIM px) si l'option est active, sinon (ou en cas de refus) l'original
 async function driveImageBlob(hit){
@@ -6136,7 +6136,7 @@ async function driveImageBlob(hit){
       else why = "miniature refusée : HTTP " + res.status;
     }catch(e){ why = "miniature inaccessible : " + ((e && e.message) || e); /* refusé : on retombe sur l'original */ }
   }
-  const full = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
+  const full = await driveDownloadBlob(hit.id, hit.size, hit.mimeType);
   full.imagoSrc = "ORIGINAL (" + why + ")";
   return full;
 }
@@ -6165,7 +6165,8 @@ async function loadVideoFromDrive(p){
   try{
     p.videoSizeBytes = +hit.size || p.videoSizeBytes || 0;
     toast(`Téléchargement de « ${p.fileName} » depuis Drive (${fmtSize(p.videoSizeBytes) || "taille inconnue"})…`, 5000);
-    const blob = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob();
+    let lastPct = -1;
+    const blob = await driveDownloadBlob(hit.id, p.videoSizeBytes, hit.mimeType, r=>{ const pc = Math.floor(r * 10) * 10; if(pc !== lastPct && pc < 100){ lastPct = pc; toast(`Téléchargement de « ${p.fileName} » : ${pc} %`, 3000); } });
     const file = new File([blob], p.fileName, {type: hit.mimeType || videoMimeFor(p.fileName)});
     pendingVideoFiles.set(p.id, file);
     p.driveFileId = hit.id;
@@ -6253,7 +6254,7 @@ async function fastJpegIngest(file, dataUrl){
   }catch(e){ fastJpegIngest.why = "erreur : " + ((e && e.message) || e); return null; }
 }
 /* Au plus HYDRATE_MAX traitements d'image Drive en parallèle (journal : jusqu'à 8 à la fois, décodage + réduction de 4 à 20 s chacun sur A51). */
-const HYDRATE_MAX = /Android/i.test(navigator.userAgent) ? 2 : 4;
+const HYDRATE_MAX = /Android/i.test(navigator.userAgent) ? 3 : 6;
 let hydrateActive = 0; const hydrateQueue = [];
 function hydrateLimited(fn, urgent){
   return new Promise((resolve, reject)=>{
@@ -6355,10 +6356,11 @@ async function prefetchDriveImages(max){
     const todo = galleryPhotos().filter(p=> isDriveHydratable(p) && driveIndexFind(idx, p.fileName)).slice(0, max);
     if(!todo.length) return;
     let ok = 0;
-    for(const p of todo){
+    // en parallèle (le limiteur hydrateLimited plafonne le nombre de traitements simultanés) : le téléchargement d'une image recouvre le traitement des autres
+    await Promise.all(todo.map(async p=>{
       try{ if(await hydratePhotoFromDrive(p)) ok++; }
       catch(e){ console.warn(`Récupération Drive impossible pour "${p.fileName}".`, e); }
-    }
+    }));
     if(ok){
       toast(`${ok} image(s) récupérée(s) depuis Drive. Les autres s'ouvrent à la demande.`);
       const g = document.getElementById("galleryGrid");
@@ -7688,12 +7690,12 @@ document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
     const r = await (await driveApiFetch(api + `q=${q}&pageSize=200&orderBy=name&fields=files(id,name)`)).json();
     body.innerHTML = "";
     // Versions réduites : Drive fabrique lui-même des images de ≈ IMPORT_MAX_DIM px (la taille qu'Imago garde de toute façon pour l'affichage) :
-    // on évite de télécharger les originaux, qui restent intacts sur Drive/PC. Par défaut : activé sur Android.
+    // on évite de télécharger les originaux, qui restent intacts sur Drive/PC. Par défaut : activé.
     const redLabel = document.createElement("label");
     redLabel.style.cssText = "display:flex; gap:8px; align-items:flex-start; margin:0 0 12px; font-size:13px; cursor:pointer;";
     const redChk = document.createElement("input"); redChk.type = "checkbox"; redChk.style.cssText = "margin:3px 0 0; flex-shrink:0; width:auto;";
     let redPref = null; try{ redPref = localStorage.getItem("imago_drive_reduced"); }catch(e){}
-    redChk.checked = redPref === null ? /Android/i.test(navigator.userAgent) : redPref === "1";
+    redChk.checked = redPref === null ? true : redPref === "1";
     redChk.onchange = ()=>{ try{ localStorage.setItem("imago_drive_reduced", redChk.checked ? "1" : "0"); }catch(e){} };
     const redTxt = document.createElement("span");
     redTxt.innerHTML = `⚡ <b>Charger des versions réduites</b> (≈ ${IMPORT_MAX_DIM} px, la taille d'affichage d'Imago) — beaucoup plus rapide, recommandé sur téléphone. Vos originaux ne sont pas touchés. Nécessite un catalogue (.csv) dans le dossier ; les vidéos sont chargées en entier.`;
@@ -21126,6 +21128,40 @@ async function fetchGoogleUserName(){
     if(n){ State.drive.userName = n; try{ localStorage.setItem(GOOGLE_USER_NAME_KEY, n); }catch(e){} }
   }catch(e){ console.warn("Nom du compte Google indisponible :", e); }
 }
+/* Téléchargement d'un fichier Drive. Un fichier volumineux (vidéo…) est récupéré par TRANCHES de 8 Mo, 4 à la fois (requêtes « Range ») :
+   un flux unique n'utilise qu'une fraction du débit sur mobile, les tranches parallèles le saturent. Au moindre refus (CORS, Range ignoré,
+   tranche incomplète), repli sur le flux unique d'origine. onProgress(0..1) facultatif. */
+async function driveDownloadBlob(fileId, size, mimeHint, onProgress){
+  const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+  size = +size || 0;
+  const CH = 8 * 1048576, PAR = 4;
+  if(size >= 12 * 1048576){
+    try{
+      const n = Math.ceil(size / CH), parts = new Array(n); let next = 0, got = 0;
+      const worker = async ()=>{
+        for(;;){
+          const i = next++; if(i >= n) return;
+          const a = i * CH, b = Math.min(size, a + CH) - 1; let err = null;
+          for(let t = 0; t < 3; t++){
+            try{
+              const res = await driveApiFetch(url, {headers: {Range: `bytes=${a}-${b}`}});
+              if(res.status !== 206) throw new Error("Range non pris en charge (HTTP " + res.status + ")");
+              const buf = await res.arrayBuffer();
+              if(buf.byteLength !== b - a + 1) throw new Error("tranche incomplète");
+              parts[i] = buf; got += buf.byteLength; err = null;
+              if(onProgress){ try{ onProgress(got / size); }catch(_){} }
+              break;
+            }catch(e){ err = e; if(/session Drive a expiré/.test((e && e.message) || "")) throw e; await new Promise(r=> setTimeout(r, 400 * (t + 1))); }
+          }
+          if(err) throw err;
+        }
+      };
+      await Promise.all(Array.from({length: Math.min(PAR, n)}, worker));
+      return new Blob(parts, {type: mimeHint || ""});
+    }catch(e){ console.warn("Téléchargement Drive par tranches impossible, repli sur un flux unique :", e); }
+  }
+  return await (await driveApiFetch(url)).blob();
+}
 async function driveApiFetch(url, opts={}){
   if(!State.drive.token) throw new Error("Non connecté à Drive.");
   opts.headers = Object.assign({}, opts.headers, {Authorization: "Bearer " + State.drive.token});
@@ -21272,7 +21308,7 @@ async function ensurePhotoUploadedToDrive(p, parentFolderId){
       throw new Error(`Conversion HEIC → JPEG impossible avant l'envoi sur Drive de "${p.fileName}" (${(err&&err.message)||String(err)}) — vérifiez votre connexion internet puis réessayez.`);
     }
   }
-  if(driveCompressActive && driveCompressActive.img) fullDataUrl = await compressDataUrlForDrive(fullDataUrl); // compression choisie dans « Sauver sur Drive » (nulle partout ailleurs)
+  fullDataUrl = await driveFinalizeImageDataUrl(p, fullDataUrl); // compression éventuelle (« Sauver sur Drive » seulement) + métadonnées à jour du catalogue
   const match = fullDataUrl.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!match) throw new Error("Image introuvable en mémoire.");
   const mime = match[1] || "image/jpeg";
@@ -22013,6 +22049,18 @@ async function compressImageBlob(blob, preset){
   }catch(e){ console.warn("Compression d'image impossible, original conservé :", e); return null; }
 }
 /* Même chose pour une image déjà en mémoire (dataUrl) pendant « Sauver sur Drive ». */
+/* Image JPEG prête pour Drive : compression éventuelle (choix de « Sauver sur Drive »), PUIS réécriture des métadonnées À JOUR du catalogue
+   (Caméra, Lieu, GPS, Auteur, Personnage, Titre/mots clés, Date, Favori…) — quel que soit le choix de compression, y compris « Telles quelles ».
+   Sans cela, la compression ne reportait que l'EXIF déjà présent dans le fichier (donc l'ancien, pas celui du catalogue). */
+async function driveFinalizeImageDataUrl(p, dataUrl){
+  if(!dataUrl) return dataUrl;
+  if(driveCompressActive && driveCompressActive.img) dataUrl = await compressDataUrlForDrive(dataUrl);
+  if(p && isJpegDataUrl(dataUrl)){
+    try{ dataUrl = await writeMetadataIntoJpegDataUrl(dataUrl, exportMetaFields(p)); }
+    catch(e){ console.warn(`[Imago] Métadonnées du catalogue non écrites avant l'envoi de « ${p.fileName} » :`, e); }
+  }
+  return dataUrl;
+}
 async function compressDataUrlForDrive(dataUrl){
   const c = driveCompressActive; if(!c || !c.img || !isJpegDataUrl(dataUrl)) return dataUrl;
   const blob = dataURLtoBlob(dataUrl), out = await compressImageBlob(blob, DRIVE_CMP_IMG[c.img]);
@@ -22111,7 +22159,7 @@ function fmtCmpSaving(before, after){ return before ? fmtSize(before) + " → " 
 async function updateDriveImageContent(p){
   let full = await getPhotoDataUrlForExport(p);
   finalizeExportBake();
-  if(full && driveCompressActive && driveCompressActive.img) full = await compressDataUrlForDrive(full);
+  if(full) full = await driveFinalizeImageDataUrl(p, full);
   const m = full && full.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if(!m) throw new Error("Image introuvable (ni en mémoire, ni dans IndexedDB).");
   const bin = atob(m[2]), bytes = new Uint8Array(bin.length);
@@ -22355,7 +22403,7 @@ async function saveEverythingToDrive(){
             if(hasVideoSource(p)) file = await getVideoSourceFile(p);
             else{
               status.textContent = head + " — téléchargement depuis Drive…";
-              file = new File([await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${hit.id}?alt=media`)).blob()], p.fileName, {type: hit.mimeType || videoMimeFor(p.fileName)});
+              file = new File([await driveDownloadBlob(hit.id, hit.size, hit.mimeType)], p.fileName, {type: hit.mimeType || videoMimeFor(p.fileName)});
             }
             status.textContent = head + " — écriture des métadonnées…";
             const b = await writeMp4Metadata(file, videoMetaEntries(p)); // lève une erreur si le fichier n'est pas pris en charge : rien n'est renvoyé
