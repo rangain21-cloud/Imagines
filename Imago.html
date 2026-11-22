@@ -22168,6 +22168,48 @@ async function updateDriveImageContent(p){
     method: "PATCH", headers: {"Content-Type": m[1] || "image/jpeg"}, body: new Blob([bytes], {type: m[1] || "image/jpeg"})
   });
 }
+/* Choix du dossier Drive dans la fenêtre « Sauver sur Drive » : navigation dans les sous-dossiers, création d'un dossier, validation.
+   Renvoie {id, label} ou null (retour sans changement). Ne modifie rien sur Drive (sauf « Nouveau dossier »). */
+function driveChooseFolderInWindow(win, startLabel){
+  return new Promise(resolve=>{
+    const path = [{id: "root", name: "Mon Drive"}];
+    const render = async ()=>{
+      const cur = path[path.length - 1];
+      win.body.innerHTML = "";
+      const h = document.createElement("p"); h.style.cssText = "margin:0 0 8px; line-height:1.5;";
+      h.textContent = "Choisissez le dossier Drive qui recevra les fichiers et le catalogue (actuel : « " + startLabel + " »).";
+      const crumbs = document.createElement("div"); crumbs.style.cssText = "margin:0 0 8px; font-weight:600; line-height:1.6;";
+      path.forEach((x, i)=>{
+        const sp = document.createElement("span"); sp.textContent = x.name; sp.style.cssText = "cursor:pointer; text-decoration:underline;";
+        sp.onclick = ()=>{ path.length = i + 1; render(); };
+        crumbs.appendChild(sp); if(i < path.length - 1) crumbs.appendChild(document.createTextNode(" / "));
+      });
+      const list = document.createElement("div"); list.style.cssText = "max-height:40vh; overflow:auto; border:1px solid var(--line); border-radius:var(--radius); margin:0 0 10px;";
+      list.innerHTML = "<div style='padding:10px; opacity:.7;'>Chargement…</div>";
+      const bOk = driveSaveButton("✔ Choisir « " + cur.name + " »", true), bNew = driveSaveButton("＋ Nouveau dossier ici…"), bImg = driveSaveButton("📁 IMAGINES"), bBack = driveSaveButton("Retour (garder le dossier actuel)");
+      bOk.onclick = ()=> resolve({id: cur.id, label: path.slice(1).map(x=> x.name).join(" / ") || "Mon Drive"});
+      bBack.onclick = ()=> resolve(null);
+      bImg.onclick = async ()=>{ try{ const id = await ensureImaginesFolder(); path.length = 1; path.push({id, name: "IMAGINES"}); render(); }catch(e){ toast(e.message); } };
+      bNew.onclick = async ()=>{
+        const name = await askDriveFolderName("", "Ce dossier sera créé dans « " + cur.name + " ».");
+        if(!name) return;
+        try{ const id = await createDriveFolder(name, cur.id); path.push({id, name}); render(); }catch(e){ toast(e.message); }
+      };
+      win.body.append(h, crumbs, list, bOk, bNew, bImg, bBack);
+      try{
+        const folders = await driveListSubfolders(cur.id);
+        list.innerHTML = "";
+        if(!folders.length) list.innerHTML = "<div style='padding:10px; opacity:.7;'>Aucun sous-dossier ici.</div>";
+        folders.forEach(f=>{
+          const row = document.createElement("div"); row.textContent = "📁 " + f.name; row.style.cssText = "padding:10px; cursor:pointer; border-bottom:1px solid var(--line);";
+          row.onclick = ()=>{ path.push({id: f.id, name: f.name}); render(); };
+          list.appendChild(row);
+        });
+      }catch(e){ list.innerHTML = ""; const d = document.createElement("div"); d.style.cssText = "padding:10px;"; d.textContent = "Erreur : " + ((e && e.message) || e); list.appendChild(d); }
+    };
+    render();
+  });
+}
 function driveSaveWindow(titleText){
   const ov = document.createElement("div"); ov.className = "modal-overlay show";
   ov.innerHTML = '<div class="modal"><div class="modal-head"><h2></h2></div><div class="modal-body"></div></div>';
@@ -22206,7 +22248,7 @@ async function driveCheckFolder(id){
   }
 }
 /* Petite fenêtre de saisie du nom du nouveau dossier Drive. Renvoie le nom, ou null si annulé. */
-function askDriveFolderName(defaultName){
+function askDriveFolderName(defaultName, whereText){
   return new Promise(resolve=>{
     const ov = document.createElement("div"); ov.className = "modal-overlay show";
     ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Nouveau dossier Drive</h2><button class="modal-close">×</button></div><div class="modal-body"></div></div>';
@@ -22215,7 +22257,7 @@ function askDriveFolderName(defaultName){
     const finish = v=>{ if(done) return; done = true; ov.remove(); resolve(v); };
     ov.querySelector(".modal-close").onclick = ()=> finish(null);
     const p1 = document.createElement("p"); p1.style.cssText = "margin:0 0 8px; font-size:.9em;";
-    p1.textContent = "Ce dossier sera créé à la racine de votre Drive. Les fichiers envoyés (compressés si vous l'avez choisi) et le catalogue y seront déposés. Sur le smartphone : « Charger depuis Drive » puis ce catalogue.";
+    p1.textContent = whereText || "Ce dossier sera créé à la racine de votre Drive. Les fichiers envoyés (compressés si vous l'avez choisi) et le catalogue y seront déposés. Sur le smartphone : « Charger depuis Drive » puis ce catalogue.";
     const inp = document.createElement("input"); inp.type = "text"; inp.value = defaultName; inp.style.cssText = "width:100%; margin:0 0 10px;";
     const row = document.createElement("div"); row.style.cssText = "display:flex; gap:8px;";
     const ok = document.createElement("button"); ok.className = "btn copper"; ok.style.flex = "1"; ok.textContent = "📁 Créer et continuer";
@@ -22226,10 +22268,10 @@ function askDriveFolderName(defaultName){
     row.append(ok, no); body.append(p1, inp, row); setTimeout(()=>{ inp.focus(); inp.select(); }, 50);
   });
 }
-async function createDriveFolder(name){
+async function createDriveFolder(name, parentId){
   const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?fields=id`, {
     method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name, mimeType: "application/vnd.google-apps.folder"})
+    body: JSON.stringify(Object.assign({name, mimeType: "application/vnd.google-apps.folder"}, parentId && parentId !== "root" ? {parents: [parentId]} : {}))
   });
   const created = await res.json();
   if(!created.id) throw new Error("Création du dossier Drive impossible.");
@@ -22267,14 +22309,15 @@ async function saveEverythingToDrive(){
       }
     }
   }
-  const folderId = mediaFolder || await ensureImaginesFolder();
-  const folderLabel = mediaFolder ? driveMediaFolderLabel() : "IMAGINES";
+  let folderId = mediaFolder || await ensureImaginesFolder();
+  let folderLabel = mediaFolder ? driveMediaFolderLabel() : "IMAGINES";
+  const folderId0 = folderId, folderReplaced0 = folderReplaced; // pour détecter un changement de dossier choisi dans la fenêtre
   const win = driveSaveWindow("Sauver sur Drive");
   try{
     // 1) Plan : listing FRAIS du dossier (images + vidéos), pour ne jamais créer de doublon.
     win.body.textContent = "Comparaison avec le dossier « " + folderLabel + " »…";
     driveMediaIndexPromise = null; driveMediaIndexFolder = "";
-    const idx = await getDriveMediaIndex(folderId);
+    let idx = await getDriveMediaIndex(folderId);
     const buildPlan = ()=>{
       const plan = {imgCreate:[], imgUpdate:[], vidCreate:[], vidFix:[], vidNoSource:[]};
       State.photos.forEach(p=>{
@@ -22300,7 +22343,7 @@ async function saveEverythingToDrive(){
     const sel = {img: true, vidNew: true, vidFix: false};
     let sendMode = "csv";
     const cmp = driveCmpPrefs();
-    if(plan.imgCreate.length || plan.imgUpdate.length || plan.vidCreate.length || plan.vidFix.length || plan.vidNoSource.length){
+    { // la fenêtre s'affiche toujours : elle permet aussi de choisir le dossier Drive
       sendMode = await new Promise(resolve=>{
         const mo = n => n < 1048576 ? "moins de 1 Mo" : "≈ " + Math.round(n / 1048576) + " Mo";
         const para = text=>{ const t = document.createElement("p"); t.style.cssText = "margin:0 0 12px; line-height:1.5;"; t.textContent = text; return t; };
@@ -22313,6 +22356,23 @@ async function saveEverythingToDrive(){
         const render = ()=>{
           win.body.innerHTML = "";
           win.body.appendChild(para(`Dossier Drive : « ${folderLabel} ». Le catalogue .csv sera aussi mis à jour. Rien n'est supprimé sur Drive.`));
+          const bFold = driveSaveButton("📁 Changer de dossier Drive…");
+          bFold.onclick = async ()=>{
+            try{
+              const c = await driveChooseFolderInWindow(win, folderLabel);
+              if(c && c.id !== folderId){
+                win.body.textContent = "Comparaison avec le dossier « " + c.label + " »…";
+                driveMediaIndexPromise = null; driveMediaIndexFolder = "";
+                idx = await getDriveMediaIndex(c.id);
+                folderId = c.id; folderLabel = c.label;
+                folderReplaced = folderReplaced0 || folderId !== folderId0; // fichiers à envoyer en copies fraîches dans un autre dossier
+                plan = buildPlan();
+              }
+            }catch(e){ toast((e && e.message) || String(e)); }
+            render();
+          };
+          win.body.appendChild(bFold);
+          if(!(plan.imgCreate.length || plan.imgUpdate.length || plan.vidCreate.length || plan.vidFix.length || plan.vidNoSource.length)) win.body.appendChild(para("Aucun fichier à envoyer : seul le catalogue sera sauvegardé."));
           if(plan.imgCreate.length || plan.imgUpdate.length){
             const sz = [...plan.imgCreate, ...plan.imgUpdate].reduce((s,p)=> s + (p.sizeBytes || (p.poids||0)*1024), 0);
             win.body.appendChild(row("img", `Images : ${plan.imgCreate.length} nouvelle(s), ${plan.imgUpdate.length} modifiée(s) — ${mo(sz)}`));
@@ -22347,6 +22407,9 @@ async function saveEverythingToDrive(){
         render();
       });
       if(!sendMode){ win.close(); return null; }
+      if(folderId !== folderId0){ // dossier changé : devient le dossier du catalogue ; l'ancien catalogue (autre dossier) n'est ni modifié ni réutilisé
+        setDriveMediaFolder(folderId, folderLabel); forgetDriveCatalogFileId();
+      }
     }
     // 3) Envoi (séquentiel ; un échec n'arrête pas les autres ; Arrêter = on passe au catalogue après le fichier en cours)
     const done = {imgNew:0, imgUpd:0, vidNew:0, vidFix:0};
@@ -22710,7 +22773,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-21-p"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-22-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
