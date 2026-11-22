@@ -22422,11 +22422,15 @@ async function saveEverythingToDrive(){
       if(sel.img){ plan.imgCreate.forEach(p=> work.push({k:"imgNew", p})); plan.imgUpdate.forEach(p=> work.push({k:"imgUpd", p})); }
       if(sel.vidNew) plan.vidCreate.forEach(x=> work.push({k:"vidNew", p:x.p}));
       if(sel.vidFix) plan.vidFix.forEach(x=> work.push({k:"vidFix", p:x.p, hit:x.hit}));
+      let startIdx = 0, resumeIdx = 0; // reprise : après « Arrêter », on peut continuer au fichier suivant sans quitter la fenêtre
+      for(;;){
+      stopped = false;
       win.body.innerHTML = "";
       const status = document.createElement("p"); status.style.cssText = "margin:0 0 12px; line-height:1.5;"; win.body.appendChild(status);
-      const bStop = driveSaveButton("Arrêter (le catalogue sera quand même sauvegardé)"); bStop.onclick = ()=>{ stopped = true; bStop.disabled = true; };
+      const bStop = driveSaveButton("Arrêter (reprise possible ; le catalogue peut être sauvegardé)"); bStop.onclick = ()=>{ stopped = true; bStop.disabled = true; };
       win.body.appendChild(bStop);
-      for(let i=0;i<work.length && !stopped;i++){
+      for(let i=startIdx;i<work.length && !stopped;i++){
+        resumeIdx = i + 1; // prochain fichier à envoyer si l'envoi est interrompu après celui-ci
         const {k, p, hit} = work[i];
         const head = `Envoi ${i+1} / ${work.length} — ${p.fileName}`;
         status.textContent = head;
@@ -22448,7 +22452,7 @@ async function saveEverythingToDrive(){
             if(driveCompressActive && driveCompressActive.vid){
               status.textContent = head + " — compression de la vidéo (en temps réel)…";
               try{ const c = await compressVideoBlob(file, DRIVE_CMP_VID[driveCompressActive.vid], r=>{ status.textContent = `${head} — compression ${Math.round(r * 100)} %`; }, ()=> stopped); if(c) file = c; }
-              catch(err){ if(stopped) break; cmpNotes.push(`${p.fileName} (${(err && err.message) || err})`); } // original envoyé à la place
+              catch(err){ if(stopped){ resumeIdx = i; break; } cmpNotes.push(`${p.fileName} (${(err && err.message) || err})`); } // original envoyé à la place
             }
             let toSend = file, wrote = false;
             const entries = videoMetaEntries(p);
@@ -22483,6 +22487,19 @@ async function saveEverythingToDrive(){
           failed.push(p.fileName + " (" + ((err && err.message) || err) + ")");
           if(!State.drive.token){ sessionLost = true; break; } // session expirée : inutile d'insister
         }
+      }
+      if(stopped && !sessionLost && resumeIdx < work.length){
+        const again = await new Promise(resolve=>{
+          win.body.innerHTML = "";
+          const t = document.createElement("p"); t.style.cssText = "margin:0 0 12px; line-height:1.5;";
+          t.textContent = `Envoi interrompu : ${resumeIdx} fichier(s) traité(s) sur ${work.length}. Rien n'est perdu : les fichiers déjà envoyés restent sur Drive.`;
+          const b1 = driveSaveButton(`▶ Reprendre au fichier suivant (${resumeIdx + 1} / ${work.length} — ${work[resumeIdx].p.fileName})`, true), b2 = driveSaveButton("Terminer : sauvegarder le catalogue maintenant");
+          b1.onclick = ()=> resolve(true); b2.onclick = ()=> resolve(false);
+          win.body.append(t, b1, b2);
+        });
+        if(again){ startIdx = resumeIdx; continue; }
+      }
+      break;
       }
     }
     // 4) Catalogue (toujours en dernier : il décrit l'état final)
@@ -22773,7 +22790,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-22-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-22-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
