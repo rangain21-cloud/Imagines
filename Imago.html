@@ -21151,7 +21151,7 @@ async function driveApiFetch(url, opts={}){
       setDriveBtnState("btnDriveSave","lblDriveSave", false, "");
       throw new Error("Votre session Drive a expiré — reconnectez-vous (menu ☰ → Connecter à Drive) puis réessayez.");
     }
-    throw new Error(`Erreur Drive API (${res.status})${detail ? " — " + detail : ""}`);
+    throw new Error(`Erreur Drive API (${res.status})${detail ? " — " + detail : ""}` + (res.status === 404 ? " — élément introuvable : supprimé, à la corbeille, ou lié à un AUTRE compte Google que celui connecté (identifiant mémorisé sur cet appareil). Rechargez le catalogue avec « Charger depuis Drive »." : ""));
   }
   return res;
 }
@@ -21348,6 +21348,8 @@ async function showDriveMissingFiles(){
   try{
     // listing FRAIS (sous-dossiers compris) : après un téléversement, on relance pour vérifier
     driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
+    const chk = await driveCheckFolder(driveMediaFolderId());
+    if(!chk.ok) throw new Error("Le dossier Drive du catalogue est " + chk.why + ". Si vous l'avez supprimé : lancez d'abord « Sauver sur Drive », qui propose de créer un nouveau dossier ; sinon rechargez le catalogue avec « Charger depuis Drive » (compte Google propriétaire du dossier).");
     const idx = await getDriveMediaIndexDeep();
     const cat = driveLoadedCatalog;
     const srcRows = cat ? cat.rows : State.photos.filter(p=> p.fromCatalog).map(p=>({fileName: p.fileName, sousDossier: p.sousDossier || "", corbeille: !!p.corbeille}));
@@ -22142,10 +22144,81 @@ async function getVideoSourceFile(p){
   return new File([bytes], p.fileName, {type: m[1] || videoMimeFor(p.fileName)});
 }
 function videoSizeOf(p, hit){ const f = pendingVideoFiles.get(p.id); return (f && f.size) || p.videoSizeBytes || p.sizeBytes || (hit && +hit.size) || 0; }
+/* Le dossier Drive du catalogue (identifiant mémorisé à « Charger depuis Drive ») existe-t-il encore POUR LE COMPTE CONNECTÉ ?
+   Avant : jamais vérifié -> 404 « File not found » dès le premier listing/dépôt s'il avait été supprimé, mis à la corbeille ou appartenait à un autre compte. */
+async function driveCheckFolder(id){
+  try{
+    const d = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${id}?fields=id,name,trashed,mimeType&supportsAllDrives=true`)).json();
+    if(d.trashed) return {ok: false, why: "à la corbeille", name: d.name};
+    if(d.mimeType !== "application/vnd.google-apps.folder") return {ok: false, why: "n'est pas un dossier", name: d.name};
+    return {ok: true, name: d.name};
+  }catch(e){
+    if(/\(404\)/.test((e && e.message) || "")) return {ok: false, why: "introuvable (supprimé, ou lié à un autre compte Google que celui connecté)"};
+    throw e; // session expirée, réseau… : message d'origine conservé
+  }
+}
+/* Petite fenêtre de saisie du nom du nouveau dossier Drive. Renvoie le nom, ou null si annulé. */
+function askDriveFolderName(defaultName){
+  return new Promise(resolve=>{
+    const ov = document.createElement("div"); ov.className = "modal-overlay show";
+    ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Nouveau dossier Drive</h2><button class="modal-close">×</button></div><div class="modal-body"></div></div>';
+    document.body.appendChild(ov);
+    const body = ov.querySelector(".modal-body"); let done = false;
+    const finish = v=>{ if(done) return; done = true; ov.remove(); resolve(v); };
+    ov.querySelector(".modal-close").onclick = ()=> finish(null);
+    const p1 = document.createElement("p"); p1.style.cssText = "margin:0 0 8px; font-size:.9em;";
+    p1.textContent = "Ce dossier sera créé à la racine de votre Drive. Les fichiers envoyés (compressés si vous l'avez choisi) et le catalogue y seront déposés. Sur le smartphone : « Charger depuis Drive » puis ce catalogue.";
+    const inp = document.createElement("input"); inp.type = "text"; inp.value = defaultName; inp.style.cssText = "width:100%; margin:0 0 10px;";
+    const row = document.createElement("div"); row.style.cssText = "display:flex; gap:8px;";
+    const ok = document.createElement("button"); ok.className = "btn copper"; ok.style.flex = "1"; ok.textContent = "📁 Créer et continuer";
+    const no = document.createElement("button"); no.className = "btn"; no.style.flex = "1"; no.textContent = "Annuler";
+    ok.onclick = ()=>{ const v = inp.value.trim().replace(/[\\/]+/g, "-"); if(v) finish(v); else inp.focus(); };
+    no.onclick = ()=> finish(null);
+    inp.onkeydown = e=>{ if(e.key === "Enter") ok.click(); else if(e.key === "Escape") no.click(); };
+    row.append(ok, no); body.append(p1, inp, row); setTimeout(()=>{ inp.focus(); inp.select(); }, 50);
+  });
+}
+async function createDriveFolder(name){
+  const res = await driveApiFetch(`https://www.googleapis.com/drive/v3/files?fields=id`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name, mimeType: "application/vnd.google-apps.folder"})
+  });
+  const created = await res.json();
+  if(!created.id) throw new Error("Création du dossier Drive impossible.");
+  return created.id;
+}
+function forgetDriveCatalogFileId(){ State.drive.fileId = ""; try{ localStorage.removeItem("imago_drive_file_id"); }catch(e){} } // l'ancien catalogue était dans le dossier disparu
+function forgetDriveMediaFolder(){
+  State.drive.mediaFolderId = "";
+  try{ localStorage.removeItem("imago_drive_media_folder"); localStorage.removeItem("imago_drive_media_folder_name"); }catch(e){}
+  driveMediaIndexPromise = null; driveMediaIndexFolder = ""; driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
+}
 async function saveEverythingToDrive(){
   if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
   if(!State.photos.length) throw new Error("Catalogue vide : rien n'a été envoyé, votre CSV sur Drive reste intact. Chargez d'abord un catalogue (Charger depuis Drive) ou des images.");
-  const mediaFolder = driveMediaFolderId();
+  let mediaFolder = driveMediaFolderId();
+  let folderReplaced = false; // vrai si l'ancien dossier a disparu : les identifiants Drive mémorisés sur les photos ne valent plus rien
+  if(mediaFolder){
+    const chk = await driveCheckFolder(mediaFolder);
+    if(!chk.ok){
+      const choice = await confirmChoice("Dossier Drive du catalogue inaccessible",
+        `Le dossier « ${chk.name || driveMediaFolderLabel()} » est ${chk.why}.\n\nRien n'a été envoyé. Si vous l'avez supprimé volontairement, créez un nouveau dossier : les fichiers (compressés si vous le choisissez à l'étape suivante) et le catalogue y seront déposés, puis utilisables depuis le smartphone avec « Charger depuis Drive ».`,
+        [{label: "📁 Créer un nouveau dossier Drive…", value: "new", className: "copper"},
+         {label: "Utiliser le dossier IMAGINES", value: "imagines"},
+         {label: "Annuler", value: "cancel"}]);
+      if(choice === "new"){
+        const name = await askDriveFolderName((State.catalogFileName || "Imago").replace(/\.csv$/i, "") || "Imago");
+        if(!name) throw new Error("Envoi annulé. Rien n'a été envoyé ni modifié.");
+        const newId = await createDriveFolder(name);
+        forgetDriveCatalogFileId(); setDriveMediaFolder(newId, name); mediaFolder = newId; folderReplaced = true; // les prochains envois et « Charger depuis Drive » partent de ce dossier
+        toast("Dossier « " + name + " » créé sur Drive.", 4000);
+      } else if(choice === "imagines"){
+        forgetDriveCatalogFileId(); forgetDriveMediaFolder(); mediaFolder = ""; folderReplaced = true;
+      } else {
+        throw new Error("Envoi annulé : le dossier Drive du catalogue est " + chk.why + ". Rien n'a été envoyé ni modifié.");
+      }
+    }
+  }
   const folderId = mediaFolder || await ensureImaginesFolder();
   const folderLabel = mediaFolder ? driveMediaFolderLabel() : "IMAGINES";
   const win = driveSaveWindow("Sauver sur Drive");
@@ -22249,7 +22322,11 @@ async function saveEverythingToDrive(){
         const progress = (a, b)=>{ status.textContent = `${head} — ${Math.round(a * 100 / b)} %`; };
         try{
           if(k === "imgNew"){
-            const existedBefore = !!p.driveFileId; // image déjà envoyée ailleurs (partage) : simplement rattachée au dossier
+            // Une image déjà envoyée ailleurs (partage) est normalement simplement RATTACHÉE au dossier. Ici on envoie à la place une copie fraîche :
+            //  - si l'ancien dossier a été supprimé : les anciens fichiers sont à la corbeille (invisibles) ou perdus ;
+            //  - si une compression est choisie : rattacher l'ancien fichier envoyé en taille d'origine contournerait la compression.
+            if(folderReplaced || (driveCompressActive && driveCompressActive.img)){ p.driveFileId = null; p.driveWebViewLink = ""; }
+            const existedBefore = !!p.driveFileId;
             const up = await ensurePhotoUploadedToDrive(p, folderId);
             p.driveFileId = up.id; p.driveWebViewLink = up.webViewLink || "";
             if(existedBefore && p.driveDirty) await updateDriveImageContent(p);
@@ -22585,7 +22662,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-21-m"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-21-p"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
