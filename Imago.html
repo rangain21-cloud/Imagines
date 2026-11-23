@@ -6123,18 +6123,20 @@ function driveReducedPref(){
   return v === null ? true : v === "1"; // par défaut : activé (beaucoup plus rapide) ; décochable dans « Charger depuis Drive »
 }
 // Contenu d'une image Drive : version réduite fabriquée par Drive (≈ IMPORT_MAX_DIM px) si l'option est active, sinon (ou en cas de refus) l'original
+let driveThumbFails = 0; // échecs consécutifs de la miniature Drive (CORS / lien inutilisable) : au-delà de 3, on ne l'essaie plus de la session
 async function driveImageBlob(hit){
   let why = "";
   if(!driveReducedPref()) why = "option « version réduite » désactivée";
+  else if(driveThumbFails >= 3) why = "miniature Drive abandonnée après " + driveThumbFails + " échecs consécutifs";
   else if(!hit.thumbnailLink) why = "Drive n'a pas (encore) de miniature pour ce fichier";
   else if(!/^image\//.test(hit.mimeType || "")) why = "type " + hit.mimeType;
   else{
     try{
       const url = /=s\d+/.test(hit.thumbnailLink) ? hit.thumbnailLink.replace(/=s\d+[^=]*$/, "=s" + IMPORT_MAX_DIM) : hit.thumbnailLink + "=s" + IMPORT_MAX_DIM;
       const res = await fetch(url, {mode: "cors"});
-      if(res.ok){ const b = await res.blob(); if(b.size && /^image\//.test(b.type)){ b.imagoSrc = "réduite par Drive"; return b; } why = "réponse vide ou non image"; }
-      else why = "miniature refusée : HTTP " + res.status;
-    }catch(e){ why = "miniature inaccessible : " + ((e && e.message) || e); /* refusé : on retombe sur l'original */ }
+      if(res.ok){ const b = await res.blob(); if(b.size && /^image\//.test(b.type)){ driveThumbFails = 0; b.imagoSrc = "réduite par Drive"; return b; } why = "réponse vide ou non image"; driveThumbFails++; }
+      else{ why = "miniature refusée : HTTP " + res.status; driveThumbFails++; }
+    }catch(e){ why = "miniature inaccessible : " + ((e && e.message) || e); driveThumbFails++; /* refusé : on retombe sur l'original */ }
   }
   const full = await driveDownloadBlob(hit.id, hit.size, hit.mimeType);
   full.imagoSrc = "ORIGINAL (" + why + ")";
@@ -6213,7 +6215,16 @@ function jpegDimsFromBytes(u8){
    (la file d'attente est ailleurs : décodage, GPU). Ici : dimensions lues dans l'en-tête, vignette décodée directement à petite taille hors du fil
    principal (createImageBitmap avec redimensionnement). Renvoie null au moindre doute : le parcours classique prend alors le relais, inchangé. */
 async function fastJpegIngest(file, dataUrl){
-  fastJpegIngest.why = "";
+  return pipeSerial(async wait=>{
+    fastJpegIngest.why = "";
+    const S = {attente: wait};
+    const r = await fastJpegIngestRun(file, dataUrl, S);
+    if(r) r.sub = S;
+    return r;
+  });
+}
+async function fastJpegIngestRun(file, dataUrl, S){
+  let tm = performance.now(); const mark = k=>{ const n = performance.now(); S[k] = (S[k] || 0) + n - tm; tm = n; };
   try{
     if(typeof createImageBitmap !== "function"){ fastJpegIngest.why = "createImageBitmap absent"; return null; }
     if(!/^data:image\/jpe?g/i.test(dataUrl)){ fastJpegIngest.why = "pas un JPEG (" + String(dataUrl).slice(0, 22) + ")"; return null; }
@@ -6221,15 +6232,16 @@ async function fastJpegIngest(file, dataUrl){
     if(!jpegOrientationIsNormal(dataUrl)){ fastJpegIngest.why = "orientation EXIF à corriger (ou en-tête illisible)"; return null; }
     const dims = jpegDimsFromBytes(new Uint8Array(await file.slice(0, 524288).arrayBuffer()));
     if(!dims || !dims.w || !dims.h){ fastJpegIngest.why = "dimensions introuvables dans l'en-tête"; return null; }
+    mark("en-tête");
     const mx = Math.max(dims.w, dims.h);
     if(mx <= IMPORT_MAX_DIM){
       // Déjà assez petite : octets d'origine conservés, seule la vignette est fabriquée (décodée directement à petite taille)
       const ts = Math.min(1, THUMB_MAX_DIM / mx), tw = Math.max(1, Math.round(dims.w * ts)), th = Math.max(1, Math.round(dims.h * ts));
-      const bmp = await createImageBitmap(file, {resizeWidth: tw, resizeHeight: th, resizeQuality: "high"});
+      const bmp = await createImageBitmap(file, {resizeWidth: tw, resizeHeight: th, resizeQuality: "high"}); mark("bitmap");
       try{
         const c = document.createElement("canvas"); c.width = tw; c.height = th;
-        c.getContext("2d").drawImage(bmp, 0, 0, tw, th);
-        const thumbDataUrl = await canvasToJpegDataUrl(c, THUMB_JPEG_QUALITY);
+        c.getContext("2d").drawImage(bmp, 0, 0, tw, th); mark("dessin");
+        const thumbDataUrl = await canvasToJpegDataUrl(c, THUMB_JPEG_QUALITY); mark("encodage");
         c.width = 0; c.height = 0;
         if(!thumbDataUrl || thumbDataUrl.length < 200){ fastJpegIngest.why = "vignette vide"; return null; }
         return {dataUrl, width: dims.w, height: dims.h, thumbDataUrl, lossless: true, fast: true};
@@ -6239,12 +6251,12 @@ async function fastJpegIngest(file, dataUrl){
     // longues, 8 à 10 s, gels d'écran, et probable fermeture par Android faute de mémoire). Ici le navigateur la décode directement à la taille
     // voulue (réduction à la volée, hors fil principal, mémoire minimale), puis un seul encodage JPEG asynchrone.
     const sc = IMPORT_MAX_DIM / mx, nw = Math.max(1, Math.round(dims.w * sc)), nh = Math.max(1, Math.round(dims.h * sc));
-    const bmp = await createImageBitmap(file, {resizeWidth: nw, resizeHeight: nh, resizeQuality: "high"});
+    const bmp = await createImageBitmap(file, {resizeWidth: nw, resizeHeight: nh, resizeQuality: "high"}); mark("bitmap");
     let canvas = null;
     try{
       canvas = document.createElement("canvas"); canvas.width = nw; canvas.height = nh;
-      canvas.getContext("2d").drawImage(bmp, 0, 0, nw, nh);
-      const out = await canvasToJpegDataUrl(canvas, IMPORT_JPEG_QUALITY);
+      canvas.getContext("2d").drawImage(bmp, 0, 0, nw, nh); mark("dessin");
+      const out = await canvasToJpegDataUrl(canvas, IMPORT_JPEG_QUALITY); mark("encodage");
       const ts = Math.min(1, THUMB_MAX_DIM / Math.max(nw, nh)), tw = Math.max(1, Math.round(nw * ts)), th = Math.max(1, Math.round(nh * ts));
       const tc = downscaleToCanvas(canvas, nw, nh, tw, th);
       const thumbDataUrl = tc.toDataURL("image/jpeg", THUMB_JPEG_QUALITY); tc.width = 0; tc.height = 0;
@@ -6255,12 +6267,27 @@ async function fastJpegIngest(file, dataUrl){
 }
 /* Au plus HYDRATE_MAX traitements d'image Drive en parallèle (journal : jusqu'à 8 à la fois, décodage + réduction de 4 à 20 s chacun sur A51). */
 const HYDRATE_MAX = /Android/i.test(navigator.userAgent) ? 3 : 6;
+const HYDRATE_URGENT_MAX = HYDRATE_MAX + 1; // les demandes « urgentes » (ce que l'on regarde) passent devant, mais ne dépassent plus la limite de plus d'un
 let hydrateActive = 0; const hydrateQueue = [];
+function hydratePump(){
+  while(hydrateQueue.length && (hydrateActive < HYDRATE_MAX || (hydrateQueue[0].urgent && hydrateActive < HYDRATE_URGENT_MAX))) hydrateQueue.shift().run();
+}
 function hydrateLimited(fn, urgent){
   return new Promise((resolve, reject)=>{
-    const run = ()=>{ hydrateActive++; fn().then(resolve, reject).finally(()=>{ hydrateActive--; const nx = hydrateQueue.shift(); if(nx) nx(); }); };
-    if(urgent || hydrateActive < HYDRATE_MAX) run(); else hydrateQueue.push(run);
+    const run = ()=>{ hydrateActive++; fn().then(resolve, reject).finally(()=>{ hydrateActive--; hydratePump(); }); };
+    const e = {run, urgent: !!urgent};
+    if(urgent) hydrateQueue.unshift(e); else hydrateQueue.push(e);
+    hydratePump();
   });
+}
+/* Une seule image à la fois dans la voie rapide (décodage + encodage JPEG) : en parallèle, ces étapes attendaient toutes dans la file du navigateur
+   (journal : 4,1 à 4,2 s constantes, aucune tâche longue). Garde-fou : si une étape reste bloquée plus de 20 s, le verrou est libéré quand même. */
+let pipeChain = Promise.resolve();
+function pipeSerial(fn){
+  const t0 = performance.now();
+  const res = pipeChain.then(()=> fn(performance.now() - t0));
+  pipeChain = Promise.race([res.catch(()=>{}), new Promise(r=> setTimeout(r, 20000))]);
+  return res;
 }
 function hydratePhotoFromDrive(p, urgent){
   if(driveHydrating.has(p.id)) return driveHydrating.get(p.id);
@@ -6306,7 +6333,7 @@ function hydratePhotoFromDrive(p, urgent){
         const f = ms=> (ms / 1000).toFixed(1).replace(".", ",") + " s";
         window.imagoLagNote("Image Drive lente à traiter (" + f(work) + " hors téléchargement)",
           "« " + p.fileName + " » · " + (fmtSize(blob.size) || blob.size + " o") + " · " + (blob.type || "type ?") + " · source : " + (blob.imagoSrc || "?") + " · " + resized.width + "×" + resized.height + " · version réduite Drive : " + (driveReducedPref() ? "oui" : "non"),
-          T.map(x=> x[0] + " " + f(x[1])).join(" · ") + (window.imagoBusyReport ? "\n    pendant ce traitement : " + window.imagoBusyReport(tStart, performance.now()) : ""));
+          T.map(x=> x[0] + " " + f(x[1])).join(" · ") + (resized.sub ? "\n    voie rapide détaillée : " + Object.keys(resized.sub).map(k=> k + " " + f(resized.sub[k])).join(" · ") : "") + (window.imagoBusyReport ? "\n    pendant ce traitement : " + window.imagoBusyReport(tStart, performance.now()) : ""));
       }
     }catch(e){}
     return true;
@@ -22790,7 +22817,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-22-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-a"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
