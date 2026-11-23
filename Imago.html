@@ -22817,7 +22817,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-a"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
@@ -22874,13 +22874,23 @@ async function driveTileFetch(tile){
   window.addEventListener("pagehide", ()=>{ alive.clean = true; alive.ts = Date.now(); wr(ALIVE_KEY, alive); }); // fermeture normale (onglet fermé, rechargement)
   setInterval(saveAlive, 2000); saveAlive();
 
+  /* --- boîtes de dialogue bloquantes : confirm()/alert()/prompt() figent le fil principal le temps que l'on lise et réponde ;
+     ce n'est pas un gel de l'appli (journal du 23/11 : 3,9 s et 5,4 s = le temps de répondre à « Êtes-vous sûr d'effacer… »). On les chronomètre pour ne pas les noter. --- */
+  const dialogs = [];
+  ["confirm", "alert", "prompt"].forEach(n=>{
+    const o = window[n]; if(typeof o !== "function") return;
+    window[n] = function(){ const t0 = performance.now(); try{ return o.apply(window, arguments); } finally { dialogs.push([t0, performance.now()]); if(dialogs.length > 20) dialogs.shift(); } };
+  });
+
   /* --- détection --- */
   let last = performance.now(), lastHidden = 0;
   setInterval(()=>{
     const now = performance.now(), drift = now - last - TICK; last = now;
     const th = thresh();
     if(!th || document.hidden || now - lastHidden < TICK + drift + 50 || drift < th) return; // onglet masqué ou revenu à l'écran : minuteurs ralentis par le navigateur, pas un gel de l'appli
-    const start = now - drift, cause = [...actions].reverse().find(x=> x.t <= start && x.t >= start - 2500), during = actions.filter(x=> x.t > start && x.t <= now);
+    const start = now - drift;
+    if(dialogs.some(d=> d[0] < now && d[1] > start && Math.min(d[1], now) - Math.max(d[0], start) >= drift * 0.6)) return; // gel dû à une boîte de dialogue ouverte par l'appli : normal
+    const cause = [...actions].reverse().find(x=> x.t <= start && x.t >= start - 2500), during = actions.filter(x=> x.t > start && x.t <= now);
     addEntry({ts: Date.now(), kind: "Écran figé", dur: Math.round(drift),
       action: cause ? cause.label + " (" + sec(start - cause.t) + " avant le gel)" : "aucune action dans les 2,5 s précédentes : travail de fond (import, vignettes, Drive…)",
       during: during.length ? during.map(x=> x.label.replace(/ «.*$/, "")).slice(0, 3).join(" ; ") : "",
