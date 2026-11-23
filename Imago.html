@@ -22100,8 +22100,12 @@ async function compressVideoBlob(file, preset, onProgress, shouldStop){
   if(!mime) throw new Error("ce navigateur ne sait pas produire du MP4");
   if(!/\.(mp4|m4v)$/i.test(file.name || "")) return null; // .mov, .avi… : autre conteneur, envoyés tels quels
   const url = URL.createObjectURL(file), v = document.createElement("video"), tracks = [];
-  let ac = null, mr = null;
+  let ac = null, mr = null, wl = null, onVis = null;
   const w8 = ms=> new Promise(r=> setTimeout(r, ms));
+  // Écran maintenu allumé pendant l'encodage (le verrou saute quand la page est masquée : on le reprend au retour).
+  const getWL = async()=>{ try{ if(navigator.wakeLock) wl = await navigator.wakeLock.request("screen"); }catch(e){} };
+  onVis = ()=>{ if(!document.hidden && (!wl || wl.released)) getWL(); };
+  document.addEventListener("visibilitychange", onVis); getWL();
   v.src = url; v.playsInline = true; v.preload = "auto";
   try{
     await new Promise((res, rej)=>{ v.onloadedmetadata = res; v.onerror = ()=> rej(new Error("vidéo illisible par ce navigateur")); });
@@ -22131,7 +22135,23 @@ async function compressVideoBlob(file, preset, onProgress, shouldStop){
       await w8(400);
       if(failure) throw failure;
       if(shouldStop && shouldStop()) throw new Error("arrêtée");
-      if(document.hidden) throw new Error("page passée en arrière-plan (l'encodage s'y arrête)");
+      if(document.hidden){
+        // Page masquée : le navigateur arrête décodage et dessin. On met lecture ET enregistrement en pause (le temps de pause n'est pas enregistré),
+        // puis on reprend au retour ; abandon (original envoyé) seulement au-delà de 2 minutes en arrière-plan.
+        v.pause(); try{ if(mr.state === "recording") mr.pause(); }catch(e){}
+        try{ toast("⏸ Compression vidéo en pause : revenez dans l'appli pour la reprendre."); }catch(e){}
+        const th0 = performance.now();
+        while(document.hidden){
+          await w8(400);
+          if(failure) throw failure;
+          if(shouldStop && shouldStop()) throw new Error("arrêtée");
+          if(performance.now() - th0 > 120000) throw new Error("page restée plus de 2 minutes en arrière-plan");
+        }
+        try{ await ac.resume(); if(mr.state === "paused") mr.resume(); await v.play(); }
+        catch(e){ throw new Error("reprise impossible après l'arrière-plan (" + ((e && e.message) || e) + ")"); }
+        lastT = -1; lastMove = performance.now();
+        continue;
+      }
       if(v.currentTime !== lastT){ lastT = v.currentTime; lastMove = performance.now(); }
       else if(performance.now() - lastMove > 30000) throw new Error("lecture bloquée");
       if(onProgress) onProgress(Math.min(1, v.currentTime / dur));
@@ -22150,6 +22170,8 @@ async function compressVideoBlob(file, preset, onProgress, shouldStop){
     URL.revokeObjectURL(url);
     tracks.forEach(t=>{ try{ t.stop(); }catch(e){} });
     if(ac){ try{ ac.close(); }catch(e){} }
+    if(onVis) document.removeEventListener("visibilitychange", onVis);
+    if(wl){ try{ wl.release(); }catch(e){} }
   }
 }
 /* Bloc de choix, partagé par « Sauver sur Drive » et « Téléverser les manquants ». prefs est mis à jour et mémorisé à chaque changement. */
@@ -22172,7 +22194,7 @@ function driveCmpControls(parent, prefs, opt){
     if(videoCompressMime()){
       mkSel("Vidéos", [["", "Telles quelles (aucune compression)"]].concat(Object.keys(DRIVE_CMP_VID).map(k=> [k, DRIVE_CMP_VID[k].label])), prefs.vid, v=>{ prefs.vid = v; });
       const w = document.createElement("div"); w.style.cssText = "font-size:.8em; opacity:.8; line-height:1.4;";
-      w.textContent = "Vidéos (MP4/M4V) : expérimental et EN TEMPS RÉEL — une vidéo de 10 min demande environ 10 min ; gardez l'écran allumé et cette page au premier plan. Au moindre échec, l'original est envoyé. Préférez un PC.";
+      w.textContent = "Vidéos (MP4/M4V) : expérimental et EN TEMPS RÉEL — une vidéo de 10 min demande environ 10 min ; l'écran reste allumé ; si vous quittez l'appli, la compression se met en pause (2 min maximum) et reprend à votre retour. Au moindre échec, l'original est envoyé. Préférez un PC.";
       box.appendChild(w);
     } else {
       const w = document.createElement("div"); w.style.cssText = "font-size:.8em; opacity:.8;"; w.textContent = "Vidéos : ce navigateur ne sait pas produire de MP4, elles seront envoyées telles quelles.";
@@ -22817,7 +22839,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
