@@ -6036,8 +6036,10 @@ const driveHydrating = new Map();   // id photo -> Promise (évite les télécha
 const driveMissInfo = new Map();    // id photo -> message (introuvable / erreur) : pas de nouvel essai en boucle
 let driveMediaIndexPromise = null, driveMediaIndexFolder = "";
 const VIEWER_MISSING_DEFAULTS = {title: null, sub: null};
-function driveMediaFolderId(){ return State.drive.mediaFolderId || localStorage.getItem("imago_drive_media_folder") || ""; }
-function driveMediaFolderLabel(){ return localStorage.getItem("imago_drive_media_folder_name") || "dossier Drive"; }
+/* Dossier Drive choisi seulement pour la fenêtre « Fichiers manquants sur Drive » (comparaison + téléversement) : le dossier du catalogue n'est pas modifié. */
+let driveMissingOverride = null;
+function driveMediaFolderId(){ return (driveMissingOverride && driveMissingOverride.id) || State.drive.mediaFolderId || localStorage.getItem("imago_drive_media_folder") || ""; }
+function driveMediaFolderLabel(){ return (driveMissingOverride && driveMissingOverride.label) || localStorage.getItem("imago_drive_media_folder_name") || "dossier Drive"; }
 function setDriveMediaFolder(id, label){
   State.drive.mediaFolderId = id;
   localStorage.setItem("imago_drive_media_folder", id);
@@ -21401,13 +21403,15 @@ function csvCatalogRows(text){
   }
   return rows;
 }
-async function showDriveMissingFiles(){
+async function showDriveMissingFiles(opts){
+  if(!(opts && opts.keepFolder === true)) driveMissingOverride = null; // le clic sur le bouton (événement) repart du dossier du catalogue
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
   if(!driveMediaFolderId()){ toast("Chargez d'abord un catalogue avec « Charger depuis Drive »."); return; }
   const ov = document.createElement("div"); ov.className = "modal-overlay show";
   ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Fichiers à téléverser dans Drive</h2><button class="modal-close">×</button></div><div class="modal-body">Lecture du dossier Drive…</div></div>';
   document.body.appendChild(ov);
-  const body = ov.querySelector(".modal-body"); ov.querySelector(".modal-close").onclick = ()=> ov.remove();
+  const body = ov.querySelector(".modal-body");
+  ov.querySelector(".modal-close").onclick = ()=>{ ov.remove(); if(driveMissingOverride){ driveMissingOverride = null; driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear(); } };
   try{
     // listing FRAIS (sous-dossiers compris) : après un téléversement, on relance pour vérifier
     driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
@@ -21520,7 +21524,7 @@ async function showDriveMissingFiles(){
         + (cmpTot.ib ? " Images : " + fmtCmpSaving(cmpTot.ib, cmpTot.ia) + "." : "") + (cmpTot.vb ? " Vidéos : " + fmtCmpSaving(cmpTot.vb, cmpTot.va) + "." : "");
       const row = mk("div", "display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;");
       const bAgain = document.createElement("button"); bAgain.className = "btn"; bAgain.style.flex = "1"; bAgain.textContent = "🔄 Revérifier Drive";
-      bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles(); };
+      bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles({keepFolder: true}); };
       row.appendChild(bAgain);
       if(notFound.length || failed.length){
         const bCp = document.createElement("button"); bCp.className = "btn"; bCp.style.flex = "1"; bCp.textContent = "📋 Copier introuvables / échecs";
@@ -21543,7 +21547,14 @@ async function showDriveMissingFiles(){
       mk("p", "margin:0 0 8px; font-size:.9em;",
         (cat ? "Catalogue « " + cat.name + " »" : "Catalogue en cours") + " : " + rows.length + " fichier(s) référencé(s), " + (rows.length - keep.length) + " présent(s) sur Drive (« " + driveMediaFolderLabel() + " », sous-dossiers compris, " + idx.listed + " fichier(s) image/vidéo lus), "
         + keep.length + " absent(s).");
-      if(!keep.length){ mk("p", "font-weight:600;", "✅ Tout le catalogue est présent sur Drive."); return; }
+      if(driveMissingOverride) mk("p", "margin:0 0 8px; font-size:.85em; color:var(--copper);", "📂 Dossier choisi pour cette vérification : « " + driveMissingOverride.label + " ». Le dossier du catalogue n'est pas modifié ; fermez la fenêtre (×) pour y revenir.");
+      if(!keep.length){ mk("p", "font-weight:600;", "✅ Tout le catalogue est présent sur Drive.");
+        const bO = mk("button", "margin-top:8px;", "📂 Comparer avec un autre dossier Drive…"); bO.className = "btn";
+        bO.onclick = async ()=>{
+          const r = await driveChooseFolderInWindow({body}, driveMediaFolderLabel(), "Choisissez le dossier Drive à comparer au catalogue");
+          if(r){ driveMissingOverride = r; ov.remove(); showDriveMissingFiles({keepFolder: true}); } else render();
+        };
+        return; }
       const lab = mk("label", "display:flex; gap:6px; align-items:center; margin:0 0 8px; font-size:.9em;");
       lab.innerHTML = '<input type="checkbox" id="dmTrash" style="width:auto;"' + (withTrash ? " checked" : "") + '> Inclure les ' + nTrash + ' fichier(s) à la corbeille';
       lab.querySelector("input").onchange = render;
@@ -21561,7 +21572,13 @@ async function showDriveMissingFiles(){
         downloadCsvFile(out.join("\n"), "A-televerser-" + (cat ? cat.name.replace(/\.csv$/i,"") : "catalogue") + ".csv");
       };
       const bAgain = document.createElement("button"); bAgain.className = "btn"; bAgain.style.flex = "1"; bAgain.textContent = "🔄 Revérifier";
-      bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles(); };
+      bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles({keepFolder: true}); };
+      const bOther = document.createElement("button"); bOther.className = "btn"; bOther.style.flex = "1 1 100%"; bOther.textContent = "📂 Comparer avec un autre dossier Drive…";
+      bOther.title = "Choisir un autre dossier Drive pour cette vérification et ce téléversement. Le dossier du catalogue n'est pas modifié.";
+      bOther.onclick = async ()=>{
+        const r = await driveChooseFolderInWindow({body}, driveMediaFolderLabel(), "Choisissez le dossier Drive à comparer au catalogue (et qui recevra les fichiers téléversés)");
+        if(r){ driveMissingOverride = r; ov.remove(); showDriveMissingFiles({keepFolder: true}); } else render();
+      };
       const bUp = document.createElement("button"); bUp.className = "btn copper"; bUp.style.cssText = "flex:1 1 100%; order:-1;"; bUp.textContent = "⬆ Téléverser ces " + list.length + " fichier(s) sur Drive…";
       bUp.title = "Vous désignez le dossier local contenant les originaux (sous-dossiers compris) ; les fichiers sont envoyés dans le dossier Drive du catalogue. Rien n'est supprimé ni écrasé.";
       bUp.disabled = !list.length;
@@ -21572,7 +21589,7 @@ async function showDriveMissingFiles(){
           .finally(()=>{ if(bUp.isConnected) bUp.textContent = lab0; });
       };
       bar.style.flexWrap = "wrap";
-      bar.append(bUp, bCopy, bCsv, bAgain);
+      bar.append(bUp, bOther, bCopy, bCsv, bAgain);
       mk("p", "margin:8px 0 0; font-size:.8em; opacity:.8;", "Les noms sont comparés sans tenir compte de la casse, des accents ni de .jpg/.jpeg. « Téléverser » vous demande le dossier local des originaux (sous-dossiers compris) puis envoie chaque fichier trouvé dans le dossier Drive du catalogue, sous le nom du catalogue. Rien n'est supprimé ni écrasé sur Drive. Vous pouvez aussi les déposer à la main puis « Revérifier ».");
     };
     render();
@@ -22249,14 +22266,14 @@ async function updateDriveImageContent(p){
 }
 /* Choix du dossier Drive dans la fenêtre « Sauver sur Drive » : navigation dans les sous-dossiers, création d'un dossier, validation.
    Renvoie {id, label} ou null (retour sans changement). Ne modifie rien sur Drive (sauf « Nouveau dossier »). */
-function driveChooseFolderInWindow(win, startLabel){
+function driveChooseFolderInWindow(win, startLabel, purposeText){
   return new Promise(resolve=>{
     const path = [{id: "root", name: "Mon Drive"}];
     const render = async ()=>{
       const cur = path[path.length - 1];
       win.body.innerHTML = "";
       const h = document.createElement("p"); h.style.cssText = "margin:0 0 8px; line-height:1.5;";
-      h.textContent = "Choisissez le dossier Drive qui recevra les fichiers et le catalogue (actuel : « " + startLabel + " »).";
+      h.textContent = (purposeText || "Choisissez le dossier Drive qui recevra les fichiers et le catalogue") + " (actuel : « " + startLabel + " »).";
       const crumbs = document.createElement("div"); crumbs.style.cssText = "margin:0 0 8px; font-weight:600; line-height:1.6;";
       path.forEach((x, i)=>{
         const sp = document.createElement("span"); sp.textContent = x.name; sp.style.cssText = "cursor:pointer; text-decoration:underline;";
@@ -22869,7 +22886,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-f"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-g"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
