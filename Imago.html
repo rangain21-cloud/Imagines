@@ -21403,22 +21403,68 @@ function csvCatalogRows(text){
   }
   return rows;
 }
+/* Catalogue choisi seulement pour la fenêtre « Fichiers manquants » : lu en LECTURE SEULE, jamais fusionné dans l'appli ni modifié sur Drive. */
+let missingCatalogOverride = null;
+async function chooseCatalogInWindow(win){
+  const body = win.body;
+  body.textContent = "Recherche des catalogues (.csv) dans IMAGINES et ses sous-dossiers…";
+  try{
+    const rootId = await ensureImaginesFolder(), FOLDER = "application/vnd.google-apps.folder", api = "https://www.googleapis.com/drive/v3/files?";
+    const found = [], queue = [{id: rootId, path: "IMAGINES"}]; let scanned = 0;
+    while(queue.length && scanned < 300){
+      const cur = queue.shift(); scanned++;
+      body.textContent = "Recherche des catalogues… (" + cur.path + ")";
+      let tok = "";
+      do{
+        const q = encodeURIComponent(`'${cur.id}' in parents and trashed=false and (mimeType='${FOLDER}' or mimeType='text/csv' or mimeType='application/vnd.ms-excel' or mimeType='text/comma-separated-values' or mimeType='application/octet-stream')`);
+        const j = await (await driveApiFetch(api + `q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,mimeType,modifiedTime)` + (tok ? "&pageToken=" + tok : ""))).json();
+        (j.files || []).forEach(x=>{
+          if(x.mimeType === FOLDER) queue.push({id: x.id, path: cur.path + " / " + x.name});
+          else if(/\.csv$/i.test(x.name || "")) found.push({id: x.id, name: x.name, modifiedTime: x.modifiedTime, path: cur.path, parentId: cur.id});
+        });
+        tok = j.nextPageToken || "";
+      }while(tok);
+    }
+    found.sort((a, b)=> String(b.modifiedTime || "").localeCompare(String(a.modifiedTime || "")));
+    return await new Promise(resolve=>{
+      body.innerHTML = "";
+      const intro = document.createElement("p"); intro.style.cssText = "margin:0 0 10px; font-size:.9em;";
+      intro.textContent = found.length ? "Choisissez le catalogue à comparer (" + found.length + " trouvé" + (found.length > 1 ? "s" : "") + "). Lecture seule : il n'est ni chargé dans l'appli, ni modifié sur Drive." : "Aucun fichier .csv trouvé dans IMAGINES ni dans ses sous-dossiers.";
+      body.appendChild(intro);
+      found.forEach(x=>{
+        const b = document.createElement("button"); b.className = "btn"; b.style.cssText = "width:100%; margin-bottom:6px; text-align:left; white-space:pre-line;";
+        b.textContent = "📄 " + x.name + "\n📁 " + x.path + " · " + (x.modifiedTime ? new Date(x.modifiedTime).toLocaleString("fr-FR") : "date inconnue");
+        b.onclick = async ()=>{
+          body.textContent = "Lecture de « " + x.name + " »…";
+          try{
+            const text = await (await driveApiFetch(api.replace("?", "/") + x.id + "?alt=media")).text();
+            if(text.split(/\r?\n/).filter(l=> l.trim().length).length < 2){ toast("« " + x.name + " » est vide."); resolve(null); return; }
+            resolve({name: x.name, path: x.path, parentId: x.parentId, rows: csvCatalogRows(text)});
+          }catch(e){ toast(e.message || String(e)); resolve(null); }
+        };
+        body.appendChild(b);
+      });
+      const back = document.createElement("button"); back.className = "btn"; back.style.width = "100%"; back.textContent = "Retour (garder le catalogue actuel)";
+      back.onclick = ()=> resolve(null); body.appendChild(back);
+    });
+  }catch(e){ toast(e.message || String(e)); return null; }
+}
 async function showDriveMissingFiles(opts){
-  if(!(opts && opts.keepFolder === true)) driveMissingOverride = null; // le clic sur le bouton (événement) repart du dossier du catalogue
+  if(!(opts && opts.keepFolder === true)){ driveMissingOverride = null; missingCatalogOverride = null; } // le clic sur le bouton (événement) repart du dossier du catalogue
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive."); return; }
   if(!driveMediaFolderId()){ toast("Chargez d'abord un catalogue avec « Charger depuis Drive »."); return; }
   const ov = document.createElement("div"); ov.className = "modal-overlay show";
   ov.innerHTML = '<div class="modal"><div class="modal-head"><h2>Fichiers à téléverser dans Drive</h2><button class="modal-close">×</button></div><div class="modal-body">Lecture du dossier Drive…</div></div>';
   document.body.appendChild(ov);
   const body = ov.querySelector(".modal-body");
-  ov.querySelector(".modal-close").onclick = ()=>{ ov.remove(); if(driveMissingOverride){ driveMissingOverride = null; driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear(); } };
+  ov.querySelector(".modal-close").onclick = ()=>{ ov.remove(); if(driveMissingOverride || missingCatalogOverride){ driveMissingOverride = null; missingCatalogOverride = null; driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear(); } };
   try{
     // listing FRAIS (sous-dossiers compris) : après un téléversement, on relance pour vérifier
     driveDeepIndexPromise = null; driveDeepIndexFolder = ""; driveMissInfo.clear();
     const chk = await driveCheckFolder(driveMediaFolderId());
     if(!chk.ok) throw new Error("Le dossier Drive du catalogue est " + chk.why + ". Si vous l'avez supprimé : lancez d'abord « Sauver sur Drive », qui propose de créer un nouveau dossier ; sinon rechargez le catalogue avec « Charger depuis Drive » (compte Google propriétaire du dossier).");
     const idx = await getDriveMediaIndexDeep();
-    const cat = driveLoadedCatalog;
+    const cat = missingCatalogOverride || driveLoadedCatalog;
     const srcRows = cat ? cat.rows : State.photos.filter(p=> p.fromCatalog).map(p=>({fileName: p.fileName, sousDossier: p.sousDossier || "", corbeille: !!p.corbeille}));
     const seen = new Set(), rows = [];
     srcRows.forEach(r=>{ const k = catalogLooseKey(r.fileName); if(!seen.has(k)){ seen.add(k); rows.push(r); } });
@@ -21537,6 +21583,14 @@ async function showDriveMissingFiles(opts){
       toast(st.textContent, 10000);
       if(okN) prefetchDriveImages(GALLERY_INITIAL_BATCH);
     };
+    const pickCatalog = async ()=>{
+      const r = await chooseCatalogInWindow({body});
+      if(r){
+        missingCatalogOverride = r;
+        if(!driveMissingOverride) driveMissingOverride = {id: r.parentId, label: r.path}; // par défaut : le dossier du catalogue (modifiable ensuite)
+        ov.remove(); showDriveMissingFiles({keepFolder: true});
+      }else render();
+    };
     const render = ()=>{
       const withTrash = body.querySelector("#dmTrash") ? body.querySelector("#dmTrash").checked : false;
       const list = keep.filter(r=> withTrash || !r.corbeille);
@@ -21547,13 +21601,14 @@ async function showDriveMissingFiles(opts){
       mk("p", "margin:0 0 8px; font-size:.9em;",
         (cat ? "Catalogue « " + cat.name + " »" : "Catalogue en cours") + " : " + rows.length + " fichier(s) référencé(s), " + (rows.length - keep.length) + " présent(s) sur Drive (« " + driveMediaFolderLabel() + " », sous-dossiers compris, " + idx.listed + " fichier(s) image/vidéo lus), "
         + keep.length + " absent(s).");
-      if(driveMissingOverride) mk("p", "margin:0 0 8px; font-size:.85em; color:var(--copper);", "📂 Dossier choisi pour cette vérification : « " + driveMissingOverride.label + " ». Le dossier du catalogue n'est pas modifié ; fermez la fenêtre (×) pour y revenir.");
+      if(driveMissingOverride || missingCatalogOverride) mk("p", "margin:0 0 8px; font-size:.85em; color:var(--copper);", "📌 Choisi pour cette vérification seulement" + (missingCatalogOverride ? " — catalogue « " + missingCatalogOverride.name + " »" : "") + (driveMissingOverride ? " — dossier Drive « " + driveMissingOverride.label + " »" : "") + ". Le catalogue chargé dans l'appli et son dossier ne sont pas modifiés ; fermez la fenêtre (×) pour y revenir.");
       if(!keep.length){ mk("p", "font-weight:600;", "✅ Tout le catalogue est présent sur Drive.");
         const bO = mk("button", "margin-top:8px;", "📂 Comparer avec un autre dossier Drive…"); bO.className = "btn";
         bO.onclick = async ()=>{
           const r = await driveChooseFolderInWindow({body}, driveMediaFolderLabel(), "Choisissez le dossier Drive à comparer au catalogue");
           if(r){ driveMissingOverride = r; ov.remove(); showDriveMissingFiles({keepFolder: true}); } else render();
         };
+        const bC = mk("button", "margin:8px 0 0 8px;", "📄 Comparer avec un autre catalogue…"); bC.className = "btn"; bC.onclick = pickCatalog;
         return; }
       const lab = mk("label", "display:flex; gap:6px; align-items:center; margin:0 0 8px; font-size:.9em;");
       lab.innerHTML = '<input type="checkbox" id="dmTrash" style="width:auto;"' + (withTrash ? " checked" : "") + '> Inclure les ' + nTrash + ' fichier(s) à la corbeille';
@@ -21589,7 +21644,10 @@ async function showDriveMissingFiles(opts){
           .finally(()=>{ if(bUp.isConnected) bUp.textContent = lab0; });
       };
       bar.style.flexWrap = "wrap";
-      bar.append(bUp, bOther, bCopy, bCsv, bAgain);
+      const bCat = document.createElement("button"); bCat.className = "btn"; bCat.style.flex = "1 1 100%"; bCat.textContent = "📄 Comparer avec un autre catalogue…";
+      bCat.title = "Choisir un autre catalogue (.csv) de Drive pour cette vérification. Lecture seule : rien n'est chargé ni modifié.";
+      bCat.onclick = pickCatalog;
+      bar.append(bUp, bCat, bOther, bCopy, bCsv, bAgain);
       mk("p", "margin:8px 0 0; font-size:.8em; opacity:.8;", "Les noms sont comparés sans tenir compte de la casse, des accents ni de .jpg/.jpeg. « Téléverser » vous demande le dossier local des originaux (sous-dossiers compris) puis envoie chaque fichier trouvé dans le dossier Drive du catalogue, sous le nom du catalogue. Rien n'est supprimé ni écrasé sur Drive. Vous pouvez aussi les déposer à la main puis « Revérifier ».");
     };
     render();
@@ -22886,7 +22944,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-g"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-h"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
