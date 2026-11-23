@@ -21496,7 +21496,7 @@ async function showDriveMissingFiles(){
               cmpTot.ib += file.size; cmpTot.ia += sendFile.size; note = " [" + fmtSize(file.size) + " → " + fmtSize(sendFile.size) + "]";
             } else if(isVideo && cmpM.vid){
               try{
-                const c = await compressVideoBlob(file, DRIVE_CMP_VID[cmpM.vid], r=>{ st.textContent = "Compression vidéo " + (i+1) + "/" + list.length + " : " + name + " (" + Math.round(r * 100) + " %)"; }, ()=> RO.stop);
+                const c = await compressVideoBlob(file, DRIVE_CMP_VID[cmpM.vid], (r, stg)=>{ st.textContent = "Compression vidéo " + (i+1) + "/" + list.length + " : " + name + (stg ? " — " + stg : " (" + Math.round(r * 100) + " %)"); }, ()=> RO.stop);
                 if(c){ sendFile = c; sendMime = "video/mp4"; cmpTot.vb += file.size; cmpTot.va += c.size; note = " [" + fmtSize(file.size) + " → " + fmtSize(c.size) + "]"; }
               }catch(e){ if(RO.stop) break; addLog("⚠ compression impossible pour " + name + " (" + ((e && e.message) || e) + ") : original envoyé"); }
             }
@@ -22120,7 +22120,9 @@ async function compressDataUrlForDrive(dataUrl){
   return out ? await fileToDataUrl(out) : dataUrl;
 }
 /* Vidéo MP4/M4V → MP4 réduit (File de même nom), ou null (= garder l'original). Lève une erreur si l'encodage échoue : l'appelant envoie l'original. */
+const withTimeoutMs = (p, ms, msg)=> new Promise((res, rej)=>{ const t = setTimeout(()=> rej(new Error(msg)), ms); Promise.resolve(p).then(x=>{ clearTimeout(t); res(x); }, e=>{ clearTimeout(t); rej(e); }); });
 async function compressVideoBlob(file, preset, onProgress, shouldStop){
+  const stage = t=>{ try{ if(onProgress) onProgress(0, t); }catch(e){} }; // étapes avant le 1er pourcentage : plus de « silence » à l'écran
   const mime = videoCompressMime();
   if(!mime) throw new Error("ce navigateur ne sait pas produire du MP4");
   if(!/\.(mp4|m4v)$/i.test(file.name || "")) return null; // .mov, .avi… : autre conteneur, envoyés tels quels
@@ -22133,7 +22135,8 @@ async function compressVideoBlob(file, preset, onProgress, shouldStop){
   document.addEventListener("visibilitychange", onVis); getWL();
   v.src = url; v.playsInline = true; v.preload = "auto";
   try{
-    await new Promise((res, rej)=>{ v.onloadedmetadata = res; v.onerror = ()=> rej(new Error("vidéo illisible par ce navigateur")); });
+    stage("lecture des informations de la vidéo…");
+    await withTimeoutMs(new Promise((res, rej)=>{ v.onloadedmetadata = res; v.onerror = ()=> rej(new Error("vidéo illisible par ce navigateur")); }), 25000, "vidéo non lisible : aucune information reçue en 25 s (codec non géré, ex. HEVC/H.265 sans extension Windows ?)");
     const vw = v.videoWidth, vh = v.videoHeight, dur = v.duration;
     if(!vw || !vh || !isFinite(dur) || dur <= 0) throw new Error("dimensions ou durée inconnues");
     const sc = Math.min(1, preset.h / Math.min(vw, vh)), w = Math.max(2, Math.round(vw * sc / 2) * 2), h = Math.max(2, Math.round(vh * sc / 2) * 2);
@@ -22141,9 +22144,10 @@ async function compressVideoBlob(file, preset, onProgress, shouldStop){
     const ctx = canvas.getContext("2d", {alpha: false});
     const stream = canvas.captureStream(30); stream.getTracks().forEach(t=> tracks.push(t));
     // Son : capté sans être rejoué dans les haut-parleurs. S'il ne peut pas l'être, on ABANDONNE (jamais de vidéo muette envoyée à la place de l'original).
+    stage("préparation du son…");
     try{
       ac = new (window.AudioContext || window.webkitAudioContext)();
-      await ac.resume(); if(ac.state !== "running") throw new Error("contexte audio bloqué");
+      await withTimeoutMs(ac.resume(), 5000, "contexte audio bloqué (pas d'interaction récente avec la page)"); if(ac.state !== "running") throw new Error("contexte audio bloqué");
       const node = ac.createMediaElementSource(v), dest = ac.createMediaStreamDestination(); node.connect(dest);
       dest.stream.getAudioTracks().forEach(t=>{ stream.addTrack(t); tracks.push(t); });
     }catch(e){ throw new Error("son non capturable (" + ((e && e.message) || e) + ")"); }
@@ -22154,7 +22158,8 @@ async function compressVideoBlob(file, preset, onProgress, shouldStop){
     v.onended = ()=>{ ended = true; }; v.onerror = ()=>{ failure = new Error("lecture interrompue"); };
     const pump = ()=>{ if(ended || failure) return; try{ ctx.drawImage(v, 0, 0, w, h); }catch(e){} if(v.requestVideoFrameCallback) v.requestVideoFrameCallback(pump); else requestAnimationFrame(pump); };
     mr.start(1000);
-    await v.play(); pump();
+    stage("démarrage de la lecture…");
+    await withTimeoutMs(v.play(), 15000, "démarrage de la lecture refusé ou bloqué"); pump();
     let lastT = -1, lastMove = performance.now();
     while(!ended){
       await w8(400);
@@ -22864,7 +22869,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-e"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-f"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
