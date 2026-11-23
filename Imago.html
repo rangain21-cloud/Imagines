@@ -21435,10 +21435,29 @@ async function showDriveMissingFiles(){
        chaque fichier absent de Drive y est cherché par nom, puis envoyé dans le dossier Drive du catalogue sous le nom
        EXACT du catalogue. Rien n'est supprimé ni écrasé sur Drive ; les fichiers introuvables localement sont listés. */
     const startUpload = async (list)=>{
-      if(typeof window.showDirectoryPicker !== "function"){ toast("Le choix d'un dossier n'est possible que sur Chrome ou Edge, sur ordinateur.", 7000); return; }
       let dir;
-      try{ dir = await window.showDirectoryPicker({id: "imago-originals", mode: "read"}); }
-      catch(e){ if(!(e && e.name === "AbortError")) toast("⚠️ Dossier inaccessible (" + ((e && e.message) || e) + ").", 7000); return; }
+      if(typeof window.showDirectoryPicker !== "function"){
+        /* Téléphone / tablette (Chrome Android, Safari…) : pas de sélecteur de DOSSIER. Repli : on choisit directement les fichiers
+           (sélecteur de documents du système, plusieurs à la fois) ; ils sont retrouvés par leur nom, comme dans un dossier. */
+        const files = await new Promise(res=>{
+          const inp = document.createElement("input"); inp.type = "file"; inp.multiple = true; inp.style.display = "none";
+          document.body.appendChild(inp); let fin = false;
+          const end = fs=>{ if(fin) return; fin = true; inp.remove(); res(fs); };
+          inp.onchange = ()=> end(Array.from(inp.files || []));
+          inp.addEventListener("cancel", ()=> end([]));
+          inp.click();
+        });
+        if(!files.length){ toast("Aucun fichier choisi : rien n'a été envoyé.", 5000); return; }
+        dir = {name: files.length + " fichier(s) choisi(s)", kind: "directory", entries: async function*(){ for(const f of files) yield [f.name, {kind: "file", name: f.name, getFile: async()=> f}]; }};
+      }else{
+        try{ dir = await window.showDirectoryPicker({id: "imago-originals", mode: "read"}); }
+        catch(e){
+          // Plus aucun échec silencieux : annulation, refus du navigateur (dossier système, page dans un cadre…) sont tous signalés.
+          if(e && e.name === "AbortError") toast("Aucun dossier choisi (sélecteur fermé, ou refusé par le navigateur). Rien n'a été envoyé.", 7000);
+          else toast("⚠️ Dossier inaccessible (" + ((e && e.name) || "") + " " + ((e && e.message) || e) + ").", 9000);
+          return;
+        }
+      }
       const folderId = driveMediaFolderId();
       body.innerHTML = "";
       const mk = (tag, css, txt)=>{ const e = document.createElement(tag); if(css) e.style.cssText = css; if(txt!=null) e.textContent = txt; body.appendChild(e); return e; };
@@ -21529,7 +21548,7 @@ async function showDriveMissingFiles(){
       lab.innerHTML = '<input type="checkbox" id="dmTrash" style="width:auto;"' + (withTrash ? " checked" : "") + '> Inclure les ' + nTrash + ' fichier(s) à la corbeille';
       lab.querySelector("input").onchange = render;
       if(!nTrash) lab.style.display = "none";
-      mk("p", "margin:0 0 6px; font-weight:600;", list.length + " fichier(s) à téléverser (" + list.filter(local).length + " disponible(s) sur cet appareil) :");
+      mk("p", "margin:0 0 6px; font-weight:600;", list.length + " fichier(s) à téléverser (" + list.filter(local).length + " déjà chargé(s) dans l'appli ; l'envoi demande de désigner les originaux) :");
       const ta = mk("textarea", "width:100%; height:200px; resize:vertical; font-size:12px; font-family:var(--font-mono); background:var(--bg-panel-2); color:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:6px;");
       ta.readOnly = true; ta.value = lines.join("\n");
       driveCmpControls(body, driveCmpPrefs(), {images: true, videos: true});
@@ -21545,7 +21564,13 @@ async function showDriveMissingFiles(){
       bAgain.onclick = ()=>{ ov.remove(); showDriveMissingFiles(); };
       const bUp = document.createElement("button"); bUp.className = "btn copper"; bUp.style.cssText = "flex:1 1 100%; order:-1;"; bUp.textContent = "⬆ Téléverser ces " + list.length + " fichier(s) sur Drive…";
       bUp.title = "Vous désignez le dossier local contenant les originaux (sous-dossiers compris) ; les fichiers sont envoyés dans le dossier Drive du catalogue. Rien n'est supprimé ni écrasé.";
-      bUp.disabled = !list.length; bUp.onclick = ()=> startUpload(list);
+      bUp.disabled = !list.length;
+      bUp.onclick = ()=>{
+        const lab0 = bUp.textContent; bUp.textContent = "⏳ Ouverture du sélecteur de dossier…";
+        toast("Clic reçu : choisissez le dossier qui contient vos originaux.", 4000);
+        startUpload(list).catch(e=>{ console.error("[Imago] téléversement :", e); toast("⚠️ Téléversement impossible : " + ((e && e.name) || "") + " " + ((e && e.message) || e), 10000); })
+          .finally(()=>{ if(bUp.isConnected) bUp.textContent = lab0; });
+      };
       bar.style.flexWrap = "wrap";
       bar.append(bUp, bCopy, bCsv, bAgain);
       mk("p", "margin:8px 0 0; font-size:.8em; opacity:.8;", "Les noms sont comparés sans tenir compte de la casse, des accents ni de .jpg/.jpeg. « Téléverser » vous demande le dossier local des originaux (sous-dossiers compris) puis envoie chaque fichier trouvé dans le dossier Drive du catalogue, sous le nom du catalogue. Rien n'est supprimé ni écrasé sur Drive. Vous pouvez aussi les déposer à la main puis « Revérifier ».");
@@ -22839,7 +22864,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-e"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
