@@ -21405,6 +21405,7 @@ function csvCatalogRows(text){
 }
 /* Catalogue choisi seulement pour la fenêtre « Fichiers manquants » : lu en LECTURE SEULE, jamais fusionné dans l'appli ni modifié sur Drive. */
 let missingCatalogOverride = null;
+let missingIncludeElsewhere = true; // inclure dans la liste les fichiers absents du DOSSIER mais trouvés ailleurs sur Drive
 async function chooseCatalogInWindow(win){
   const body = win.body;
   body.textContent = "Recherche des catalogues (.csv) dans IMAGINES et ses sous-dossiers…";
@@ -21470,16 +21471,17 @@ async function showDriveMissingFiles(opts){
     srcRows.forEach(r=>{ const k = catalogLooseKey(r.fileName); if(!seen.has(k)){ seen.add(k); rows.push(r); } });
     let cand = rows.filter(r=> !driveIndexFind(idx, r.fileName));
     // dernier recours, comme à l'ouverture d'une photo : le fichier est-il ailleurs sur le Drive ?
-    let done = 0, q = cand.slice(), keep = [];
+    let done = 0, q = cand.slice(), keep = [], elsewhere = [];
     await Promise.all(Array.from({length: 6}, async ()=>{
       while(q.length){
         const r = q.shift();
         body.textContent = "Vérification de " + cand.length + " fichier(s) absent(s) du dossier… (" + (++done) + "/" + cand.length + ")";
-        if(!(await driveFindByName(r.fileName))) keep.push(r);
+        if(await driveFindByName(r.fileName)) elsewhere.push(r); else keep.push(r);
       }
     }));
     const order = new Map(rows.map((r,i)=>[catalogLooseKey(r.fileName), i]));
-    keep.sort((x,y)=> order.get(catalogLooseKey(x.fileName)) - order.get(catalogLooseKey(y.fileName)));
+    const byOrder = (x,y)=> order.get(catalogLooseKey(x.fileName)) - order.get(catalogLooseKey(y.fileName));
+    keep.sort(byOrder); elsewhere.sort(byOrder);
     const local = r=>{ const p = State.photos.find(x=> x.fileName === r.fileName); return !!(p && (p.hasFullImage || p.dataUrl || p.thumbDataUrl || p.posterDataUrl)); };
     /* Téléversement : l'utilisateur désigne le dossier local qui contient les originaux (sous-dossiers compris) ;
        chaque fichier absent de Drive y est cherché par nom, puis envoyé dans le dossier Drive du catalogue sous le nom
@@ -21593,16 +21595,22 @@ async function showDriveMissingFiles(opts){
     };
     const render = ()=>{
       const withTrash = body.querySelector("#dmTrash") ? body.querySelector("#dmTrash").checked : false;
-      const list = keep.filter(r=> withTrash || !r.corbeille);
-      const nTrash = keep.filter(r=> r.corbeille).length;
+      const pool = missingIncludeElsewhere ? keep.concat(elsewhere).sort(byOrder) : keep;
+      const list = pool.filter(r=> withTrash || !r.corbeille);
+      const nTrash = pool.filter(r=> r.corbeille).length;
       const lines = list.map(r=> (r.sousDossier ? r.sousDossier.replace(/[\\/]+$/,"") + "/" : "") + r.fileName);
       body.innerHTML = "";
       const mk = (tag, css, txt)=>{ const e = document.createElement(tag); if(css) e.style.cssText = css; if(txt!=null) e.textContent = txt; body.appendChild(e); return e; };
       mk("p", "margin:0 0 8px; font-size:.9em;",
-        (cat ? "Catalogue « " + cat.name + " »" : "Catalogue en cours") + " : " + rows.length + " fichier(s) référencé(s), " + (rows.length - keep.length) + " présent(s) sur Drive (« " + driveMediaFolderLabel() + " », sous-dossiers compris, " + idx.listed + " fichier(s) image/vidéo lus), "
-        + keep.length + " absent(s).");
+        (cat ? "Catalogue « " + cat.name + " »" : "Catalogue en cours") + " : " + rows.length + " fichier(s) référencé(s) : " + (rows.length - keep.length - elsewhere.length) + " dans le dossier Drive (« " + driveMediaFolderLabel() + " », sous-dossiers compris, " + idx.listed + " fichier(s) image/vidéo lus), "
+        + elsewhere.length + " absent(s) du dossier mais trouvé(s) ailleurs sur Drive, " + keep.length + " absent(s) de tout Drive.");
+      if(elsewhere.length){
+        const lE = mk("label", "display:flex; gap:6px; align-items:center; margin:0 0 8px; font-size:.9em;");
+        lE.innerHTML = '<input type="checkbox" style="width:auto;"' + (missingIncludeElsewhere ? " checked" : "") + '> Inclure les ' + elsewhere.length + ' fichier(s) absents du dossier mais présents ailleurs sur Drive (pour les copier dans ce dossier)';
+        lE.querySelector("input").onchange = ev=>{ missingIncludeElsewhere = ev.target.checked; render(); };
+      }
       if(driveMissingOverride || missingCatalogOverride) mk("p", "margin:0 0 8px; font-size:.85em; color:var(--copper);", "📌 Choisi pour cette vérification seulement" + (missingCatalogOverride ? " — catalogue « " + missingCatalogOverride.name + " »" : "") + (driveMissingOverride ? " — dossier Drive « " + driveMissingOverride.label + " »" : "") + ". Le catalogue chargé dans l'appli et son dossier ne sont pas modifiés ; fermez la fenêtre (×) pour y revenir.");
-      if(!keep.length){ mk("p", "font-weight:600;", "✅ Tout le catalogue est présent sur Drive.");
+      if(!pool.length){ mk("p", "font-weight:600;", "✅ Rien à téléverser : tout le catalogue est présent sur Drive.");
         const bO = mk("button", "margin-top:8px;", "📂 Comparer avec un autre dossier Drive…"); bO.className = "btn";
         bO.onclick = async ()=>{
           const r = await driveChooseFolderInWindow({body}, driveMediaFolderLabel(), "Choisissez le dossier Drive à comparer au catalogue");
@@ -22944,7 +22952,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-h"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-23-i"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
