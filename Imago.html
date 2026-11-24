@@ -7705,7 +7705,111 @@ document.addEventListener("click", async (e)=>{
   ["btnPickFolder","btnPickFiles"].forEach(id=> document.getElementById(id).classList.remove("done"));
   b.click(); // relance le clic d'origine, désormais sans photos chargées donc sans nouvelle confirmation
 }, true);
-["btnImpLocal","btnImpUsb"].forEach(id=> document.getElementById(id).addEventListener("click", ()=> folderInput.click()));
+/* Import SÉLECTIF depuis un dossier de l'ordinateur / disque / clé USB : on lit le dossier (sans rien importer), on affiche la liste
+   (plus récents d'abord, ceux déjà dans la galerie masqués) et on n'importe que les fichiers cochés. Ajout pur : la galerie en cours est conservée. */
+let selectiveImportPending = false;
+const SELECTIVE_MEDIA_RE = /\.(jpe?g|png|gif|webp|bmp|heic|avif|mp4|mov|avi|mpe?g)$/i;
+async function selectiveWalkDir(dh, prefix, out, depth, statusEl){
+  for await (const [name, h] of dh.entries()){
+    if(h.kind === "directory"){ if(depth < 8) await selectiveWalkDir(h, prefix + name + "/", out, depth + 1, statusEl); }
+    else if(SELECTIVE_MEDIA_RE.test(name)){
+      try{
+        const f = await h.getFile();
+        Object.defineProperty(f, "webkitRelativePath", {value: prefix + name, configurable: true}); // comme pour un import par dossier : le sous-dossier d'origine est conservé
+        out.push(f);
+        if(statusEl && out.length % 50 === 0) statusEl.textContent = "Lecture du dossier… " + out.length + " fichier(s)";
+      }catch(e){}
+    }
+  }
+}
+async function importLocalFolderSelective(){
+  if(typeof window.showDirectoryPicker !== "function"){ // Firefox / Safari : sélecteur de dossier classique, puis même liste de choix
+    selectiveImportPending = true; folderInput.click(); return;
+  }
+  let dir;
+  try{ dir = await window.showDirectoryPicker({id: "imago-import-select", mode: "read"}); }
+  catch(e){ if(!(e && e.name === "AbortError")) toast("⚠️ Dossier inaccessible (" + ((e && e.name) || "") + " " + ((e && e.message) || e) + ").", 9000); return; }
+  const wait = document.createElement("div"); wait.className = "modal-overlay show";
+  wait.innerHTML = '<div class="modal"><div class="modal-head"><h2>Lecture du dossier…</h2></div><div class="modal-body">Lecture du dossier…</div></div>';
+  document.body.appendChild(wait);
+  const files = [];
+  try{ await selectiveWalkDir(dir, dir.name + "/", files, 0, wait.querySelector(".modal-body")); }
+  catch(e){ wait.remove(); toast("⚠️ Lecture du dossier impossible : " + ((e && e.message) || e), 9000); return; }
+  wait.remove();
+  openSelectiveImportModal(files, dir.name);
+}
+function openSelectiveImportModal(files, dirName){
+  files = files.filter(f=> SELECTIVE_MEDIA_RE.test(f.name));
+  if(!files.length){ toast("Aucune photo ni vidéo dans ce dossier."); return; }
+  const known = new Set(State.photos.map(p=> p.fileName));
+  const urls = [];
+  const ov = document.createElement("div"); ov.className = "modal-overlay show";
+  ov.innerHTML = '<div class="modal" style="max-width:760px;"><div class="modal-head"><h2>Choisir les fichiers à importer</h2><button class="modal-close">×</button></div><div class="modal-body"></div></div>';
+  document.body.appendChild(ov);
+  const body = ov.querySelector(".modal-body");
+  const close = ()=>{ urls.forEach(u=>{ try{ URL.revokeObjectURL(u); }catch(e){} }); ov.remove(); };
+  ov.querySelector(".modal-close").onclick = close;
+  const el = (tag, css, txt)=>{ const e = document.createElement(tag); if(css) e.style.cssText = css; if(txt != null) e.textContent = txt; return e; };
+  body.appendChild(el("p", "margin:0 0 8px;", "« " + dirName + " » : " + files.length + " fichier(s) trouvé(s), dont " + files.filter(f=> known.has(f.name)).length + " déjà dans la galerie. Cochez ceux à AJOUTER : la galerie en cours est conservée."));
+  const bar = el("div", "display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;");
+  const q = el("input", "flex:1 1 140px; min-width:120px;"); q.type = "search"; q.placeholder = "Filtrer par nom…";
+  const sortSel = el("select"); sortSel.innerHTML = '<option value="new">Plus récents d\'abord</option><option value="old">Plus anciens d\'abord</option><option value="name">Nom</option>';
+  bar.append(q, sortSel); body.appendChild(bar);
+  const bar2 = el("div", "display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:8px; font-size:.9em;");
+  const lHide = el("label", "display:flex; gap:5px; align-items:center;"); const cHide = el("input"); cHide.type = "checkbox"; cHide.checked = true; lHide.append(cHide, document.createTextNode("Masquer ceux déjà dans la galerie"));
+  const nRecent = el("input", "width:60px;"); nRecent.type = "number"; nRecent.min = "1"; nRecent.value = "6";
+  const bRecent = el("button", "", "Cocher les plus récents"); bRecent.className = "btn";
+  const bNone = el("button", "", "Tout décocher"); bNone.className = "btn";
+  bar2.append(lHide, nRecent, bRecent, bNone); body.appendChild(bar2);
+  const listEl = el("div", "max-height:48vh; overflow-y:auto; border:1px solid var(--line); border-radius:6px;"); body.appendChild(listEl);
+  const foot = el("div", "display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px;");
+  const cnt = el("span", "flex:1 1 100%; font-weight:600;");
+  const bGo = el("button", "flex:1 1 60%;", ""); bGo.className = "btn copper";
+  const bAll = el("button", "flex:1 1 30%;", "Tout le dossier (" + files.length + ")"); bAll.className = "btn";
+  const bCancel = el("button", "flex:1 1 100%;", "Annuler"); bCancel.className = "btn reset";
+  foot.append(cnt, bGo, bAll, bCancel); body.appendChild(foot);
+  const chosen = new Set(); // clé = chemin relatif
+  const key = f=> f.webkitRelativePath || f.name;
+  const fmtSize = n=> n >= 1048576 ? (n / 1048576).toFixed(1).replace(".", ",") + " Mo" : Math.max(1, Math.round(n / 1024)) + " Ko";
+  const upd = ()=>{ cnt.textContent = chosen.size + " fichier(s) sélectionné(s)"; bGo.textContent = "⬆ Importer la sélection (" + chosen.size + ")"; bGo.disabled = !chosen.size; };
+  let shown = [];
+  const render = ()=>{
+    const term = q.value.trim().toLowerCase();
+    shown = files.filter(f=> (!cHide.checked || !known.has(f.name)) && (!term || f.name.toLowerCase().includes(term)));
+    if(sortSel.value === "new") shown.sort((a, b)=> b.lastModified - a.lastModified);
+    else if(sortSel.value === "old") shown.sort((a, b)=> a.lastModified - b.lastModified);
+    else shown.sort((a, b)=> a.name.localeCompare(b.name, "fr", {numeric: true}));
+    listEl.innerHTML = "";
+    if(!shown.length){ listEl.appendChild(el("p", "padding:10px; margin:0;", "Rien à afficher avec ces critères.")); return; }
+    shown.forEach(f=>{
+      const row = el("label", "display:flex; gap:10px; align-items:center; padding:5px 8px; border-bottom:1px solid var(--line); cursor:pointer; content-visibility:auto; contain-intrinsic-size:56px;");
+      const cb = el("input", "flex:none; width:auto;"); cb.type = "checkbox"; cb.checked = chosen.has(key(f));
+      cb.onchange = ()=>{ if(cb.checked) chosen.add(key(f)); else chosen.delete(key(f)); upd(); };
+      const th = el("div", "flex:none; width:52px; height:52px; background:rgba(255,255,255,.05); border-radius:4px; display:flex; align-items:center; justify-content:center; overflow:hidden;");
+      if(/\.(jpe?g|png|gif|webp|bmp|avif)$/i.test(f.name)){
+        const im = document.createElement("img"); im.loading = "lazy"; im.decoding = "async"; im.style.cssText = "width:100%; height:100%; object-fit:cover;";
+        const u = URL.createObjectURL(f); urls.push(u); im.src = u; im.onerror = ()=>{ im.remove(); th.textContent = "🖼"; }; th.appendChild(im);
+      }else th.textContent = /\.(mp4|mov|avi|mpe?g)$/i.test(f.name) ? "🎞" : "🖼";
+      const info = el("div", "min-width:0; flex:1;");
+      info.appendChild(el("div", "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", f.name + (known.has(f.name) ? "  ✔ déjà dans la galerie" : "")));
+      info.appendChild(el("div", "font-size:.8em; opacity:.7;", new Date(f.lastModified).toLocaleString("fr-FR") + " · " + fmtSize(f.size)));
+      row.append(cb, th, info); listEl.appendChild(row);
+    });
+  };
+  q.oninput = render; sortSel.onchange = render; cHide.onchange = render;
+  bRecent.onclick = ()=>{
+    const n = Math.max(1, parseInt(nRecent.value, 10) || 6);
+    chosen.clear(); [...shown].sort((a, b)=> b.lastModified - a.lastModified).slice(0, n).forEach(f=> chosen.add(key(f)));
+    render(); upd();
+  };
+  bNone.onclick = ()=>{ chosen.clear(); render(); upd(); };
+  bCancel.onclick = close;
+  const go = list=>{ close(); handleFilesSelected(list, dirName, true, "btnPickFiles"); }; // « btnPickFiles » = ajout pur à la galerie en cours, sans question ni effacement
+  bGo.onclick = ()=> go(files.filter(f=> chosen.has(key(f))));
+  bAll.onclick = ()=>{ if(files.length < 200 || confirm("Importer les " + files.length + " fichiers du dossier ?")) go(files); };
+  render(); upd();
+}
+["btnImpLocal","btnImpUsb"].forEach(id=> document.getElementById(id).addEventListener("click", ()=> importLocalFolderSelective()));
 document.getElementById("btnImpDrive").addEventListener("click", async ()=>{
   if(!State.drive.token){ toast("Connectez-vous d'abord à Drive (pavé Connexion)."); document.getElementById("pvConnexion").open = true; return; }
   const ov = document.createElement("div"); ov.className = "modal-overlay show";
@@ -7832,7 +7936,7 @@ folderInput.multiple = true;
 folderInput.className = "hidden";
 document.body.appendChild(folderInput);
 
-document.getElementById("btnPickFolder").addEventListener("click", ()=> folderInput.click());
+document.getElementById("btnPickFolder").addEventListener("click", ()=>{ selectiveImportPending = false; folderInput.click(); });
 
 /* Sélection du catalogue parmi les fichiers .csv déjà présents dans le
    dossier qui vient d'être choisi — "d'une pierre deux coups" comme suggéré
@@ -11541,7 +11645,15 @@ async function handleFilesSelected(fileList, folderNameOverride, skipCatalogProm
   toast(`⚠️ ${msg}`, 16000);
  }
 }
-folderInput.addEventListener("change", ()=> handleFilesSelected(folderInput.files, undefined, undefined, "btnPickFolder"));
+folderInput.addEventListener("change", ()=>{
+  if(selectiveImportPending){ // pavé « Importer » sur un navigateur sans sélecteur de dossier moderne : même liste de choix
+    selectiveImportPending = false;
+    const fs = [...folderInput.files]; folderInput.value = "";
+    if(fs.length) openSelectiveImportModal(fs, fs[0].webkitRelativePath ? fs[0].webkitRelativePath.split("/")[0] : "dossier");
+    return;
+  }
+  handleFilesSelected(folderInput.files, undefined, undefined, "btnPickFolder");
+});
 
 /* Solution de repli pour Android : certains dossiers (notamment les médias
    WhatsApp, sous stockage cloisonné "scoped storage") renvoient une erreur
@@ -22952,7 +23064,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-23-i"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-24-a"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
