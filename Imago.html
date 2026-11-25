@@ -22791,10 +22791,11 @@ async function saveEverythingToDrive(){
     { // la fenêtre s'affiche toujours : elle permet aussi de choisir le dossier Drive
       sendMode = await new Promise(resolve=>{
         const mo = n => n < 1048576 ? "moins de 1 Mo" : "≈ " + Math.round(n / 1048576) + " Mo";
+        let upd = ()=>{}; // met à jour le résumé « À envoyer » et le bouton quand on coche / décoche
         const para = text=>{ const t = document.createElement("p"); t.style.cssText = "margin:0 0 12px; line-height:1.5;"; t.textContent = text; return t; };
         const row = (key, text)=>{
           const lab = document.createElement("label"); lab.style.cssText = "display:flex; gap:8px; align-items:flex-start; margin:0 0 12px; line-height:1.4;";
-          const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = sel[key]; cb.onchange = ()=>{ sel[key] = cb.checked; };
+          const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = sel[key]; cb.onchange = ()=>{ sel[key] = cb.checked; upd(); };
           const sp = document.createElement("span"); sp.textContent = text;
           lab.appendChild(cb); lab.appendChild(sp); return lab;
         };
@@ -22840,11 +22841,13 @@ async function saveEverythingToDrive(){
             }
             const pick = document.createElement("input"); pick.type = "file"; pick.multiple = true; pick.accept = "video/*,.mp4,.m4v,.mov,.avi,.mpg,.mpeg";
             pick.onchange = ()=>{
+              const unmatched = []; let matched = 0;
               for(const f of pick.files){
                 const q = plan.vidNoSource.find(p=> catalogLooseKey(p.fileName) === catalogLooseKey(f.name));
-                if(q) pendingVideoFiles.set(q.id, f);
+                if(q){ pendingVideoFiles.set(q.id, f); matched++; } else unmatched.push(f.name);
               }
               plan = buildPlan(); render();
+              toast(matched + " fichier(s) reconnu(s) sur " + pick.files.length + (unmatched.length ? ". Non reconnu(s) (nom différent du catalogue) : " + unmatched.slice(0, 3).join(", ") + (unmatched.length > 3 ? "…" : "") : "."), 9000);
             };
             pick.style.display = "none"; win.body.appendChild(pick); // rattaché à la fenêtre (certains navigateurs mobiles l'exigent)
             const bPick = driveSaveButton("Choisir les fichiers vidéo…"); bPick.onclick = ()=> pick.click();
@@ -22853,6 +22856,18 @@ async function saveEverythingToDrive(){
           driveCmpControls(win.body, cmp, {images: !!(plan.imgCreate.length || plan.imgUpdate.length), videos: !!plan.vidCreate.length});
           const bAll = driveSaveButton("Envoyer la sélection + catalogue", true), bCsv = driveSaveButton("Catalogue seulement"), bNo = driveSaveButton("Annuler");
           bAll.onclick = ()=> resolve("all"); bCsv.onclick = ()=> resolve("csv"); bNo.onclick = ()=> resolve(null);
+          // Résumé explicite de ce qui partira vraiment : plus de « j'ai demandé mais rien n'est parti » sans explication.
+          const sum = para(""); sum.style.fontWeight = "600";
+          upd = ()=>{
+            const nImg = sel.img ? plan.imgCreate.length + plan.imgUpdate.length : 0, nNew = sel.vidNew ? plan.vidCreate.length : 0, nFix = sel.vidFix ? plan.vidFix.length : 0, n = nImg + nNew + nFix;
+            const hints = [];
+            if(plan.vidFix.length && !sel.vidFix) hints.push("les " + plan.vidFix.length + " vidéo(s) « à corriger » ne sont PAS cochées");
+            if(plan.vidNoSource.length) hints.push(plan.vidNoSource.length + " vidéo(s) ne peuvent partir qu'après « Choisir les fichiers vidéo… »");
+            sum.textContent = n ? "À envoyer : " + n + " fichier(s) (" + [nImg && nImg + " image(s)", nNew && nNew + " vidéo(s) nouvelle(s)", nFix && nFix + " vidéo(s) à corriger"].filter(Boolean).join(", ") + ")." + (hints.length ? " Attention : " + hints.join(" ; ") + "." : "")
+              : "Rien n'est sélectionné : le bouton ne fera que sauvegarder le catalogue." + (hints.length ? " (" + hints.join(" ; ") + ".)" : "");
+            bAll.textContent = n ? "Envoyer la sélection (" + n + ") + catalogue" : "Envoyer la sélection + catalogue (rien de coché)";
+          };
+          win.body.appendChild(sum); upd();
           [bAll, bCsv, bNo].forEach(b=> win.body.appendChild(b));
         };
         render();
@@ -22864,9 +22879,9 @@ async function saveEverythingToDrive(){
     }
     if(!(await driveResolveCatalogTarget(folderId))){ win.close(); return null; } // annule et remplace : confirmation AVANT tout envoi
     // 3) Envoi (séquentiel ; un échec n'arrête pas les autres ; Arrêter = on passe au catalogue après le fichier en cours)
-    const done = {imgNew:0, imgUpd:0, vidNew:0, vidFix:0};
+    const done = {imgNew:0, imgUpd:0, vidNew:0, vidFix:0}; let workCount = 0;
     let stopped = false, sessionLost = false;
-    const failed = [], metaSkipped = [], cmpNotes = [];
+    const failed = [], metaSkipped = [], cmpNotes = [], vidFixNoop = [];
     if(sendMode === "all"){
       driveCmpStats = {nImg: 0, imgBefore: 0, imgAfter: 0, nVid: 0, vidBefore: 0, vidAfter: 0};
       driveCompressActive = (cmp.img || cmp.vid) ? {img: cmp.img, vid: cmp.vid} : null; // appliquée aux envois de CETTE fenêtre seulement
@@ -22874,6 +22889,7 @@ async function saveEverythingToDrive(){
       if(sel.img){ plan.imgCreate.forEach(p=> work.push({k:"imgNew", p})); plan.imgUpdate.forEach(p=> work.push({k:"imgUpd", p})); }
       if(sel.vidNew) plan.vidCreate.forEach(x=> work.push({k:"vidNew", p:x.p}));
       if(sel.vidFix) plan.vidFix.forEach(x=> work.push({k:"vidFix", p:x.p, hit:x.hit}));
+      workCount = work.length;
       let startIdx = 0, resumeIdx = 0; // reprise : après « Arrêter », on peut continuer au fichier suivant sans quitter la fenêtre
       for(;;){
       stopped = false;
@@ -22930,7 +22946,7 @@ async function saveEverythingToDrive(){
               await driveResumableUpload(new File([b], p.fileName, {type: b.type}), {existingId: hit.id, mimeType: videoMimeFor(p.fileName, file.type)}, progress);
               p.driveFileId = hit.id; p.videoMetaSig = videoMetaSig(p);
               done.vidFix++;
-            }
+            } else vidFixNoop.push(p.fileName); // rien à écrire : le fichier Drive est déjà conforme, aucun renvoi
           }
           p.driveDirty = false;
           try{ await idbPut("photos", p); }catch(e){ console.warn("Référence Drive non mémorisée pour " + p.fileName, e); }
@@ -22967,6 +22983,8 @@ async function saveEverythingToDrive(){
       if(done.vidNew) bits.push(`${done.vidNew} vidéo(s)`);
       parts.push(bits.length ? `${bits.join(" et ")} envoyée(s)` : "aucun nouveau fichier envoyé");
       if(done.imgUpd || done.vidFix) parts.push(`${done.imgUpd} image(s) et ${done.vidFix} vidéo(s) mises à jour`);
+      if(vidFixNoop.length) parts.push(`${vidFixNoop.length} vidéo(s) déjà conformes (rien à renvoyer)`);
+      if(!workCount) parts.push("rien n'était coché : seul le catalogue a été sauvegardé");
     }
     if(driveCmpStats.nImg) parts.push("images compressées : " + fmtCmpSaving(driveCmpStats.imgBefore, driveCmpStats.imgAfter));
     if(driveCmpStats.nVid) parts.push("vidéos compressées : " + fmtCmpSaving(driveCmpStats.vidBefore, driveCmpStats.vidAfter));
@@ -23254,7 +23272,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-25-e"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-25-f"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
