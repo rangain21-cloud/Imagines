@@ -15570,9 +15570,12 @@ async function vdirFileAt(root, parts, name){
   return d.getFileHandle(name);
 }
 // Recherche en largeur par nom dans l'arborescence (plafonnée pour ne pas parcourir un disque entier).
-async function vdirSearch(root, name, wantSize){
+async function vdirSearch(root, name, wantSize, opts){
   const queue = [root]; let seen = 0, fallback = null;
+  const tStart = performance.now(); let tTick = tStart; const maxMs = (opts && opts.maxMs) || 0;
   while(queue.length && seen < 60000){
+    if(maxMs && performance.now() - tStart > maxMs){ if(opts.onTimeout) opts.onTimeout(seen); break; } // dossier trop lent à parcourir (ex. dossier Drive monté par Android) : on abandonne avec un message
+    if(opts && opts.onTick && performance.now() - tTick > 4000){ tTick = performance.now(); opts.onTick(seen); }
     const d = queue.shift();
     try{
       const f = await (await d.getFileHandle(name)).getFile();
@@ -15585,7 +15588,7 @@ async function vdirSearch(root, name, wantSize){
 }
 // Retrouve le fichier de la vidéo p dans le dossier mémorisé h : d'abord par son sous-dossier d'origine (dossier choisi = racine, ou
 // = parent de la racine, ou = dossier direct), puis par recherche de son nom.
-async function vdirFind(h, p){
+async function vdirFind(h, p, opts){
   const parts = String(p.sousDossier || "").split("/").filter(Boolean), name = p.fileName, want = p.videoSizeBytes || 0;
   for(const t of [parts.slice(1), parts, []]){
     try{
@@ -15593,7 +15596,7 @@ async function vdirFind(h, p){
       if(!want || f.size === want) return f;
     }catch(_){}
   }
-  return vdirSearch(h, name, want);
+  return vdirSearch(h, name, want, opts);
 }
 async function findVideoInSavedFolders(p){
   for(const h of await vdirLoadAll()){
@@ -15613,7 +15616,10 @@ async function pickVideoFolderAndPlay(p){
     toast("Dossier illisible : " + ((e && e.message) || e), 6000); return "cancel";
   }
   try{ await vdirSave(dir); }catch(e){ console.warn("Dossier des vidéos non mémorisé", e); }
-  const f = await vdirFind(dir, p);
+  toast(`Recherche de « ${p.fileName} » dans « ${dir.name} »…`, 4000);
+  const f = await vdirFind(dir, p, {maxMs: 25000,
+    onTick: n=> toast(`Recherche de « ${p.fileName} » dans « ${dir.name} » : ${n} éléments parcourus…`, 4000),
+    onTimeout: n=>{ toast(`Recherche abandonnée après 25 s (${n} éléments) : « ${dir.name} » est trop lent à parcourir (dossier Drive monté sur le téléphone ?). Utilisez plutôt « Connecter à Drive » : la vidéo sera téléchargée directement.`, 12000); try{ window.imagoLagNote && window.imagoLagNote("Vidéo : recherche dans le dossier choisi abandonnée", "« " + p.fileName + " » dans « " + dir.name + " »", n + " éléments parcourus en 25 s"); }catch(e){} }});
   if(!f){
     toast(`« ${p.fileName} » est introuvable dans « ${dir.name} ». Choisissez le dossier qui contient cette vidéo (ou son dossier parent) avec « 📁 Choisir le dossier des vidéos… ».`, 9000);
     return "notfound";
@@ -15629,27 +15635,44 @@ async function loadPendingVideoFile(p){
     openOrPlayVideoFile(p, cachedFile);
     return;
   }
-  // 1) Disque local d'abord : dossier déjà mémorisé → la vidéo est retrouvée toute seule, sans Drive ni sélecteur.
-  const localFolderMode = videoDirSupported() && !isUnplayableVideoName(p.fileName);
-  if(localFolderMode){
-    let f = null;
-    try{ f = await findVideoInSavedFolders(p); }catch(e){ console.warn("Recherche dans les dossiers mémorisés impossible", e); }
-    if(f){ pendingVideoFiles.set(p.id, f); openOrPlayVideoFile(p, f); return; }
-  }
-  // 2) Drive : uniquement en secours, et seulement si l'utilisateur y est DÉJÀ connecté (jamais de connexion imposée).
-  if(await loadVideoFromDrive(p)) return;
-  // 3) Pas retrouvée : première fois pour cette vidéo → on propose de choisir son dossier (mémorisé ensuite).
-  if(localFolderMode && !videoDirPromptedIds.has(p.id)){
-    const r = await pickVideoFolderAndPlay(p);
-    if(r !== "retry") videoDirPromptedIds.add(p.id);
-    return; // 2e clic (dossier annulé ou sans cette vidéo) : on retombe sur la resélection du fichier ci-dessous
-  }
-  // Session précédente terminée (page rechargée) : le File d'origine n'est
-  // plus disponible en mémoire — on demande à l'utilisateur de le
-  // resélectionner uniquement lui (pas tout le dossier).
-  singleVideoPickerTargetId = p.id;
-  toast(`Resélectionnez le fichier "${p.fileName}" pour le lire (son contenu n'a pas été gardé d'une session à l'autre pour économiser la mémoire).`, 6000);
-  singleVideoPickerInput.click();
+  /* Rien ne doit plus se passer « en silence » : chaque décision est notée, affichée sur le bouton et, si la vidéo n'est finalement pas lancée,
+     résumée dans un message et dans le « Journal des ralentissements ». */
+  const trace = [], t0 = performance.now(), btn = document.getElementById("btnLoadPendingVideo"), btnHtml = btn ? btn.innerHTML : "";
+  const busy = t=>{ if(btn && State.selectedId === p.id) btn.textContent = "⏳ " + t; };
+  const note = kind=>{ try{ if(window.imagoLagNote) window.imagoLagNote(kind, "« " + p.fileName + " » · " + (fmtSize(p.videoSizeBytes) || "taille ?"), trace.join(" · ") + " · " + ((performance.now() - t0) / 1000).toFixed(1).replace(".", ",") + " s"); }catch(e){} };
+  try{
+    // 1) Disque local d'abord : dossier déjà mémorisé → la vidéo est retrouvée toute seule, sans Drive ni sélecteur.
+    const localFolderMode = videoDirSupported() && !isUnplayableVideoName(p.fileName);
+    trace.push("dossier local : " + (localFolderMode ? "pris en charge" : "non pris en charge"));
+    if(localFolderMode){
+      let f = null;
+      try{ busy("Recherche dans les dossiers mémorisés…"); const n = (await vdirLoadAll()).length; trace.push(n + " dossier(s) mémorisé(s)"); if(n) f = await findVideoInSavedFolders(p); }
+      catch(e){ console.warn("Recherche dans les dossiers mémorisés impossible", e); trace.push("recherche locale en erreur : " + ((e && e.message) || e)); }
+      if(f){ pendingVideoFiles.set(p.id, f); openOrPlayVideoFile(p, f); return; }
+    }
+    // 2) Drive : uniquement en secours, et seulement si l'utilisateur y est DÉJÀ connecté (jamais de connexion imposée).
+    const folderDefined = !!driveMediaFolderId(), connected = !!(State.drive && State.drive.token);
+    trace.push("Drive : " + (!folderDefined ? "aucun dossier défini" : connected ? "connecté" : "NON CONNECTÉ"));
+    if(folderDefined && !connected) toast("Vous n'êtes pas (ou plus) connecté à Drive : menu ☰ › « Connecter à Drive », puis rouvrez la vidéo. La connexion expire après environ 1 h.", 10000);
+    if(await loadVideoFromDrive(p)){ trace.push("Drive : traité"); return; }
+    if(folderDefined && connected) trace.push("Drive : fichier absent du dossier");
+    // 3) Pas retrouvée : première fois pour cette vidéo → on propose de choisir son dossier (mémorisé ensuite).
+    if(localFolderMode && !videoDirPromptedIds.has(p.id)){
+      trace.push("choix du dossier proposé");
+      note("Vidéo : lecture non lancée (choix du dossier proposé)");
+      const r = await pickVideoFolderAndPlay(p);
+      if(r !== "retry") videoDirPromptedIds.add(p.id);
+      return; // 2e clic (dossier annulé ou sans cette vidéo) : on retombe sur la resélection du fichier ci-dessous
+    }
+    // Session précédente terminée (page rechargée) : le File d'origine n'est
+    // plus disponible en mémoire — on demande à l'utilisateur de le
+    // resélectionner uniquement lui (pas tout le dossier).
+    trace.push("resélection du fichier demandée");
+    note("Vidéo : lecture non lancée (resélection demandée)");
+    singleVideoPickerTargetId = p.id;
+    toast(`Resélectionnez le fichier "${p.fileName}" pour le lire (son contenu n'a pas été gardé d'une session à l'autre pour économiser la mémoire).`, 6000);
+    singleVideoPickerInput.click();
+  }finally{ if(btn && !pendingVideoFiles.has(p.id)) btn.innerHTML = btnHtml; }
 }
 singleVideoPickerInput.addEventListener("change", ()=>{
   const file = singleVideoPickerInput.files[0];
@@ -23214,7 +23237,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-25-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-25-d"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
