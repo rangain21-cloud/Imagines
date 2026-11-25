@@ -7761,6 +7761,11 @@ function openSelectiveImportModal(files, dirName){
   const bRecent = el("button", "", "Cocher les plus récents"); bRecent.className = "btn";
   const bNone = el("button", "", "Tout décocher"); bNone.className = "btn";
   bar2.append(lHide, nRecent, bRecent, bNone); body.appendChild(bar2);
+  // Destination dans le catalogue : par défaut les fichiers rejoignent le dossier de la galerie (sousDossier vide), au lieu d'hériter du nom du dossier source (« 2026 »…).
+  const lRoot = el("label", "display:flex; gap:6px; align-items:center; margin:0 0 8px; font-size:.9em;");
+  const cRoot = el("input", "width:auto;"); cRoot.type = "checkbox"; cRoot.checked = State.photos.length > 0;
+  lRoot.append(cRoot, document.createTextNode("Les ranger directement dans « " + (State.folderName || "la galerie") + " » (sousDossier vide, sans « " + dirName + " » ni sous-dossier d'origine)"));
+  body.appendChild(lRoot);
   const listEl = el("div", "max-height:48vh; overflow-y:auto; border:1px solid var(--line); border-radius:6px;"); body.appendChild(listEl);
   const foot = el("div", "display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px;");
   const cnt = el("span", "flex:1 1 100%; font-weight:600;");
@@ -7804,7 +7809,10 @@ function openSelectiveImportModal(files, dirName){
   };
   bNone.onclick = ()=>{ chosen.clear(); render(); upd(); };
   bCancel.onclick = close;
-  const go = list=>{ close(); handleFilesSelected(list, dirName, true, "btnPickFiles"); }; // « btnPickFiles » = ajout pur à la galerie en cours, sans question ni effacement
+  const go = list=>{
+    if(cRoot.checked) list.forEach(f=>{ try{ f.imagoStripRoot = true; f.imagoFlat = true; }catch(e){} });
+    close(); handleFilesSelected(list, dirName, true, "btnPickFiles");
+  }; // « btnPickFiles » = ajout pur à la galerie en cours, sans question ni effacement
   bGo.onclick = ()=> go(files.filter(f=> chosen.has(key(f))));
   bAll.onclick = ()=>{ if(files.length < 200 || confirm("Importer les " + files.length + " fichiers du dossier ?")) go(files); };
   render(); upd();
@@ -10908,6 +10916,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     const wp = file.webkitRelativePath, cut = wp.lastIndexOf("/");
     sousDossier = (cut >= 0 ? wp.slice(0, cut) : "").split("/").slice(1).join("/");
   }
+  if(file.imagoFlat === true) sousDossier = ""; // import sélectif « ranger dans le dossier de la galerie » : aucun sous-dossier d'origine conservé
   try{
     const isVideo = isVideoFile(file);
     const deferVideo = isVideo && (file.size > VIDEO_INLINE_MAX_BYTES || isUnplayableVideoFile(file)); // grosse vidéo (ou AVI/MPG, que <video> ne sait pas lire) : contenu chargé à la demande, voir plus bas
@@ -23101,7 +23110,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-24-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-24-d"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
