@@ -21888,6 +21888,33 @@ async function resumeFromDriveSession(){
    factorisé pour être appelé aussi bien par le bouton "Sauver sur Drive" que
    par l'octroi d'accès à un partenaire (qui doit s'assurer que le catalogue
    est à jour sur Drive avant de partager le dossier). */
+/* « Annule et remplace » du catalogue : avant d'envoyer quoi que ce soit, on repère le catalogue de MÊME NOM déjà présent dans le dossier cible
+   (même si l'appli n'en connaît pas l'identifiant) et, après confirmation, c'est CE fichier qui sera réécrit : pas de copie, pas de numéro de version.
+   Retourne false si l'utilisateur refuse (rien n'est alors envoyé). */
+async function driveResolveCatalogTarget(folderId){
+  if(!State.catalogFileName) State.catalogFileName = nextCatalogFileName();
+  if(State.drive.fileId){ // le catalogue chargé / sauvé précédemment est toujours là sous ce nom : remplacement direct, comme avant
+    try{
+      const m = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files/${State.drive.fileId}?fields=id,name,trashed`)).json();
+      if(!m.trashed && m.name === State.catalogFileName) return true;
+    }catch(e){ if(!/404/.test((e && e.message) || "")) throw e; }
+    State.drive.fileId = ""; try{ localStorage.removeItem("imago_drive_file_id"); }catch(e){}
+  }
+  const nm = State.catalogFileName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const q = encodeURIComponent(`'${folderId}' in parents and name='${nm}' and trashed=false`);
+  const j = await (await driveApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&orderBy=modifiedTime%20desc&pageSize=10&fields=files(id,name,modifiedTime,size)`)).json();
+  const files = j.files || [];
+  if(!files.length) return true; // aucun catalogue de ce nom : création
+  const f = files[0];
+  const when = f.modifiedTime ? new Date(f.modifiedTime).toLocaleString("fr-FR") : "date inconnue";
+  const size = f.size ? " · " + Math.max(1, Math.round(f.size / 1024)) + " Ko" : "";
+  const ok = confirm("Le dossier Drive contient déjà « " + State.catalogFileName + " » (modifié le " + when + size + ")."
+    + (files.length > 1 ? "\n\n" + files.length + " fichiers portent ce nom : le plus récent sera remplacé, les autres ne sont pas touchés." : "")
+    + "\n\nL'ÉCRASER par le catalogue actuel (" + State.photos.length + " fichier(s)) ?\nAucune copie ni numéro de version ne sera créé.\n\nOK = remplacer · Annuler = ne rien envoyer.");
+  if(!ok) return false;
+  State.drive.fileId = f.id; try{ localStorage.setItem("imago_drive_file_id", f.id); }catch(e){}
+  return true;
+}
 async function saveCsvToDrive(targetFolderId){
   if(!State.drive.token) throw new Error("Connectez-vous d'abord à Drive.");
   // Garde-fou : un catalogue vide produirait un CSV réduit à son en-tête et écraserait (PATCH via l'identifiant mémorisé)
@@ -22660,7 +22687,13 @@ async function saveEverythingToDrive(){
             win.body.appendChild(row("vidFix", `Vidéos déjà sur Drive à corriger : ${plan.vidFix.length} — ${mo(sz)}. Leurs métadonnées sont mises à jour puis le fichier est renvoyé (téléchargé depuis Drive s'il n'est pas sur cet appareil).`));
           }
           if(plan.vidNoSource.length){
-            win.body.appendChild(para(`${plan.vidNoSource.length} vidéo(s) du catalogue ne sont pas sur Drive et leur fichier n'est pas disponible sur cet appareil.`));
+            win.body.appendChild(para(`${plan.vidNoSource.length} vidéo(s) du catalogue ne sont pas sur Drive et leur fichier n'est pas disponible sur cet appareil :`));
+            { // liste nominative (sous-dossier d'origine inclus) : on voit enfin de quelle(s) vidéo(s) il s'agit
+              const lst = document.createElement("div");
+              lst.style.cssText = "margin:0 0 12px; padding:6px 10px; max-height:120px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; font-family:monospace; font-size:.85em; white-space:pre-wrap; word-break:break-all;";
+              lst.textContent = plan.vidNoSource.map(p=> "• " + (p.sousDossier ? p.sousDossier + "/" : "") + p.fileName).join("\n");
+              win.body.appendChild(lst);
+            }
             const pick = document.createElement("input"); pick.type = "file"; pick.multiple = true; pick.accept = "video/*,.mp4,.m4v,.mov,.avi,.mpg,.mpeg";
             pick.onchange = ()=>{
               for(const f of pick.files){
@@ -22685,6 +22718,7 @@ async function saveEverythingToDrive(){
         setDriveMediaFolder(folderId, folderLabel); forgetDriveCatalogFileId();
       }
     }
+    if(!(await driveResolveCatalogTarget(folderId))){ win.close(); return null; } // annule et remplace : confirmation AVANT tout envoi
     // 3) Envoi (séquentiel ; un échec n'arrête pas les autres ; Arrêter = on passe au catalogue après le fichier en cours)
     const done = {imgNew:0, imgUpd:0, vidNew:0, vidFix:0};
     let stopped = false, sessionLost = false;
@@ -22795,7 +22829,10 @@ async function saveEverythingToDrive(){
     if(cmpNotes.length){ console.warn("Vidéos envoyées SANS compression :", cmpNotes); parts.push(`${cmpNotes.length} vidéo(s) envoyée(s) sans compression (voir la console)`); }
     if(metaSkipped.length){ console.warn("Vidéos envoyées sans métadonnées :", metaSkipped); parts.push(`${metaSkipped.length} vidéo(s) envoyée(s) sans métadonnées (voir la console)`); }
     const noSrc = plan.vidNoSource.length;
-    if(noSrc) parts.push(`${noSrc} vidéo(s) non envoyée(s) : fichier absent de cet appareil`);
+    if(noSrc){
+      parts.push(`${noSrc} vidéo(s) non envoyée(s) : fichier absent de cet appareil (` + plan.vidNoSource.slice(0, 3).map(p=> p.fileName).join(", ") + (noSrc > 3 ? "…" : "") + ")");
+      if(noSrc > 3) console.warn("Vidéos non envoyées (fichier absent de cet appareil) :", plan.vidNoSource.map(p=> (p.sousDossier ? p.sousDossier + "/" : "") + p.fileName));
+    }
     if(stopped) parts.push("envoi interrompu : relancez Sauver pour la suite");
     if(failed.length) parts.push(`${failed.length} échec(s) (voir la console)`);
     return {message: `« ${State.catalogFileName} » sauvegardé dans « ${folderLabel} »` + (parts.length ? " — " + parts.join(" ; ") : "") + ".", ok: !failed.length && !stopped};
@@ -23064,7 +23101,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-24-a"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-24-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
