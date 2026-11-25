@@ -6274,9 +6274,41 @@ let hydrateActive = 0; const hydrateQueue = [];
 function hydratePump(){
   while(hydrateQueue.length && (hydrateActive < HYDRATE_MAX || (hydrateQueue[0].urgent && hydrateActive < HYDRATE_URGENT_MAX))) hydrateQueue.shift().run();
 }
+/* Chargement massif depuis Drive sur téléphone : une page web ne peut PAS tourner réellement en arrière-plan sous Android (réseau et minuteurs suspendus
+   quand l'écran s'éteint ou qu'on change d'appli). On limite donc les dégâts : (1) écran maintenu allumé tant que des images se chargent (Wake Lock),
+   (2) aucune image n'est lancée pendant que la page est masquée (la file attend le retour) et (3) une image dont le chargement a été interrompu par un
+   passage en arrière-plan est automatiquement ré-essayée, au lieu d'être comptée en échec. */
+let hydrateHiddenSeen = 0, hydrateWL = null, hydrateWLTimer = null;
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden) hydrateHiddenSeen++;
+  else{ if(hydrateActive || hydrateQueue.length) hydrateWake(); hydratePump(); }
+});
+function waitVisible(){ return document.hidden ? new Promise(r=>{ const f = ()=>{ if(!document.hidden){ document.removeEventListener("visibilitychange", f); r(); } }; document.addEventListener("visibilitychange", f); }) : Promise.resolve(); }
+async function hydrateWake(){
+  clearTimeout(hydrateWLTimer);
+  if(document.hidden || !navigator.wakeLock || (hydrateWL && !hydrateWL.released)) return;
+  try{ hydrateWL = await navigator.wakeLock.request("screen"); }catch(e){}
+}
+function hydrateSleepSoon(){ // plus rien à charger : on libère l'écran après quelques secondes
+  clearTimeout(hydrateWLTimer);
+  hydrateWLTimer = setTimeout(()=>{ if(!hydrateActive && !hydrateQueue.length && hydrateWL){ try{ hydrateWL.release(); }catch(e){} hydrateWL = null; } }, 8000);
+}
 function hydrateLimited(fn, urgent){
   return new Promise((resolve, reject)=>{
-    const run = ()=>{ hydrateActive++; fn().then(resolve, reject).finally(()=>{ hydrateActive--; hydratePump(); }); };
+    const run = async ()=>{
+      hydrateActive++; hydrateWake();
+      try{
+        for(let attempt = 1; ; attempt++){
+          await waitVisible();
+          const seen = hydrateHiddenSeen;
+          try{ resolve(await fn()); break; }
+          catch(e){
+            if(attempt < 4 && (document.hidden || hydrateHiddenSeen !== seen)) continue; // interrompu par l'arrière-plan : on recommence au retour
+            reject(e); break;
+          }
+        }
+      }finally{ hydrateActive--; hydratePump(); if(!hydrateActive && !hydrateQueue.length) hydrateSleepSoon(); }
+    };
     const e = {run, urgent: !!urgent};
     if(urgent) hydrateQueue.unshift(e); else hydrateQueue.push(e);
     hydratePump();
@@ -23060,7 +23092,7 @@ function driveTileWanted(p){ return !!p && !p.isVideo && isDriveHydratable(p) &&
 function driveSetTileImage(tile, url){
   if(!tile || !tile.isConnected) return;
   const ph = tile.querySelector(".viewer-missing"); if(!ph) return;
-  const img = document.createElement("img"); img.alt = tile.title || ""; img.src = url;
+  const img = document.createElement("img"); img.alt = tile.title || ""; img.referrerPolicy = "no-referrer"; img.src = url;
   ph.replaceWith(img);
 }
 function driveObserveTile(tile, p){
@@ -23077,7 +23109,7 @@ function driveObserveTile(tile, p){
 }
 function driveTilePumpSoon(){ clearTimeout(driveTileTimer); driveTileTimer = setTimeout(driveTilePump, 150); }
 function driveTilePump(){
-  while(driveTileBusy < (driveTileMode === "thumb" ? 4 : 2)){
+  while(driveTileBusy < (driveTileMode === "thumb" ? 8 : 2)){
     const tile = driveTileVisible.values().next().value; if(!tile) break;
     driveTileVisible.delete(tile); if(driveTileObserver) driveTileObserver.unobserve(tile);
     if(!tile.isConnected) continue;
@@ -23085,23 +23117,32 @@ function driveTilePump(){
     driveTileFetch(tile).catch(()=>{}).finally(()=>{ driveTileBusy--; driveTilePump(); });
   }
 }
+function driveImgProbe(url){ // true si le navigateur sait charger cette image (balise <img>, sans CORS) ; abandon après 15 s
+  return new Promise(res=>{
+    const im = new Image(); im.referrerPolicy = "no-referrer"; im.decoding = "async";
+    const t = setTimeout(()=>{ im.onload = im.onerror = null; im.src = ""; res(false); }, 15000);
+    im.onload = ()=>{ clearTimeout(t); res(true); };
+    im.onerror = ()=>{ clearTimeout(t); res(false); };
+    im.src = url;
+  });
+}
 async function driveTileFetch(tile){
   const p = State.photos.find(ph=> ph.id === tile.dataset.id);
   if(!driveTileWanted(p)) return;
   const hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName); if(!hit) return;
   if(driveTileMode === "thumb"){
-    let blob = null;
+    /* Miniature affichée par une simple balise <img> : AUCUN téléchargement par fetch (que Google refuse : « Failed to fetch », pas d'en-tête CORS),
+       donc aucun décodage ni retraitement par l'appli : le navigateur charge et met en cache les ~15 Ko de la vignette, c'est tout. */
+    let thumbUrl = null;
     if(hit.thumbnailLink){
-      try{
-        const url = /=s\d+/.test(hit.thumbnailLink) ? hit.thumbnailLink.replace(/=s\d+[^=]*$/, "=s256") : hit.thumbnailLink + "=s256";
-        const r = await fetch(url, {mode: "cors"}); if(r.ok) blob = await r.blob();
-      }catch(e){}
+      const url = /=s\d+/.test(hit.thumbnailLink) ? hit.thumbnailLink.replace(/=s\d+[^=]*$/, "=s256") : hit.thumbnailLink + "=s256";
+      if(await driveImgProbe(url)) thumbUrl = url;
     }
-    if(blob && blob.size && /^image\//.test(blob.type)){
+    if(thumbUrl){
       driveTileOk++; driveThumbSeen.add(p.id); galleryProgressSoon();
-      const u = URL.createObjectURL(blob); driveTileThumbs.set(p.id, u);
-      if(driveTileThumbs.size > 600){ const k = driveTileThumbs.keys().next().value; URL.revokeObjectURL(driveTileThumbs.get(k)); driveTileThumbs.delete(k); }
-      driveSetTileImage(tile, u); return;
+      driveTileThumbs.set(p.id, thumbUrl);
+      if(driveTileThumbs.size > 3000){ const k = driveTileThumbs.keys().next().value; driveTileThumbs.delete(k); }
+      driveSetTileImage(tile, thumbUrl); return;
     }
     if(++driveTileFail >= 3 && !driveTileOk){ driveTileMode = "hydrate"; console.info("[Imago] Miniatures Drive refusées : repli sur la version réduite des vignettes visibles."); }
     else return;
@@ -23140,7 +23181,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-24-f"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-25-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
