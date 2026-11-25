@@ -6162,32 +6162,65 @@ function repairVideoFlags(p, persist = true){
 async function loadVideoFromDrive(p){
   if(!driveMediaFolderId()) return false;
   if(!State.drive.token) return false; // Drive facultatif : non connecté, on n'impose RIEN (ni message, ni connexion) — la vidéo se charge depuis le disque local
+  /* Chaque étape est chronométrée, limitée dans le temps et AFFICHÉE sur le bouton (un téléphone qui attend le réseau ne fige pas l'écran :
+     le « Journal des ralentissements » ne voyait donc rien). En cas d'échec ou de lenteur, le détail est consigné dans ce journal. */
+  const t0 = performance.now(), marks = [], btn = document.getElementById("btnLoadPendingVideo"), btnHtml = btn ? btn.innerHTML : "";
+  const mark = n=>{ marks.push(n + " " + ((performance.now() - t0) / 1000).toFixed(1).replace(".", ",") + " s"); };
+  const step = t=>{ if(btn && State.selectedId === p.id) btn.textContent = "⏳ " + t; };
+  const note = (kind, extra)=>{ try{ if(window.imagoLagNote) window.imagoLagNote(kind, "« " + p.fileName + " » · " + (fmtSize(p.videoSizeBytes) || "taille ?") + " · " + (navigator.userAgent.match(/Android [\d.]+|iPhone OS [\d_]+/) || ["?"])[0], "étapes : " + (marks.join(" · ") || "aucune") + (extra ? "\n    " + extra : "")); }catch(e){} };
   let hit;
-  try{ hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName) || await driveFindByName(p.fileName); }
-  catch(err){ toast("Dossier Drive illisible : " + ((err && err.message) || err), 6000); return true; }
-  if(!hit) return false; // absente du dossier Drive : on propose de resélectionner le fichier local
+  try{
+    step("Recherche dans le dossier Drive…");
+    hit = driveIndexFind(await withTimeoutMs(getDriveMediaIndexDeep(), 90000, "lecture du dossier Drive trop longue (90 s)"), p.fileName) || await withTimeoutMs(driveFindByName(p.fileName), 30000, "recherche du fichier sur Drive trop longue (30 s)");
+    mark("recherche");
+  }catch(err){
+    if(btn) btn.innerHTML = btnHtml;
+    toast("Dossier Drive illisible : " + ((err && err.message) || err), 6000); note("Vidéo Drive : recherche impossible", (err && err.message) || String(err)); return true;
+  }
+  if(!hit){ if(btn) btn.innerHTML = btnHtml; return false; } // absente du dossier Drive : on propose de resélectionner le fichier local
   try{
     p.videoSizeBytes = +hit.size || p.videoSizeBytes || 0;
     toast(`Téléchargement de « ${p.fileName} » depuis Drive (${fmtSize(p.videoSizeBytes) || "taille inconnue"})…`, 5000);
+    step("Téléchargement…");
     let lastPct = -1;
-    const blob = await driveDownloadBlob(hit.id, p.videoSizeBytes, hit.mimeType, r=>{ const pc = Math.floor(r * 10) * 10; if(pc !== lastPct && pc < 100){ lastPct = pc; toast(`Téléchargement de « ${p.fileName} » : ${pc} %`, 3000); } });
+    const maxMs = 120000 + Math.round((p.videoSizeBytes || 0) / 40); // ≈ 40 Ko/s au minimum, sinon on abandonne avec un message clair
+    const blob = await withTimeoutMs(driveDownloadBlob(hit.id, p.videoSizeBytes, hit.mimeType, r=>{ const pc = Math.floor(r * 10) * 10; step("Téléchargement " + Math.round(r * 100) + " %"); if(pc !== lastPct && pc < 100){ lastPct = pc; toast(`Téléchargement de « ${p.fileName} » : ${pc} %`, 3000); } }), maxMs, "téléchargement trop long (" + Math.round(maxMs / 1000) + " s) : réseau trop lent ou coupé (écran en veille ?)");
+    mark("téléchargement (" + (blob.size || 0) + " o)");
+    if(!blob.size) throw new Error("Drive a renvoyé un fichier vide");
     const file = new File([blob], p.fileName, {type: hit.mimeType || videoMimeFor(p.fileName)});
     pendingVideoFiles.set(p.id, file);
     p.driveFileId = hit.id;
+    step("Préparation de la lecture…");
     if(State.selectedId === p.id) openOrPlayVideoFile(p, file);
+    mark("lecture lancée");
+    if(btn) btn.innerHTML = btnHtml;
+    // Surveillance : le fichier est là mais la vidéo ne démarre pas (codec non géré par ce téléphone, ex. HEVC/H.265) -> message + journal
+    setTimeout(()=>{
+      const v = document.getElementById("viewerVideo");
+      if(State.selectedId !== p.id || !v || v.dataset.currentId !== p.id || v.readyState >= 2) return;
+      const ct = t=>{ try{ return v.canPlayType(t) || "non"; }catch(e){ return "?"; } };
+      const diag = "readyState " + v.readyState + " · networkState " + v.networkState + " · erreur " + (v.error ? v.error.code + " " + (v.error.message || "") : "aucune") + " · type " + (file.type || "?")
+        + " · lit H.264 : " + ct('video/mp4; codecs="avc1.42E01E"') + " · lit H.265 : " + ct('video/mp4; codecs="hvc1.1.6.L93.B0"');
+      toast("La vidéo est téléchargée mais ne démarre pas : format sans doute non pris en charge par ce navigateur (voir le journal).", 9000);
+      note("Vidéo Drive téléchargée mais non lisible", diag);
+    }, 8000);
     // vignette + durée (une seule fois) pour la galerie ; AVI/MPG : illisibles par le navigateur, on s'en tient là
     if(!p.posterDataUrl && !isUnplayableVideoName(p.fileName)){
       const url = URL.createObjectURL(file);
       try{
-        const vm = await getVideoMeta(url);
+        const vm = await withTimeoutMs(getVideoMeta(url), 15000, "vignette de la vidéo : délai dépassé");
         if(vm && vm.poster){ p.posterDataUrl = vm.poster; p.durationSec = vm.duration || 0; p.width = vm.width || 0; p.height = vm.height || 0; }
-      } finally { URL.revokeObjectURL(url); }
+      }catch(e){ console.warn("Vignette vidéo non lue pour " + p.fileName, e); }
+      finally { URL.revokeObjectURL(url); }
     }
     idbPut("photos", p).catch(e=> console.warn("Vignette vidéo non mémorisée pour " + p.fileName, e));
+    if(performance.now() - t0 > 8000) note("Vidéo Drive lente à charger");
     return true;
   }catch(err){
+    if(btn) btn.innerHTML = btnHtml;
     console.warn(`Vidéo "${p.fileName}" : téléchargement depuis Drive impossible.`, err);
     toast("Téléchargement impossible : " + ((err && err.message) || err), 6000);
+    note("Vidéo Drive : échec", (err && err.message) || String(err));
     return true;
   }
 }
@@ -23181,7 +23214,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-25-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-25-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
