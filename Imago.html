@@ -2128,7 +2128,9 @@ svg.leaflet-image-layer.leaflet-interactive path {
           <video id="viewerVideo" class="hidden" controls playsinline></video>
           <div class="viewer-missing hidden" id="viewerVideoError">
             🎬 Cette vidéo ne peut pas être lue par ce navigateur
-            <div class="sub">Causes les plus fréquentes : une vidéo enregistrée en HEVC/H.265 (réglage par défaut des iPhone, non lisible sans l'extension vidéo du système), ou une piste audio dans un format que les navigateurs web ne savent pas décoder (ex. PCM/audio non compressé, courant dans les exports QuickTime/iMovie), même quand la vidéo elle-même est en H.264. Ouvrez une copie du fichier avec le lecteur de votre ordinateur (VLC, Lecteur Windows…), ou convertissez-la avec VLC (Média → Convertir/Enregistrer → H.264 + audio AAC), puis réimportez-la.</div>
+            <div class="sub">Le Lecteur Windows ou VLC la lisent car ils utilisent les codecs de votre système ; un navigateur web n'en connaît qu'un nombre limité. Causes les plus fréquentes : une vidéo enregistrée en HEVC/H.265 (réglage par défaut des iPhone, non lisible sans l'extension vidéo du système), ou une piste audio dans un format que les navigateurs web ne savent pas décoder (ex. PCM/audio non compressé, courant dans les exports QuickTime/iMovie), même quand la vidéo elle-même est en H.264. Ouvrez une copie du fichier avec le lecteur de votre ordinateur (VLC, Lecteur Windows…), ou convertissez-la avec VLC (Média → Convertir/Enregistrer → H.264 + audio AAC), puis réimportez-la.</div>
+            <div class="sub" id="viewerVideoErrorDiag"></div>
+            <button class="btn copper hidden" id="btnVideoErrorConvert" type="button" style="margin-top:10px;">🔧 Convertir pour la lire ici</button>
             <button class="btn copper hidden" id="btnVideoErrorSave" type="button" style="margin-top:10px;">⬇ Enregistrer une copie pour l'ouvrir</button>
           </div>
           <div class="viewer-ac3-bar hidden" id="viewerAc3Bar">
@@ -15287,7 +15289,96 @@ function showViewerVideoError(){
   document.getElementById("viewerVideo").classList.add("hidden");
   document.getElementById("viewerVideoError").classList.remove("hidden");
   document.getElementById("btnVideoErrorSave").classList.toggle("hidden", !pendingVideoFiles.get(p.id));
+  diagnoseVideoError(p);
 }
+/* Diagnostic précis : on lit les codecs réellement présents dans le fichier (boîte « moov » du MP4/MOV) pour dire POURQUOI le navigateur échoue
+   (HEVC ? son PCM/AC3 ?) et proposer une conversion directement dans Imago (ffmpeg.wasm, déjà utilisé pour l'AC3), sans passer par VLC ni réimporter. */
+let errDiagBlob = null;
+const PCM_CODECS = ["sowt","twos","lpcm","ipcm","in24","in32","fl32","fl64"];
+async function videoCodecInfo(blob){
+  const size = blob.size; let pos = 0;
+  while(pos + 8 <= size){
+    const dv = new DataView(await blob.slice(pos, pos + 16).arrayBuffer());
+    let len = dv.getUint32(0), hdr = 8;
+    const type = String.fromCharCode(dv.getUint8(4), dv.getUint8(5), dv.getUint8(6), dv.getUint8(7));
+    if(len === 1 && dv.byteLength >= 16){ len = Number(dv.getBigUint64(8)); hdr = 16; }
+    else if(len === 0) len = size - pos;
+    if(len < hdr) return null;
+    if(type === "moov"){
+      const end = Math.min(pos + len, pos + hdr + 48 * 1024 * 1024);
+      const txt = new TextDecoder("latin1").decode(new Uint8Array(await blob.slice(pos + hdr, end).arrayBuffer()));
+      const has = list => list.filter(c => txt.indexOf(c) >= 0);
+      return { video: has(["avc1","avc3","hvc1","hev1","dvh1","dvhe","av01","vp09"]),
+               audio: has(["mp4a","ac-3","ec-3","alac","Opus","fLaC"].concat(PCM_CODECS)) };
+    }
+    pos += len;
+  }
+  return null;
+}
+async function diagnoseVideoError(p){
+  const diag = document.getElementById("viewerVideoErrorDiag"), btn = document.getElementById("btnVideoErrorConvert");
+  diag.textContent = ""; btn.classList.add("hidden"); btn.dataset.mode = ""; errDiagBlob = null;
+  try{
+    const v = document.getElementById("viewerVideo");
+    let blob = pendingVideoFiles.get(p.id);
+    if(!blob){ const src = v.currentSrc || v.getAttribute("src"); if(src) blob = await (await fetch(src)).blob(); }
+    if(!blob) return;
+    const info = await videoCodecInfo(blob);
+    if(!info || State.selectedId !== p.id) return;
+    const hevc = info.video.some(c => ["hvc1","hev1","dvh1","dvhe"].includes(c)) && !info.video.some(c => c === "avc1" || c === "avc3");
+    const audioKo = info.audio.filter(c => PCM_CODECS.includes(c) || c === "ac-3" || c === "ec-3" || c === "alac");
+    const hasAac = info.audio.includes("mp4a");
+    const can = t=>{ try{ return v.canPlayType(t) || "non"; }catch(e){ return "?"; } };
+    let msg = "Contenu du fichier : image « " + (info.video.join(", ") || "?") + " », son « " + (info.audio.join(", ") || "aucun") + " ». Ce navigateur lit H.264 : " + can('video/mp4; codecs="avc1.42E01E"') + " · H.265 : " + can('video/mp4; codecs="hvc1.1.6.L93.B0"') + ". ";
+    errDiagBlob = blob;
+    if(hevc){
+      msg += "Cause : image en HEVC/H.265, que ce navigateur ne décode pas (le Lecteur Windows le fait grâce à l'extension vidéo HEVC du système ; Edge l'utilise aussi, Chrome seulement avec certains processeurs graphiques).";
+      btn.dataset.mode = "full"; btn.textContent = "🔧 Convertir en H.264 pour la lire ici (lent)";
+    }else if(audioKo.length && !hasAac){
+      msg += "Cause : piste son « " + audioKo.join(", ") + " » que les navigateurs ne savent pas décoder, alors que l'image est lisible. Seul le son sera converti (en AAC) : rapide et sans toucher à l'image.";
+      btn.dataset.mode = "audio"; btn.textContent = "🔧 Convertir le son en AAC pour la lire ici";
+    }else{
+      msg += "La cause exacte n'est pas identifiable (fichier peut-être incomplet ou conteneur inhabituel). Vous pouvez tout de même essayer la conversion complète.";
+      btn.dataset.mode = "full"; btn.textContent = "🔧 Essayer une conversion en H.264 (lent)";
+    }
+    diag.textContent = msg;
+    btn.classList.remove("hidden");
+  }catch(e){ console.warn("Diagnostic vidéo impossible", e); }
+}
+async function convertErroredVideo(){
+  const btn = document.getElementById("btnVideoErrorConvert"), p = getSelected(), mode = btn.dataset.mode, blob = errDiagBlob;
+  if(!p || !blob || !mode) return;
+  if(ac3JobBusy){ toast("Une conversion est déjà en cours : attendez qu'elle se termine.", 5000); return; }
+  if(blob.size > AC3_MAX_BYTES || (mode === "full" && blob.size > 600 * 1024 * 1024)){ toast("Vidéo trop volumineuse pour être convertie dans le navigateur : utilisez VLC ou HandBrake.", 7000); return; }
+  const args = mode === "audio"
+    ? ["-i","/in/in.mp4","-map","0:v:0","-map","0:a:0","-c:v","copy","-c:a","aac","-b:a","192k","-movflags","+faststart","/out.mp4"]
+    : ["-i","/in/in.mp4","-map","0:v:0","-map","0:a:0?","-vf","scale=-2:min(720\\,ih)","-c:v","libx264","-preset","ultrafast","-crf","26","-pix_fmt","yuv420p","-c:a","aac","-b:a","192k","-movflags","+faststart","/out.mp4"];
+  const label = btn.textContent, diag = document.getElementById("viewerVideoErrorDiag");
+  ac3JobBusy = true; btn.disabled = true;
+  let cancelled = false;
+  try{
+    btn.textContent = "⏳ Préparation du convertisseur (≈ 32 Mo, une seule fois)…";
+    let lastPct = -1;
+    const out = await ac3Convert(blob, ratio=>{
+      if(!(ratio > 0)) return;
+      const pct = Math.min(99, Math.round(ratio * 100));
+      if(pct !== lastPct){ lastPct = pct; btn.textContent = "⏳ Conversion… " + pct + " %"; }
+    }, args);
+    ac3ConvertedBlobs.set(p.id, out);
+    ac3Current = {p, blob: out, busy: false};
+    if(State.selectedId === p.id){
+      ac3UseConverted(p, out, false);
+      ac3ShowBar("done", "✅ Vidéo convertie : lecture possible. Vous pouvez enregistrer la version convertie.");
+    }
+  }catch(err){
+    console.warn("Conversion vidéo impossible", err, ac3LastLogs.join("\n"));
+    toast("Conversion impossible : " + ((err && err.message) || err), 8000);
+    diag.textContent += " — Échec de la conversion : " + ((err && err.message) || err);
+  }finally{
+    ac3JobBusy = false; btn.disabled = false; btn.textContent = label; ac3Terminate();
+  }
+}
+document.getElementById("btnVideoErrorConvert").addEventListener("click", convertErroredVideo);
 document.getElementById("viewerVideo").addEventListener("error", showViewerVideoError);
 // Conteneur lisible mais piste vidéo non décodable (HEVC sans extension) : métadonnées chargées, 0 × 0 pixel, écran noir.
 document.getElementById("viewerVideo").addEventListener("loadedmetadata", ()=>{
@@ -15417,7 +15508,7 @@ async function ac3EnsureWorker(){
   await ac3Call("load", { coreURL: AC3_CORE_BASE + "/ffmpeg-core.js", wasmURL: AC3_CORE_BASE + "/ffmpeg-core.wasm", workerURL: AC3_CORE_BASE + "/ffmpeg-core.worker.js" });
 }
 // Copie la vidéo telle quelle et ré-encode seulement la 1re piste audio en AAC stéréo 192 kb/s (lisible partout).
-async function ac3Convert(blob, onProgress){
+async function ac3Convert(blob, onProgress, customArgs){
   await ac3EnsureWorker();
   ac3ProgressCb = onProgress;
   // Image copiée telle quelle (aucun ré-encodage). Son : une piste AAC (lue par tous les navigateurs, par défaut) AJOUTÉE à la piste AC3 d'origine,
@@ -15425,7 +15516,7 @@ async function ac3Convert(blob, onProgress){
   // AAC à 384 kb/s en conservant les canaux d'origine (5.1 compris) : plus de mixage forcé en stéréo.
   const args = ["-i", "/in/in.mp4", "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-c:v", "copy", "-c:a:0", "aac", "-b:a:0", "384k", "-c:a:1", "copy",
     "-disposition:a:0", "default", "-disposition:a:1", "0", "-movflags", "+faststart", "/out.mp4"];
-  const out = await ac3Call("convert", { blob, args });
+  const out = await ac3Call("convert", { blob, args: customArgs || args });
   return new Blob([out], {type: "video/mp4"});
 }
 // Parcourt les boîtes MP4/MOV de premier niveau jusqu'à « moov » (lu en entier, jamais le fichier complet) et y cherche une piste AC-3 (dac3) ou E-AC-3 (dec3).
@@ -15475,6 +15566,7 @@ function ac3UseConverted(p, blob, resume){
   if(video.dataset.ac3Url) URL.revokeObjectURL(video.dataset.ac3Url);
   const url = URL.createObjectURL(blob);
   video.dataset.ac3Url = url; video.dataset.currentId = p.id;
+  document.getElementById("viewerVideoError").classList.add("hidden"); video.classList.remove("hidden"); // si un message d'erreur était affiché, le lecteur reprend la place
   video.src = url;
   if(resume) video.addEventListener("loadedmetadata", ()=>{
     try{ video.currentTime = t; }catch(_){}
