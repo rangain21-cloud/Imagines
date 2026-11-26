@@ -23197,17 +23197,53 @@ function driveObserveTile(tile, p){
     }, {root: document.getElementById("galleryScroll"), rootMargin: "400px 0px"});
   }
   driveTileObserver.observe(tile);
+  driveThumbPrefetchSoon();
 }
 function driveTilePumpSoon(){ clearTimeout(driveTileTimer); driveTileTimer = setTimeout(driveTilePump, 150); }
 let driveTileRetryAt = 0, driveTileStat = {ok: 0, fail: 0, noLink: 0, ms: 0};
 function driveTilePump(){
   if(driveTileMode !== "thumb" && Date.now() > driveTileRetryAt){ driveTileMode = "thumb"; driveTileFail = 0; } // le repli lent n'est plus définitif : on retente les miniatures rapides
-  while(driveTileBusy < (driveTileMode === "thumb" ? 8 : 2)){
+  while(driveTileBusy < (driveTileMode === "thumb" ? (window.matchMedia("(pointer: coarse)").matches ? 4 : 8) : 2)){
     const tile = driveTileVisible.values().next().value; if(!tile) break;
     driveTileVisible.delete(tile); if(driveTileObserver) driveTileObserver.unobserve(tile);
     if(!tile.isConnected) continue;
     driveTileBusy++;
     driveTileFetch(tile).catch(()=>{}).finally(()=>{ driveTileBusy--; driveTilePump(); });
+  }
+}
+/* Préchargement de FOND des miniatures de toute la planche-contact (sans toucher l'écran) : quelques vignettes à la fois, après celles qui sont visibles,
+   en pause quand la page est masquée, quand une vignette visible est en cours de chargement ou quand un geste est en attente ; arrêt si Drive refuse (25 échecs de suite). */
+const driveThumbPre = {running: false, finished: false, timer: 0};
+function driveThumbUrl(link){ return /=s\d+/.test(link) ? link.replace(/=s\d+[^=]*$/, "=s256") : link + "=s256"; }
+function driveThumbPrefetchSoon(){ if(driveThumbPre.running || driveThumbPre.finished) return; clearTimeout(driveThumbPre.timer); driveThumbPre.timer = setTimeout(driveThumbPrefetch, 1500); }
+async function driveThumbPrefetch(){
+  if(driveThumbPre.running || driveThumbPre.finished) return;
+  if(!(State.drive && State.drive.token) || !driveMediaFolderId()) return;
+  driveThumbPre.running = true;
+  const t0 = performance.now(); let ok = 0, fails = 0, noLink = 0, total = 0;
+  try{
+    const idx = await getDriveMediaIndexDeep();
+    const list = galleryPhotos().filter(p=> driveTileWanted(p) && !driveThumbSeen.has(p.id));
+    total = list.length;
+    let i = 0, consec = 0; const N = window.matchMedia("(pointer: coarse)").matches ? 3 : 6, sleep = ms=> new Promise(r=> setTimeout(r, ms));
+    const worker = async ()=>{
+      while(i < list.length && consec < 25){
+        if(document.hidden) await waitVisible();
+        while(driveTileBusy > 0 || (navigator.scheduling && navigator.scheduling.isInputPending && navigator.scheduling.isInputPending())) await sleep(200);
+        const p = list[i++]; if(!p || driveThumbSeen.has(p.id)) continue;
+        const hit = driveIndexFind(idx, p.fileName);
+        if(!hit || !hit.thumbnailLink){ noLink++; continue; }
+        const url = driveThumbUrl(hit.thumbnailLink);
+        if(await driveImgProbe(url)){ ok++; consec = 0; driveTileThumbs.set(p.id, url); driveThumbSeen.add(p.id); galleryProgressSoon(); }
+        else{ fails++; consec++; }
+        await sleep(15);
+      }
+    };
+    await Promise.all(Array.from({length: N}, worker));
+  }catch(e){ console.warn("[Imago] préchargement des miniatures interrompu", e); }
+  finally{
+    driveThumbPre.running = false; driveThumbPre.finished = true;
+    try{ if(window.imagoLagNote) window.imagoLagNote("Miniatures Drive : préchargement terminé", ok + " / " + total + " miniature(s)", ((performance.now() - t0) / 1000).toFixed(1).replace(".", ",") + " s · " + fails + " échec(s) · " + noLink + " sans miniature Drive"); }catch(e){}
   }
 }
 function driveImgProbe(url){ // true si le navigateur sait charger cette image (balise <img>, sans CORS) ; abandon après 15 s
@@ -23222,13 +23258,15 @@ function driveImgProbe(url){ // true si le navigateur sait charger cette image (
 async function driveTileFetch(tile){
   const p = State.photos.find(ph=> ph.id === tile.dataset.id);
   if(!driveTileWanted(p)) return;
+  const pre = driveTileThumbs.get(p.id); // déjà préchargée en arrière-plan : affichage immédiat
+  if(pre){ driveThumbSeen.add(p.id); driveSetTileImage(tile, pre); galleryProgressSoon(); return; }
   const hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName); if(!hit) return;
   if(driveTileMode === "thumb"){
     /* Miniature affichée par une simple balise <img> : AUCUN téléchargement par fetch (que Google refuse : « Failed to fetch », pas d'en-tête CORS),
        donc aucun décodage ni retraitement par l'appli : le navigateur charge et met en cache les ~15 Ko de la vignette, c'est tout. */
     let thumbUrl = null, probeFailed = false;
     if(hit.thumbnailLink){
-      const url = /=s\d+/.test(hit.thumbnailLink) ? hit.thumbnailLink.replace(/=s\d+[^=]*$/, "=s256") : hit.thumbnailLink + "=s256";
+      const url = driveThumbUrl(hit.thumbnailLink);
       const tp = performance.now();
       if(await driveImgProbe(url)){ thumbUrl = url; driveTileStat.ok++; driveTileStat.ms += performance.now() - tp; }
       else{ probeFailed = true; driveTileStat.fail++; }
@@ -23236,7 +23274,7 @@ async function driveTileFetch(tile){
     if(thumbUrl){
       driveTileOk++; driveThumbSeen.add(p.id); galleryProgressSoon();
       driveTileThumbs.set(p.id, thumbUrl);
-      if(driveTileThumbs.size > 3000){ const k = driveTileThumbs.keys().next().value; driveTileThumbs.delete(k); }
+      if(driveTileThumbs.size > 20000){ const k = driveTileThumbs.keys().next().value; driveTileThumbs.delete(k); }
       driveSetTileImage(tile, thumbUrl); return;
     }
     if(probeFailed){
@@ -23284,7 +23322,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-26-a"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-26-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
