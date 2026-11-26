@@ -8100,6 +8100,7 @@ function parseCatalogCsvText(text){
   for(let i=1;i<recs.length;i++){
     const cells = parseCsvLine(recs[i], delim);
     const row = {}; header.forEach((h,idx)=> row[h] = cells[idx]);
+    if(row.dateAchat) row.dateAchat = csvDateIn(row.dateAchat);
     if(row.fileName) out.rows.push(row);
   }
   return out;
@@ -11076,7 +11077,7 @@ async function importOneFile(file, csvRowByFileName, stats){
     if(existingRow){
       // Image déjà cataloguée : on réutilise ses métadonnées sans les regénérer.
       rec = {
-        id: uid("ph"), fileName: file.name, sousDossier, dataUrl: finalDataUrl, thumbDataUrl,
+        id: uid("ph"), fileName: file.name, sousDossier: (existingRow.sousDossier || "").trim().replace(/\\/g,"/").replace(/^\/+|\/+$/g,"") || sousDossier /* la colonne sousDossier du catalogue prime sur le chemin du fichier choisi */, dataUrl: finalDataUrl, thumbDataUrl,
         isVideo, posterDataUrl: isVideo ? videoMeta.poster : null, durationSec: isVideo ? videoMeta.duration : 0,
         videoPending: !!deferVideo, videoSizeBytes: deferVideo ? file.size : 0,
         titre: existingRow.titre || "",
@@ -14062,7 +14063,7 @@ async function faceReadAlbumCsv(file){
   for(let i = 1; i < lines.length; i++){
     const c = parseCsvLine(lines[i], delim); total++;
     if(iTrash >= 0 && String(c[iTrash] || "").trim() === "true") continue;
-    rows.push({fileName: c[iName], sub: iSub >= 0 ? (c[iSub] || "") : "", date: iDate >= 0 ? (c[iDate] || "") : "",
+    rows.push({fileName: c[iName], sub: iSub >= 0 ? (c[iSub] || "") : "", date: iDate >= 0 ? csvDateIn(c[iDate] || "") : "",
                rot: iRot >= 0 ? (Number(c[iRot]) || 0) : 0, toks: personnageTokens(c[iPers] || "")});
   }
   return {rows, total};
@@ -20329,6 +20330,19 @@ document.getElementById("btnSaveAuteur").addEventListener("click", async ()=>{
 /* ---------------------------------------------------------------
    15. CSV — génération automatique, export, import
    --------------------------------------------------------------- */
+/* Format de la rubrique dateAchat DANS LE FICHIER .csv : « AAAA-MM-JJ HH:MM » (espace, directement reconnu par Excel), alors qu'en mémoire
+   et dans la modale (datetime-local) Imago garde « AAAA-MM-JJTHH:MM ». À la lecture on accepte l'un ou l'autre (ainsi que « JJ/MM/AAAA HH:MM »). */
+function csvDateOut(v){
+  return String(v == null ? "" : v).replace(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/, "$1 $2");
+}
+function csvDateIn(v){
+  const t = String(v == null ? "" : v).trim();
+  let m = t.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?$/);
+  if(m) return m[1] + "T" + m[2];
+  m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2}))?/);
+  if(m){ const pd = n=> String(n).padStart(2,"0"); return `${m[3]}-${pd(m[2])}-${pd(m[1])}` + (m[4] != null ? `T${pd(m[4])}:${m[5]}` : ""); }
+  return t;
+}
 const CSV_COLUMNS = ["id","fileName","sousDossier","titre","dateAchat","personnage","lieu","support","etiquette","auteur","favori","art","concert","histoire","partition","corbeille","rotation","albums","filterKey","optique","poids","map","visagesValides"];
 /* Titre auto-construit à partir de Lieu + Personnage : AUCUNE ponctuation,
    AUCUN chiffre — uniquement des lettres et des espaces, sans le mot de
@@ -20374,6 +20388,7 @@ function buildCsv(){
     rows.push(CSV_COLUMNS.map(c=>{
       if(c==="albums") return csvEscape((p.albums||[]).join("|"));
       if(c==="support") return csvEscape(normalizeSupport(p.support, p.fileName));
+      if(c==="dateAchat") return csvEscape(csvDateOut(p.dateAchat));
       return csvEscape(p[c]);
     }).join(";"));
   });
@@ -21333,6 +21348,7 @@ async function mergeCsvIntoCatalog(text){
     const cells = parseCsvLine(lines[i], mergeDelim);
     const row = {}; header.forEach((h,idx)=> row[h]=cells[idx]);
     if(!row.fileName) continue;
+    if(row.dateAchat) row.dateAchat = csvDateIn(row.dateAchat);
     let rec = State.photos.find(p=>p.fileName===row.fileName);
     if(!rec){
       rec = {id: uid("ph"), fileName:row.fileName, dataUrl:"", favori:false, art:false, corbeille:false, rotation:0, albums:[]};
