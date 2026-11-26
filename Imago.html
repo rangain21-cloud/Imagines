@@ -23199,7 +23199,9 @@ function driveObserveTile(tile, p){
   driveTileObserver.observe(tile);
 }
 function driveTilePumpSoon(){ clearTimeout(driveTileTimer); driveTileTimer = setTimeout(driveTilePump, 150); }
+let driveTileRetryAt = 0, driveTileStat = {ok: 0, fail: 0, noLink: 0, ms: 0};
 function driveTilePump(){
+  if(driveTileMode !== "thumb" && Date.now() > driveTileRetryAt){ driveTileMode = "thumb"; driveTileFail = 0; } // le repli lent n'est plus définitif : on retente les miniatures rapides
   while(driveTileBusy < (driveTileMode === "thumb" ? 8 : 2)){
     const tile = driveTileVisible.values().next().value; if(!tile) break;
     driveTileVisible.delete(tile); if(driveTileObserver) driveTileObserver.unobserve(tile);
@@ -23224,19 +23226,29 @@ async function driveTileFetch(tile){
   if(driveTileMode === "thumb"){
     /* Miniature affichée par une simple balise <img> : AUCUN téléchargement par fetch (que Google refuse : « Failed to fetch », pas d'en-tête CORS),
        donc aucun décodage ni retraitement par l'appli : le navigateur charge et met en cache les ~15 Ko de la vignette, c'est tout. */
-    let thumbUrl = null;
+    let thumbUrl = null, probeFailed = false;
     if(hit.thumbnailLink){
       const url = /=s\d+/.test(hit.thumbnailLink) ? hit.thumbnailLink.replace(/=s\d+[^=]*$/, "=s256") : hit.thumbnailLink + "=s256";
-      if(await driveImgProbe(url)) thumbUrl = url;
-    }
+      const tp = performance.now();
+      if(await driveImgProbe(url)){ thumbUrl = url; driveTileStat.ok++; driveTileStat.ms += performance.now() - tp; }
+      else{ probeFailed = true; driveTileStat.fail++; }
+    }else driveTileStat.noLink++; // Drive n'a pas (encore) de miniature pour ce fichier : ce n'est PAS un refus global
     if(thumbUrl){
       driveTileOk++; driveThumbSeen.add(p.id); galleryProgressSoon();
       driveTileThumbs.set(p.id, thumbUrl);
       if(driveTileThumbs.size > 3000){ const k = driveTileThumbs.keys().next().value; driveTileThumbs.delete(k); }
       driveSetTileImage(tile, thumbUrl); return;
     }
-    if(++driveTileFail >= 3 && !driveTileOk){ driveTileMode = "hydrate"; console.info("[Imago] Miniatures Drive refusées : repli sur la version réduite des vignettes visibles."); }
-    else return;
+    if(probeFailed){
+      /* Vrai échec de chargement. Avant : 3 échecs au tout début suffisaient à basculer, pour toute la session, sur la méthode LENTE (téléchargement
+         de chaque version réduite). Maintenant : 6 échecs sans aucun succès, repli temporaire (90 s), noté dans le journal ; sinon la vignette est retentée une fois. */
+      if(++driveTileFail >= 6 && !driveTileOk){
+        driveTileMode = "hydrate"; driveTileRetryAt = Date.now() + 90000;
+        try{ window.imagoLagNote && window.imagoLagNote("Miniatures Drive refusées : repli lent (90 s)", "vignettes en balise <img>", driveTileStat.fail + " échec(s), " + driveTileStat.ok + " réussite(s), " + driveTileStat.noLink + " fichier(s) sans miniature Drive"); }catch(e){}
+      }else if(!tile.dataset.retried){ tile.dataset.retried = "1"; setTimeout(()=>{ if(tile.isConnected) driveObserveTile(tile, p); }, 5000); return; }
+      else return;
+    }
+    // sans miniature Drive (ou repli) : version réduite de CETTE vignette seulement, sans changer de mode pour les autres
   }
   // repli : version réduite complète (la photo est alors aussi prête pour le visualiseur)
   if(await hydratePhotoFromDrive(p) && p.thumbDataUrl){ driveSetTileImage(tile, p.thumbDataUrl); galleryProgressSoon(); }
@@ -23272,7 +23284,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-25-f"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-26-a"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
