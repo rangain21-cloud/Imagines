@@ -6872,6 +6872,7 @@ function buildGalleryTile(p){
     img.alt = p.fileName || "";
     img.src = p.posterDataUrl || "";
     tile.appendChild(img);
+    if(!p.posterDataUrl) driveObserveTile(tile, p); // catalogue Drive : miniature Drive de la vidéo quand la vignette devient visible
     const play = document.createElement("span");
     play.className = "gallery-video-play";
     play.textContent = "▶";
@@ -23179,10 +23180,19 @@ function toggleSearchDock(force){
    visibles sont vides. Dès qu'une vignette reste visible (≈ 150 ms, donc pas pendant le glissement), sa miniature est demandée à Drive
    (≈ 256 px, quelques Ko), 4 à la fois. En touchant la vignette, la photo s'affiche aussitôt avec cette miniature pendant que la version
    réduite arrive. Si Drive refuse les miniatures, repli : téléchargement de la version réduite des seules vignettes visibles. */
-function driveTileWanted(p){ return !!p && !p.isVideo && isDriveHydratable(p) && !!(State.drive && State.drive.token) && !!driveMediaFolderId(); }
+const DRIVE_VIDEO_NAME_RE = /\.(mp4|mov|avi|mpe?g)$/i;
+/* Vidéos d'un catalogue Drive : Drive génère aussi une miniature (une image de la vidéo). Avant, elles n'en recevaient jamais (le compteur « chargées »
+   ne pouvait donc pas atteindre le total) : on affiche maintenant cette miniature, SANS télécharger la vidéo. */
+function driveVideoThumbWanted(p){ return !!p && (p.isVideo || DRIVE_VIDEO_NAME_RE.test(p.fileName || "")) && !p.posterDataUrl && !p.thumbDataUrl; }
+function driveTileWanted(p){ return !!p && (isDriveHydratable(p) || driveVideoThumbWanted(p)) && !!(State.drive && State.drive.token) && !!driveMediaFolderId(); }
 function driveSetTileImage(tile, url){
   if(!tile || !tile.isConnected) return;
-  const ph = tile.querySelector(".viewer-missing"); if(!ph) return;
+  const ph = tile.querySelector(".viewer-missing");
+  if(!ph){ // tuile de vidéo : l'<img> existe déjà (vide), avec le badge ▶ par-dessus
+    const vi = tile.querySelector("img");
+    if(vi && !vi.getAttribute("src")){ vi.referrerPolicy = "no-referrer"; vi.src = url; }
+    return;
+  }
   const img = document.createElement("img"); img.alt = tile.title || ""; img.referrerPolicy = "no-referrer"; img.src = url;
   ph.replaceWith(img);
 }
@@ -23258,6 +23268,7 @@ function driveImgProbe(url){ // true si le navigateur sait charger cette image (
 async function driveTileFetch(tile){
   const p = State.photos.find(ph=> ph.id === tile.dataset.id);
   if(!driveTileWanted(p)) return;
+  const isVid = !!p.isVideo || DRIVE_VIDEO_NAME_RE.test(p.fileName || "");
   const pre = driveTileThumbs.get(p.id); // déjà préchargée en arrière-plan : affichage immédiat
   if(pre){ driveThumbSeen.add(p.id); driveSetTileImage(tile, pre); galleryProgressSoon(); return; }
   const hit = driveIndexFind(await getDriveMediaIndexDeep(), p.fileName); if(!hit) return;
@@ -23277,6 +23288,7 @@ async function driveTileFetch(tile){
       if(driveTileThumbs.size > 20000){ const k = driveTileThumbs.keys().next().value; driveTileThumbs.delete(k); }
       driveSetTileImage(tile, thumbUrl); return;
     }
+    if(isVid) return; // vidéo : jamais de repli par téléchargement (ce serait la vidéo entière)
     if(probeFailed){
       /* Vrai échec de chargement. Avant : 3 échecs au tout début suffisaient à basculer, pour toute la session, sur la méthode LENTE (téléchargement
          de chaque version réduite). Maintenant : 6 échecs sans aucun succès, repli temporaire (90 s), noté dans le journal ; sinon la vignette est retentée une fois. */
@@ -23289,6 +23301,7 @@ async function driveTileFetch(tile){
     // sans miniature Drive (ou repli) : version réduite de CETTE vignette seulement, sans changer de mode pour les autres
   }
   // repli : version réduite complète (la photo est alors aussi prête pour le visualiseur)
+  if(isVid) return;
   if(await hydratePhotoFromDrive(p) && p.thumbDataUrl){ driveSetTileImage(tile, p.thumbDataUrl); galleryProgressSoon(); }
 }
 
@@ -23322,7 +23335,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-26-b"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-26-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
