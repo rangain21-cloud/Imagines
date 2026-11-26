@@ -6441,6 +6441,11 @@ async function prefetchDriveImages(max){
   if(drivePrefetchRunning || !State.drive.token || !driveMediaFolderId()) return;
   drivePrefetchRunning = true;
   try{
+    /* Priorité aux miniatures (journal : « attente 16 s » dans la voie rapide : ces téléchargements d'images complètes se disputaient le processeur avec le
+       préchargement des vignettes, et le compteur de galerie était recalculé 2 fois par seconde). On attend donc la fin du préchargement des miniatures
+       (10 min au plus) et, sur téléphone, on ne récupère d'avance que 24 images : les autres s'ouvrent à la demande. */
+    if(window.matchMedia("(pointer: coarse)").matches) max = Math.min(max, 24);
+    for(let w = 0; w < 600 && !driveThumbPre.finished && (driveThumbPre.running || driveThumbPre.timer); w++) await new Promise(r=> setTimeout(r, 1000));
     const idx = await getDriveMediaIndexDeep();
     State.photos.forEach(p=>{
       if(!repairVideoFlags(p) && !p.isVideo) return;
@@ -7034,7 +7039,7 @@ function galleryProgressSoon(){ // mise à jour espacée (≤ 2 fois par seconde
     galleryProgressTimer = 0;
     const scr = document.getElementById("galleryScreen");
     if(scr && !scr.classList.contains("hidden")) updateGalleryCounter();
-  }, 500);
+  }, (()=>{ try{ return driveThumbPre.running; }catch(e){ return false; } })() ? 1500 : 500); // le recalcul coûte ≈ 0,1 s sur 3000 images : plus espacé pendant le préchargement
 }
 function updateGalleryCounter(){
   const el = document.getElementById("galleryCount");
@@ -21739,6 +21744,12 @@ async function showDriveMissingFiles(opts){
     const order = new Map(rows.map((r,i)=>[catalogLooseKey(r.fileName), i]));
     const byOrder = (x,y)=> order.get(catalogLooseKey(x.fileName)) - order.get(catalogLooseKey(y.fileName));
     keep.sort(byOrder); elsewhere.sort(byOrder);
+    /* Sens INVERSE : fichiers présents dans le dossier Drive mais absents du catalogue (et doublons de nom). On repère chaque fichier Drive rattaché à une ligne
+       du catalogue ; tous les autres sont « sur Drive seulement ». */
+    const matchedIds = new Set(); rows.forEach(r=>{ const h = driveIndexFind(idx, r.fileName); if(h) matchedIds.add(h.id); });
+    const driveOnly = [];
+    if(idx.stem) idx.stem.forEach(list=> list.forEach(x=>{ if(!matchedIds.has(x.id)){ const same = driveIndexFind(idx, x.name); x._dup = !!(same && same.id !== x.id); driveOnly.push(x); } }));
+    driveOnly.sort((a, b)=> String(a.name).localeCompare(String(b.name), "fr", {numeric: true}));
     const local = r=>{ const p = State.photos.find(x=> x.fileName === r.fileName); return !!(p && (p.hasFullImage || p.dataUrl || p.thumbDataUrl || p.posterDataUrl)); };
     /* Téléversement : l'utilisateur désigne le dossier local qui contient les originaux (sous-dossiers compris) ;
        chaque fichier absent de Drive y est cherché par nom, puis envoyé dans le dossier Drive du catalogue sous le nom
@@ -21867,6 +21878,29 @@ async function showDriveMissingFiles(opts){
         lE.querySelector("input").onchange = ev=>{ missingIncludeElsewhere = ev.target.checked; render(); };
       }
       if(driveMissingOverride || missingCatalogOverride) mk("p", "margin:0 0 8px; font-size:.85em; color:var(--copper);", "📌 Choisi pour cette vérification seulement" + (missingCatalogOverride ? " — catalogue « " + missingCatalogOverride.name + " »" : "") + (driveMissingOverride ? " — dossier Drive « " + driveMissingOverride.label + " »" : "") + ". Le catalogue chargé dans l'appli et son dossier ne sont pas modifiés ; fermez la fenêtre (×) pour y revenir.");
+      if(driveOnly.length){
+        mk("p", "margin:6px 0 4px; font-weight:600; color:var(--copper);", "⚠ " + driveOnly.length + " fichier(s) sont sur Drive mais PAS dans le catalogue (" + rows.length + " lignes pour " + idx.listed + " fichiers lus sur Drive) :");
+        const lst = mk("div", "margin:0 0 8px; padding:6px 10px; max-height:140px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; font-family:monospace; font-size:.85em; white-space:pre-wrap; word-break:break-all;");
+        lst.textContent = driveOnly.map(x=> "• " + x.name + (x._dup ? "  (même nom qu'un autre fichier du catalogue)" : "") + (x.modifiedTime ? "  · " + x.modifiedTime.slice(0, 10) : "")).join("\n");
+        const addable = driveOnly.filter(x=> !x._dup);
+        if(addable.length){
+          const bAdd = mk("button", "margin:0 0 10px;", "➕ Ajouter ces " + addable.length + " fichier(s) à la galerie"); bAdd.className = "btn";
+          bAdd.onclick = ()=>{
+            if(!confirm("Ajouter " + addable.length + " fichier(s) présent(s) sur Drive à la galerie ?\nIls seront ajoutés au catalogue (date lue dans le nom, sinon date de modification Drive). Pensez ensuite à « Sauver sur Drive » pour enregistrer le catalogue.")) return;
+            let n = 0; const have = new Set(State.photos.map(p=> catalogLooseKey(p.fileName)));
+            for(const x of addable){
+              if(have.has(catalogLooseKey(x.name))) continue;
+              const dm = /^(\d{4})[-_](\d{2})[-_](\d{2})/.exec(x.name), date = dm ? dm[1] + "-" + dm[2] + "-" + dm[3] : (x.modifiedTime || "").slice(0, 10);
+              const rec = buildOrphanRecordFromCsvRow({fileName: x.name, sousDossier: "", dateAchat: date}, x.name); rec.corbeille = false;
+              if(+x.size) rec.videoSizeBytes = +x.size;
+              State.photos.push(rec); idbPut("photos", rec).catch(()=>{}); n++;
+            }
+            toast(n + " fichier(s) ajouté(s) à la galerie. Pensez à « Sauver sur Drive » pour enregistrer le catalogue.", 8000);
+            try{ renderGallery(); autoBuildCsv(); }catch(e){}
+            ov.remove(); showDriveMissingFiles({keepFolder: true});
+          };
+        }
+      }
       if(!pool.length){ mk("p", "font-weight:600;", "✅ Rien à téléverser : tout le catalogue est présent sur Drive.");
         const bO = mk("button", "margin-top:8px;", "📂 Comparer avec un autre dossier Drive…"); bO.className = "btn";
         bO.onclick = async ()=>{
@@ -23230,7 +23264,7 @@ async function driveThumbPrefetch(){
   if(driveThumbPre.running || driveThumbPre.finished) return;
   if(!(State.drive && State.drive.token) || !driveMediaFolderId()) return;
   driveThumbPre.running = true;
-  const t0 = performance.now(); let ok = 0, fails = 0, noLink = 0, total = 0;
+  const t0 = performance.now(); let ok = 0, fails = 0, noLink = 0, total = 0; const noLinkList = [];
   try{
     const idx = await getDriveMediaIndexDeep();
     const list = galleryPhotos().filter(p=> driveTileWanted(p) && !driveThumbSeen.has(p.id));
@@ -23242,7 +23276,7 @@ async function driveThumbPrefetch(){
         while(driveTileBusy > 0 || (navigator.scheduling && navigator.scheduling.isInputPending && navigator.scheduling.isInputPending())) await sleep(200);
         const p = list[i++]; if(!p || driveThumbSeen.has(p.id)) continue;
         const hit = driveIndexFind(idx, p.fileName);
-        if(!hit || !hit.thumbnailLink){ noLink++; continue; }
+        if(!hit || !hit.thumbnailLink){ noLink++; noLinkList.push(p); continue; }
         const url = driveThumbUrl(hit.thumbnailLink);
         if(await driveImgProbe(url)){ ok++; consec = 0; driveTileThumbs.set(p.id, url); driveThumbSeen.add(p.id); galleryProgressSoon(); }
         else{ fails++; consec++; }
@@ -23250,10 +23284,21 @@ async function driveThumbPrefetch(){
       }
     };
     await Promise.all(Array.from({length: N}, worker));
+    /* Fichiers pour lesquels Drive n'a PAS de miniature : une image est récupérée en version réduite (une par une, c'est peu) pour avoir quand même sa
+       vignette ; une vidéo n'est jamais téléchargée pour ça (elle prendra son image quand on la charge). */
+    for(const p of noLinkList){
+      if(p.isVideo || DRIVE_VIDEO_NAME_RE.test(p.fileName || "") || document.hidden) continue;
+      try{
+        if(await hydratePhotoFromDrive(p) && p.thumbDataUrl){
+          driveThumbSeen.add(p.id); galleryProgressSoon();
+          const tile = document.querySelector('#galleryGrid .gallery-tile[data-id="' + CSS.escape(p.id) + '"]'); if(tile) driveSetTileImage(tile, p.thumbDataUrl);
+        }
+      }catch(e){}
+    }
   }catch(e){ console.warn("[Imago] préchargement des miniatures interrompu", e); }
   finally{
     driveThumbPre.running = false; driveThumbPre.finished = true;
-    try{ if(window.imagoLagNote) window.imagoLagNote("Miniatures Drive : préchargement terminé", ok + " / " + total + " miniature(s)", ((performance.now() - t0) / 1000).toFixed(1).replace(".", ",") + " s · " + fails + " échec(s) · " + noLink + " sans miniature Drive"); }catch(e){}
+    try{ if(window.imagoLagNote) window.imagoLagNote("Miniatures Drive : préchargement terminé", ok + " / " + total + " miniature(s)", ((performance.now() - t0) / 1000).toFixed(1).replace(".", ",") + " s · " + fails + " échec(s) · " + noLink + " sans miniature Drive" + (noLinkList.length ? " : " + noLinkList.slice(0, 20).map(p=> p.fileName).join(" | ") : "")); }catch(e){}
   }
 }
 function driveImgProbe(url){ // true si le navigateur sait charger cette image (balise <img>, sans CORS) ; abandon après 15 s
@@ -23335,7 +23380,7 @@ async function driveTileFetch(tile){
    Coût : un minuteur léger ; aucune mesure de mise en page. Rien n'est envoyé hors de l'appareil.
    --------------------------------------------------------------- */
 (function(){
-  const BUILD = "2026-11-26-c"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
+  const BUILD = "2026-11-26-e"; // changer à chaque livraison : permet de vérifier, dans le journal, quelle version tourne réellement sur le téléphone
   const LOG_KEY = "imago_lag_log", ALIVE_KEY = "imago_lag_alive", THRESH_KEY = "imago_lag_thresh", MAX_ENTRIES = 60, TICK = 250;
   const thresh = ()=>{ const v = localStorage.getItem(THRESH_KEY); return v === null ? 1500 : Number(v); }; // 0 = désactivé
   const rd = k=>{ try{ return JSON.parse(localStorage.getItem(k) || "null"); }catch(e){ return null; } };
