@@ -12002,6 +12002,58 @@ function mapUrl(exif, lieu){
   if(exif && exif.gpsLat!=null && exif.gpsLon!=null) return mapUrlFromCoords(exif.gpsLat, exif.gpsLon);
   return mapUrlFromLieu(lieu);
 }
+/* ---- Valeur « map » déjà connue pour un lieu (rubrique « map » du catalogue = le « map.csv » chargé) ----
+   Avant de proposer la simple requête https://www.google.com/maps/search/?api=1&query=<lieu>, on cherche dans le
+   catalogue (State.photos) une valeur « map » DÉJÀ enregistrée pour le même lieu (comparaison insensible à la casse,
+   aux accents et aux espaces multiples). Seules les valeurs valides (http/https) et « personnalisées » comptent :
+   une valeur identique au lien de recherche construit depuis le lieu n'apporte rien de plus que le repli. S'il y en a
+   plusieurs, la plus fréquente l'emporte (à égalité : la première rencontrée). */
+function lieuMapKey(lieu){
+  return foldSearchText(lieu).trim().replace(/\s+/g, " ");
+}
+// Index lieu(normalisé) → Map(valeur « map » → nombre de fiches). Construit en une passe ; à réutiliser dans les boucles.
+function buildMapIndexByLieu(){
+  const idx = new Map();
+  if(!State || !Array.isArray(State.photos)) return idx;
+  for(const q of State.photos){
+    if(!q || !q.lieu || !isValidMapUrl(q.map)) continue;
+    const u = q.map.trim();
+    if(u === mapUrlFromLieu(q.lieu)) continue; // simple requête automatique : équivalente au repli
+    const k = lieuMapKey(q.lieu);
+    if(!k) continue;
+    let m = idx.get(k); if(!m){ m = new Map(); idx.set(k, m); }
+    m.set(u, (m.get(u) || 0) + 1);
+  }
+  return idx;
+}
+// self : la fiche en cours (sa propre valeur n'est pas comptée) ; idx : index déjà construit (facultatif, pour les boucles).
+function findExistingMapForLieu(lieu, self, idx){
+  const key = lieuMapKey(lieu);
+  if(!key) return "";
+  const m = (idx || buildMapIndexByLieu()).get(key);
+  if(!m) return "";
+  let selfUrl = "";
+  if(self && self.lieu && isValidMapUrl(self.map) && lieuMapKey(self.lieu) === key){
+    const u = self.map.trim();
+    if(u !== mapUrlFromLieu(self.lieu)) selfUrl = u;
+  }
+  let best = "", bestN = 0;
+  for(const [u, n] of m){ const c = n - (u === selfUrl ? 1 : 0); if(c > bestN){ best = u; bestN = c; } }
+  return best;
+}
+/* Valeur « map » à utiliser pour un lieu : 1) valeur existante du catalogue, 2) à défaut, la requête
+   https://www.google.com/maps/search/?api=1&query=<lieu>. */
+function resolveMapForLieu(lieu, self, idx){
+  if(!lieu) return "";
+  return findExistingMapForLieu(lieu, self, idx) || mapUrlFromLieu(lieu);
+}
+/* Vrai si la carte de p n'a pas été personnalisée pour ce lieu : vide, ou encore égale à ce que
+   resolveMapForLieu() produirait automatiquement (valeur du catalogue ou requête de repli). */
+function isAutoMapForLieu(p, lieu, idx){
+  if(!p.map) return true;
+  if(!lieu) return false;
+  return p.map === mapUrlFromLieu(lieu) || p.map === findExistingMapForLieu(lieu, p, idx);
+}
 /* Extrait, depuis une URL Google Maps déjà enregistrée dans la rubrique
    "map" (quel que soit son format — coordonnées via "?q=lat,lon" ou lieu via
    "/maps/search/?api=1&query=..."), la valeur exploitable pour un aperçu
@@ -12039,7 +12091,8 @@ function mapProviderKey(){
 // Cible à afficher : coordonnées (GPS de la photo, sinon « map » du catalogue en ?q=lat,lon ou @lat,lon) ou, à défaut, texte à chercher (rubrique « map » puis « lieu »).
 function mapTargetFor(p){
   if(p.gpsLat != null && p.gpsLon != null) return {lat: p.gpsLat, lon: p.gpsLon, query: ""};
-  const q = isValidMapUrl(p.map) ? mapEmbedQueryFromMapField(p.map) : "";
+  const mapSrc = isValidMapUrl(p.map) ? p.map : findExistingMapForLieu(p.lieu, p); // à défaut de « map », valeur existante du catalogue pour ce lieu
+  const q = mapSrc ? mapEmbedQueryFromMapField(mapSrc) : "";
   const m = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(q || "");
   if(m) return {lat: parseFloat(m[1]), lon: parseFloat(m[2]), query: ""};
   const text = (q || p.lieu || "").trim();
@@ -12246,8 +12299,9 @@ async function mapFillPreview(slot, p){
    recherche par nom). Renvoie "" si aucune des deux rubriques n'est
    exploitable — c'est alors le seul cas où l'aperçu n'est pas affiché. */
 function mapEmbedSrcFor(p){
-  if(isValidMapUrl(p.map)){
-    const q = mapEmbedQueryFromMapField(p.map);
+  const mapSrc = isValidMapUrl(p.map) ? p.map : findExistingMapForLieu(p.lieu, p); // valeur du catalogue pour ce lieu si « map » est vide
+  if(mapSrc){
+    const q = mapEmbedQueryFromMapField(mapSrc);
     if(q) return `https://www.google.com/maps?q=${encodeURIComponent(q)}&z=15&output=embed`;
   }
   if(p.lieu) return `https://www.google.com/maps?q=${encodeURIComponent(p.lieu)}&z=12&output=embed`;
@@ -14927,14 +14981,16 @@ function promptDeleteLieu(lieu){
    passe sur le catalogue — c'est ce qui permet la correction groupée. */
 async function renameLieuxEverywhere(oldLieux, newLieu){
   const oldSet = new Set(oldLieux);
+  const mapIdx = buildMapIndexByLieu(); // une seule passe sur le catalogue (évite une recherche complète par fiche)
   let touched = 0;
   for(const p of State.photos){
     const lieu = (p.lieu||"").trim();
     if(!oldSet.has(lieu)) continue; // correspondance exacte, sensible à la casse
-    const wasAutoMap = !p.map || p.map === mapUrlFromLieu(lieu); // carte non personnalisée par l'utilisateur
+    const wasAutoMap = isAutoMapForLieu(p, lieu, mapIdx); // carte non personnalisée par l'utilisateur
+    const newMap = wasAutoMap ? resolveMapForLieu(newLieu, p, mapIdx) : p.map; // calculé AVANT de modifier la fiche
     const previousAutoTitre = buildTitre(p.lieu, p.personnage);
     p.lieu = newLieu;
-    if(wasAutoMap) p.map = mapUrlFromLieu(newLieu);
+    if(wasAutoMap) p.map = newMap;
     // Titre personnalisé (ex. saisi dans la modale Infos) préservé : recalculé seulement s'il était vide ou encore identique au titre automatique d'avant modification.
     if(!p.titre || p.titre === previousAutoTitre) p.titre = buildTitre(p.lieu, p.personnage);
     await idbPut("photos", p);
@@ -14945,11 +15001,12 @@ async function renameLieuxEverywhere(oldLieux, newLieu){
 }
 async function deleteLieuxEverywhere(lieux){
   const lieuSet = new Set(lieux);
+  const mapIdx = buildMapIndexByLieu(); // une seule passe sur le catalogue
   let touched = 0;
   for(const p of State.photos){
     const lieu = (p.lieu||"").trim();
     if(!lieuSet.has(lieu)) continue; // correspondance exacte, sensible à la casse
-    const wasAutoMap = !p.map || p.map === mapUrlFromLieu(lieu);
+    const wasAutoMap = isAutoMapForLieu(p, lieu, mapIdx);
     const previousAutoTitre = buildTitre(p.lieu, p.personnage);
     p.lieu = "";
     if(wasAutoMap) p.map = "";
@@ -18634,9 +18691,11 @@ function renderInfoModal(p){
       <div class="info-content">
         ${(()=>{
           if(isValidMapUrl(p.map)) return `<div class="main-line"><a href="${escapeHtml(p.map)}" target="_blank" rel="noopener" class="small-link">${escapeHtml(p.map)}</a></div>`;
-          const fallback = p.lieu ? mapUrlFromLieu(p.lieu) : "";
+          // 1) valeur « map » déjà enregistrée dans le catalogue pour ce lieu ; 2) à défaut, requête de recherche sur le lieu
+          const fromCatalog = p.lieu ? findExistingMapForLieu(p.lieu, p) : "";
+          const fallback = fromCatalog || (p.lieu ? mapUrlFromLieu(p.lieu) : "");
           return fallback
-            ? `<div class="main-line"><a href="${escapeHtml(fallback)}" target="_blank" rel="noopener" class="small-link">${escapeHtml(fallback)}</a></div><div class="sub-line">Lien reconstruit depuis le lieu (valeur d'origine invalide)</div>`
+            ? `<div class="main-line"><a href="${escapeHtml(fallback)}" target="_blank" rel="noopener" class="small-link">${escapeHtml(fallback)}</a></div><div class="sub-line">${fromCatalog ? "Valeur reprise du catalogue (rubrique « map » d'un autre fichier du même lieu)" : "Lien reconstruit depuis le lieu (aucune valeur « map » existante)"}</div>`
             : `<div class="main-line">Aucune carte renseignée</div>`;
         })()}
         <div class="sub-line">Map</div>
@@ -18966,9 +19025,10 @@ function infoFacesAnalyze(p, auto){
    doit suivre. Règle identique à renameLieuxEverywhere : on ne touche qu'à une carte NON personnalisée (vide, ou encore
    égale au lien construit depuis l'ancien lieu) ; avec un GPS dans le fichier, la carte reste celle des coordonnées. */
 function syncMapWithLieu(p, oldLieu, newLieu){
-  const wasAutoMap = !p.map || p.map === mapUrlFromLieu(oldLieu);
+  const wasAutoMap = isAutoMapForLieu(p, oldLieu);
   if(!wasAutoMap) return;
-  p.map = (p.gpsLat!=null && p.gpsLon!=null) ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : mapUrlFromLieu(newLieu);
+  // Ordre : GPS du fichier > valeur « map » déjà présente dans le catalogue pour ce lieu > requête Google Maps sur le lieu
+  p.map = (p.gpsLat!=null && p.gpsLon!=null) ? mapUrlFromCoords(p.gpsLat, p.gpsLon) : (newLieu ? resolveMapForLieu(newLieu, p) : "");
 }
 function startInlineEdit(containerId, field, p){
   const container = document.getElementById(containerId);
